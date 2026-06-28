@@ -1,0 +1,313 @@
+#!/usr/bin/env bash
+#
+# radicle-seed-prune - reclaim disk on a Radicle (heartwood) seed node by dropping
+# low-value repositories: stale giants, abandoned repos, and obviously disposable ones.
+#
+# DRY-RUN by default - it only prints the plan and changes nothing. Pass --apply to act.
+#
+# WHAT "PRUNE" MEANS
+#   There is no `rad rm`. Unseeding or blocking a repo frees ZERO bytes - those only
+#   change policy. Disk is reclaimed solely by deleting the repo's storage directory.
+#   So pruning a repo is three steps, in this order:
+#       rad unseed <rid>   # drop any existing seeding policy
+#       rad block  <rid>   # set an explicit block so the default allow-all won't refetch
+#       rm -rf storage/<rid>
+#   Order matters: `rad unseed` removes whichever single policy row a repo has, so it
+#   must run BEFORE `rad block`, never after, or it would wipe the block we just set.
+#
+# RECOVERABILITY
+#   Deletion is local. A pruned repo is re-fetchable from the network later (rad unseed
+#   to clear the block, then rad seed) AS LONG AS other nodes still hold it. That is why
+#   every size/age rule has a minimum other-seed-count gate: we never delete the last
+#   known copy by accident. Every prune is recorded in an audit log.
+#
+# SELECTION  (a repo is pruned if it is NOT excluded AND matches a rule)
+#
+#   Exclusions (never touched):
+#     - pinned repos        (config web.pinned.repositories)
+#     - private repos       (rad ls --private)
+#     - our own repos       (rad ls: repos we initialized or forked / delegate)
+#     - freshly written     (storage dir mtime within FRESH_GUARD_DAYS; in-flight fetch)
+#     - unknown age         (no readable refs; left alone out of caution)
+#
+#   Rule A - junk-named & abandoned:
+#       name matches a disposable-name pattern
+#       AND no new commit/COB for > JUNK_STALE_DAYS
+#       AND other-seeds >= JUNK_MIN_SEEDS
+#
+#   Rule B - size outlier, stale, replicated:
+#       size > ABS_SIZE_FLOOR_MB           (absolute outlier)
+#       AND size >= the REL_PCTL-th percentile of all repo sizes  (relative outlier)
+#       AND no new commit/COB for > OUTLIER_STALE_DAYS
+#       AND other-seeds >= MIN_OTHER_SEEDS
+#
+#   Rule C - long-abandoned, replicated (catch-all for anything A/B missed):
+#       no new commit/COB for > STALE_YEARS_DAYS
+#       AND other-seeds >= MIN_OTHER_SEEDS
+#
+#   "Activity" = ANY signed change, however small. Every Radicle interaction - a commit,
+#   a new issue/patch, a comment, a reaction, an edit, a label - is a git commit appended
+#   under some peer's refs/cobs/*, and it also advances that peer's refs/rad/sigrefs. The
+#   tool reads the newest creatordate across ALL refs (every namespace included), so the
+#   freshest of any of these wins. creatordate is when the change was authored, not when we
+#   replicated it, so a just-fetched old comment correctly still reads as old.
+#
+# SAFETY
+#   Per-run runaway caps abort a suspiciously large plan unless --force. The node is left
+#   running; deleting a blocked repo's dir live is safe. After a large first run, one
+#   `sudo systemctl restart radicle-node` flushes the node's in-memory inventory of the
+#   now-gone repos (optional; --restart does it for you if run with the rights to).
+#
+# USAGE
+#   radicle-seed-prune                 # dry-run, print the plan
+#   radicle-seed-prune --apply         # execute
+#   radicle-seed-prune --apply --force # execute even if the plan trips the runaway caps
+#   radicle-seed-prune --apply --restart   # ...and restart the node service afterwards
+#
+# Run as the user that owns the Radicle home (the seed account). Cron-safe: dry-run by
+# default, deterministic, and self-logging.
+#
+# Copyright (c) 2026 Konstantinos Maninakis (@maninak).
+# Licensed under the PolyForm Noncommercial License 1.0.0 - noncommercial use only,
+# attribution required (preserve these notices). See the LICENSE file. Commercial use needs
+# a separate license from the author.
+
+set -euo pipefail
+
+# ----------------------------------------------------------------------------- config (env-overridable)
+RAD="${RAD:-rad}"
+RAD_HOME="${RAD_HOME:-$("$RAD" path 2>/dev/null || echo "${HOME:?}/.radicle")}"
+STORAGE="${STORAGE:-$RAD_HOME/storage}"
+CONFIG="${CONFIG:-$RAD_HOME/config.json}"
+OUR_NID="${OUR_NID:-$("$RAD" self --nid 2>/dev/null || true)}"
+SERVICE="${SERVICE:-radicle-node}"          # systemd unit, used only by --restart
+
+ABS_SIZE_FLOOR_MB="${ABS_SIZE_FLOOR_MB:-500}"   # rule B absolute floor
+REL_PCTL="${REL_PCTL:-95}"                       # rule B relative percentile
+OUTLIER_STALE_DAYS="${OUTLIER_STALE_DAYS:-90}"   # rule B staleness  (~3 months)
+JUNK_STALE_DAYS="${JUNK_STALE_DAYS:-30}"         # rule A staleness  (~1 month)
+STALE_YEARS_DAYS="${STALE_YEARS_DAYS:-730}"      # rule C staleness  (~2 years)
+MIN_OTHER_SEEDS="${MIN_OTHER_SEEDS:-3}"          # rules B & C: > 2 other seeds
+JUNK_MIN_SEEDS="${JUNK_MIN_SEEDS:-1}"            # rule A: never delete the last copy
+FRESH_GUARD_DAYS="${FRESH_GUARD_DAYS:-2}"        # never delete a dir touched this recently
+
+MAX_PRUNE_COUNT="${MAX_PRUNE_COUNT:-1000}"       # runaway guards (abort unless --force)
+MAX_PRUNE_GB="${MAX_PRUNE_GB:-80}"
+
+# --- disk-pressure adaptivity ---
+# The thresholds above are the RELAXED (plenty-of-space) values. As free disk on the storage
+# filesystem falls from the relax watermark down to the critical one, every knob is interpolated
+# toward its AGGRESSIVE value, so the tool self-tightens with no human retuning. The critical
+# watermark defaults to min(10% of disk, 2GB) - your premise. Set DISK_AWARE=0 to disable and
+# always use the relaxed values. Hard safety floors (>=1 other seed, the exclusions) never scale.
+DISK_AWARE="${DISK_AWARE:-1}"
+PRESSURE_RELAX_PCT="${PRESSURE_RELAX_PCT:-20}"   # >= max(pct,gb) free  -> pressure 0 (relaxed)
+PRESSURE_RELAX_GB="${PRESSURE_RELAX_GB:-20}"
+PRESSURE_CRIT_PCT="${PRESSURE_CRIT_PCT:-10}"     # <= min(pct,gb) free  -> pressure 1 (max aggression)
+PRESSURE_CRIT_GB="${PRESSURE_CRIT_GB:-2}"
+ABS_SIZE_FLOOR_MB_AGG="${ABS_SIZE_FLOOR_MB_AGG:-50}"     # full-pressure endpoints
+REL_PCTL_AGG="${REL_PCTL_AGG:-50}"
+OUTLIER_STALE_DAYS_AGG="${OUTLIER_STALE_DAYS_AGG:-14}"
+JUNK_STALE_DAYS_AGG="${JUNK_STALE_DAYS_AGG:-7}"
+STALE_YEARS_DAYS_AGG="${STALE_YEARS_DAYS_AGG:-60}"
+MIN_OTHER_SEEDS_AGG="${MIN_OTHER_SEEDS_AGG:-1}"  # hard floor 1: never delete the last network copy
+
+AUDIT_DIR="${AUDIT_DIR:-$RAD_HOME/prune-audit}"
+
+# Disposable-name patterns. The generic tokens foo/bar/baz match only as a WHOLE name
+# (so "BAR_widget" is safe); everything else matches as a boundary-delimited word.
+JUNK_WORD_REGEX='(^|[-_.])(test|tests|testing|delete|deleted|tmp|temp|scratch|playground|sandbox|demo|dummy|wip|trash|junk|old|throwaway|hello-?world)([-_.]|$)'
+JUNK_EXACT_REGEX='^(foo|bar|baz)$'
+
+# ----------------------------------------------------------------------------- args
+APPLY=0; FORCE=0; RESTART=0
+for a in "$@"; do
+  case "$a" in
+    --apply)   APPLY=1 ;;
+    --force)   FORCE=1 ;;
+    --restart) RESTART=1 ;;
+    --help|-h) sed -n '2,75p' "$0"; exit 0 ;;
+    *) echo "unknown arg: $a (try --help)" >&2; exit 2 ;;
+  esac
+done
+
+[ -d "$STORAGE" ] || { echo "no storage dir at $STORAGE" >&2; exit 1; }
+[ -n "$OUR_NID" ] || echo "# WARN: could not determine our NID; seed counts will include us" >&2
+
+now=$(date +%s)
+fresh_cut=$(( now - FRESH_GUARD_DAYS*86400 ))
+
+# disk pressure p in [0,1] on the storage filesystem
+read -r disk_total disk_avail < <(df -Pk "$STORAGE" | awk 'NR==2{printf "%.0f %.0f\n", $2*1024, $4*1024}')
+: "${disk_total:=0}"; : "${disk_avail:=0}"
+relax_free=$(awk -v t="$disk_total" -v p="$PRESSURE_RELAX_PCT" -v g="$PRESSURE_RELAX_GB" 'BEGIN{a=t*p/100;b=g*1e9;print (a>b)?a:b}')
+crit_free=$(awk  -v t="$disk_total" -v p="$PRESSURE_CRIT_PCT"  -v g="$PRESSURE_CRIT_GB"  'BEGIN{a=t*p/100;b=g*1e9;print (a<b)?a:b}')
+p=$(awk -v av="$disk_avail" -v r="$relax_free" -v c="$crit_free" -v on="$DISK_AWARE" 'BEGIN{
+  if(on=="0"||r<=c){print 0;exit} x=(r-av)/(r-c); if(x<0)x=0; if(x>1)x=1; printf "%.3f",x }')
+
+# interpolate each knob relaxed->aggressive by p
+lerp(){ awk -v a="$1" -v b="$2" -v p="$p" 'BEGIN{printf "%d", a+(b-a)*p+0.5}'; }
+eff_abs_mb=$(lerp "$ABS_SIZE_FLOOR_MB" "$ABS_SIZE_FLOOR_MB_AGG")
+eff_pctl=$(lerp "$REL_PCTL" "$REL_PCTL_AGG")
+eff_outlier_days=$(lerp "$OUTLIER_STALE_DAYS" "$OUTLIER_STALE_DAYS_AGG")
+eff_junk_days=$(lerp "$JUNK_STALE_DAYS" "$JUNK_STALE_DAYS_AGG")
+eff_stale_days=$(lerp "$STALE_YEARS_DAYS" "$STALE_YEARS_DAYS_AGG")
+eff_seeds=$(lerp "$MIN_OTHER_SEEDS" "$MIN_OTHER_SEEDS_AGG"); [ "$eff_seeds" -lt 1 ] && eff_seeds=1
+
+outlier_cut=$(( now - eff_outlier_days*86400 ))
+junk_cut=$(( now - eff_junk_days*86400 ))
+stale_cut=$(( now - eff_stale_days*86400 ))
+
+echo "# radicle-seed-prune  $(date -u +%FT%TZ)   mode=$([ $APPLY = 1 ] && echo APPLY || echo DRY-RUN)"
+echo "# home=$RAD_HOME"
+echo "# disk: $(awk -v a="$disk_avail" 'BEGIN{printf "%.1f",a/1e9}')GB free ($(awk -v a="$disk_avail" -v t="$disk_total" 'BEGIN{printf "%.1f",(t>0)?100*a/t:0}')%)  pressure=$(awk -v p="$p" 'BEGIN{printf "%.0f",p*100}')%  [relax>=$(awk -v r="$relax_free" 'BEGIN{printf "%.0f",r/1e9}')GB crit<=$(awk -v c="$crit_free" 'BEGIN{printf "%.0f",c/1e9}')GB]"
+echo "# rules: A junk(>${eff_junk_days}d, seeds>=${JUNK_MIN_SEEDS})  B size(>${eff_abs_mb}MB & >=P${eff_pctl}, >${eff_outlier_days}d, seeds>=${eff_seeds})  C stale(>${eff_stale_days}d, seeds>=${eff_seeds})"
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+# ----------------------------------------------------------------------------- exclusion sets
+jq -r '.web.pinned.repositories[]?' "$CONFIG" 2>/dev/null | sed 's/^rad://' | sort -u > "$tmp/pinned" || true
+"$RAD" ls --all --private 2>/dev/null | grep -oE 'rad:z[1-9A-HJ-NP-Za-km-z]+' | sed 's/^rad://' | sort -u > "$tmp/private" || true
+"$RAD" ls         2>/dev/null | grep -oE 'rad:z[1-9A-HJ-NP-Za-km-z]+' | sed 's/^rad://' | sort -u > "$tmp/own" || true
+cat "$tmp/pinned" "$tmp/private" "$tmp/own" 2>/dev/null | sort -u > "$tmp/excluded"
+echo "# excluded: $(wc -l < "$tmp/pinned") pinned, $(wc -l < "$tmp/private") private, $(wc -l < "$tmp/own") own"
+
+# fail-safe (apply only): if the node is unreachable, exclusions can come back empty and we could
+# delete our own/pinned repos. Bail out fast, before the scan, rather than prune on bad data.
+if [ "$APPLY" = 1 ]; then
+  "$RAD" node status >/dev/null 2>&1 || { echo "# ABORT(apply): node not running; rad queries unreliable." >&2; exit 5; }
+  [ -n "$OUR_NID" ] || { echo "# ABORT(apply): could not determine our NID." >&2; exit 5; }
+  npin_cfg=$(jq -r '.web.pinned.repositories[]?' "$CONFIG" 2>/dev/null | wc -l)
+  [ "$npin_cfg" -gt 0 ] && [ "$(wc -l < "$tmp/pinned")" = 0 ] && { echo "# ABORT(apply): pinned in config but none parsed; exclusion fetch failed." >&2; exit 5; }
+fi
+
+# ----------------------------------------------------------------------------- rid -> name  (parse the ls table; box char is field 1, name is field 2)
+"$RAD" ls --all 2>/dev/null | awk '
+  /rad:z[1-9A-HJ-NP-Za-km-z]+/ {
+    rid=""; for (i=1;i<=NF;i++) if ($i ~ /^rad:z[1-9A-HJ-NP-Za-km-z]+$/) rid=$i
+    if (rid=="") next
+    sub(/^rad:/,"",rid); print rid"\t"$2
+  }' > "$tmp/names" 2>/dev/null || true
+
+# ----------------------------------------------------------------------------- rid -> other-seed count
+"$RAD" node routing --json 2>/dev/null \
+  | jq -r --arg us "$OUR_NID" 'select(.nid != $us) | (.rid|sub("^rad:";""))' \
+  | sort | uniq -c | awk '{print $2"\t"$1}' > "$tmp/seeds" || true
+
+# ----------------------------------------------------------------------------- one pass: size, mtime, last-life for every repo
+echo "# scanning $(ls -1 "$STORAGE" | wc -l) repos (size + activity)..." >&2
+: > "$tmp/repos"   # rid \t size \t mtime \t life
+n=0
+for d in "$STORAGE"/*/; do
+  rid=$(basename "$d")
+  sz=$(du -sb --apparent-size "$d" 2>/dev/null | cut -f1); [ -z "$sz" ] && continue
+  mt=$(stat -c %Y "$d" 2>/dev/null || echo 0)
+  life=$(GIT_DIR="$d" git for-each-ref --sort=-creatordate --format='%(creatordate:unix)' --count=1 2>/dev/null | head -1)
+  [ -z "$life" ] && life=0
+  printf '%s\t%s\t%s\t%s\n' "$rid" "$sz" "$mt" "$life" >> "$tmp/repos"
+  n=$((n+1)); [ $((n % 1000)) = 0 ] && echo "#   ...$n" >&2
+done
+total_repos=$(wc -l < "$tmp/repos")
+
+# percentiles for the relative size cut + transparency
+read -r p50 p90 p95 p99 < <(cut -f2 "$tmp/repos" | sort -n | awk '
+  {a[NR]=$1} END{
+    i50=int(0.50*NR); if(i50<1)i50=1; i90=int(0.90*NR); if(i90<1)i90=1
+    i95=int(0.95*NR); if(i95<1)i95=1; i99=int(0.99*NR); if(i99<1)i99=1
+    printf "%d %d %d %d\n", a[i50], a[i90], a[i95], a[i99] }')
+relcut=$(cut -f2 "$tmp/repos" | sort -n | awk -v p="$eff_pctl" '{a[NR]=$1} END{ i=int(p/100*NR); if(i<1)i=1; print a[i] }')
+abscut=$(( eff_abs_mb * 1024 * 1024 ))
+echo "# repos=$total_repos  sizes P50=$((p50/1048576))M P90=$((p90/1048576))M P95=$((p95/1048576))M P99=$((p99/1048576))M  rel-cut(P${eff_pctl})=$((relcut/1048576))M  abs-cut=${eff_abs_mb}M"
+
+name_of(){ awk -F'\t' -v r="$1" '$1==r{print $2; exit}' "$tmp/names"; }
+seeds_of(){ awk -F'\t' -v r="$1" '$1==r{print $2; exit}' "$tmp/seeds"; }
+
+# ----------------------------------------------------------------------------- classify
+: > "$tmp/plan"   # rid \t size \t seeds \t life \t reason \t name
+while IFS=$'\t' read -r rid sz mt life; do
+  grep -qxF "$rid" "$tmp/excluded" && continue
+  [ "$life" = 0 ] && continue                         # unknown age -> leave alone
+  [ "$mt" -ge "$fresh_cut" ] && continue              # freshly written -> in-flight fetch
+
+  name=$(name_of "$rid"); [ -z "$name" ] && name='(?)'
+  seeds=$(seeds_of "$rid"); [ -z "$seeds" ] && seeds=0
+
+  is_junk=0
+  if printf '%s' "$name" | grep -qiE "$JUNK_WORD_REGEX" || printf '%s' "$name" | grep -qiE "$JUNK_EXACT_REGEX"; then is_junk=1; fi
+  is_big=0; [ "$sz" -gt "$abscut" ] && [ "$sz" -ge "$relcut" ] && is_big=1
+
+  reason=""
+  if   [ "$is_junk" = 1 ] && [ "$life" -lt "$junk_cut" ]    && [ "$seeds" -ge "$JUNK_MIN_SEEDS" ]; then reason="junk-name"
+  elif [ "$is_big" = 1 ]  && [ "$life" -lt "$outlier_cut" ] && [ "$seeds" -ge "$eff_seeds" ];     then reason="size-outlier"
+  elif                       [ "$life" -lt "$stale_cut" ]   && [ "$seeds" -ge "$eff_seeds" ];     then reason="stale"
+  fi
+  [ -z "$reason" ] && continue
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$rid" "$sz" "$seeds" "$life" "$reason" "$name" >> "$tmp/plan"
+done < "$tmp/repos"
+
+# ----------------------------------------------------------------------------- report
+sort -t$'\t' -k2,2nr "$tmp/plan" > "$tmp/plan.sorted"
+nplan=$(wc -l < "$tmp/plan.sorted")
+bytes=$(awk -F'\t' '{s+=$2} END{print s+0}' "$tmp/plan.sorted")
+gib=$(awk -v b="$bytes" 'BEGIN{printf "%.2f", b/1073741824}')
+
+printf '\n%-34s %9s %6s %8s %-13s %s\n' "RID" "SIZE" "SEEDS" "AGE(d)" "REASON" "NAME"
+while IFS=$'\t' read -r rid sz seeds life reason name; do
+  age=$(( (now - life) / 86400 ))
+  hsz=$(awk -v b="$sz" 'BEGIN{ s=b;u="B";split("KB MB GB",a," ");for(i=1;i<=3&&s>=1024;i++){s/=1024;u=a[i]};printf "%.1f%s",s,u }')
+  printf '%-34s %9s %6s %8s %-13s %s\n' "$rid" "$hsz" "$seeds" "$age" "$reason" "$name"
+done < "$tmp/plan.sorted"
+
+echo
+echo "# PLAN: prune $nplan repos, reclaim ${gib} GiB"
+awk -F'\t' '{c[$5]++; b[$5]+=$2} END{for(r in c) printf "#   %-13s %5d repos  %8.2f GiB\n", r, c[r], b[r]/1073741824}' "$tmp/plan.sorted" | sort
+
+if [ "$APPLY" = 0 ]; then
+  echo "# DRY-RUN: nothing changed. Re-run with --apply to execute."
+  exit 0
+fi
+
+# ----------------------------------------------------------------------------- apply
+if [ "$FORCE" = 0 ]; then
+  over_gb=$(awk -v b="$bytes" -v m="$MAX_PRUNE_GB" 'BEGIN{print (b/1073741824 > m) ? 1 : 0}')
+  if [ "$nplan" -gt "$MAX_PRUNE_COUNT" ] || [ "$over_gb" = 1 ]; then
+    echo "# ABORT: plan ($nplan repos, ${gib} GiB) trips runaway caps (count=$MAX_PRUNE_COUNT gb=$MAX_PRUNE_GB)." >&2
+    echo "# Review it, then re-run with --force if this is intended." >&2
+    exit 3
+  fi
+fi
+[ "$nplan" = 0 ] && { echo "# nothing to do"; exit 0; }
+
+mkdir -p "$AUDIT_DIR"
+run_ts=$(date -u +%FT%TZ)
+audit="$AUDIT_DIR/prune-$(date -u +%Y%m%dT%H%M%SZ).log"
+{ printf '# %s  pressure=%s%%  plan=%s repos / %s GiB\n' "$run_ts" "$(awk -v p="$p" 'BEGIN{printf "%.0f",p*100}')" "$nplan" "$gib"
+  printf '# rid\tsize_bytes\tother_seeds\tlast_activity_unix\treason\tname\n'
+  cat "$tmp/plan.sorted"; } > "$audit"
+echo "# audit log: $audit"
+
+echo "# unseed + block + delete $nplan repos..."
+deleted=0
+while IFS=$'\t' read -r rid sz seeds life reason name; do
+  "$RAD" unseed "rad:$rid" >/dev/null 2>&1 || true     # clear any policy FIRST
+  "$RAD" block  "rad:$rid" >/dev/null 2>&1 || { echo "#   WARN block failed, skipping delete: $rid" >&2; continue; }
+  d="$STORAGE/$rid"
+  case "$d" in
+    "$STORAGE"/z*) rm -rf -- "$d" && deleted=$((deleted+1)) ;;
+    *) echo "#   SKIP unsafe path: $d" >&2 ;;
+  esac
+done < "$tmp/plan.sorted"
+
+if [ "$RESTART" = 1 ]; then
+  echo "# restarting $SERVICE to flush inventory..."
+  systemctl restart "$SERVICE" 2>&1 || sudo systemctl restart "$SERVICE" 2>&1 || echo "# WARN restart failed; run: sudo systemctl restart $SERVICE" >&2
+fi
+
+# append-only one-line-per-run history for easy "what got pruned over time" review
+printf '%s\tdeleted=%s\treclaimed_gib=%s\tpressure=%s%%\taudit=%s\n' \
+  "$run_ts" "$deleted" "$gib" "$(awk -v p="$p" 'BEGIN{printf "%.0f",p*100}')" "$(basename "$audit")" \
+  >> "$AUDIT_DIR/history.log"
+
+echo "# DONE: deleted $deleted repos, reclaimed ~${gib} GiB. Audit: $audit"
+[ "$RESTART" = 1 ] || echo "# tip: run 'sudo systemctl restart $SERVICE' once to flush the node's inventory of the removed repos."
