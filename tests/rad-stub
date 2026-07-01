@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Test double for `rad`, driven by env: RSP_HOME, RSP_NID, RSP_MANIFEST, RSP_NODE_DOWN.
+# Manifest columns: rid  name  seeds  vis  own  days  size
+set -uo pipefail
+sub="${1:-}"; shift || true
+case "$sub" in
+  path) echo "$RSP_HOME" ;;
+  self) echo "$RSP_NID" ;;                    # `rad self --nid`
+  ls)
+    priv=0; allf=0
+    for a in "$@"; do [ "$a" = --private ] && priv=1; [ "$a" = --all ] && allf=1; done
+    while IFS=$'\t' read -r rid name seeds vis own days size; do
+      [ -z "$rid" ] && continue
+      if   [ "$priv" = 1 ]; then [ "$vis" = private ] || continue
+      elif [ "$allf" = 0 ]; then [ "$own" = 1 ] || continue   # bare `rad ls` = our own repos
+      fi
+      printf '| %s rad:%s %s abc123 desc |\n' "$name" "$rid" "$vis"
+    done < "$RSP_MANIFEST"
+    ;;
+  node)
+    case "${1:-}" in
+      routing)
+        while IFS=$'\t' read -r rid name seeds vis own days size; do
+          [ -z "$rid" ] && continue
+          n=0; while [ "$n" -lt "${seeds:-0}" ]; do
+            printf '{"rid":"rad:%s","nid":"zo%s%02d"}\n' "$rid" "$rid" "$n"; n=$((n+1))
+          done
+        done < "$RSP_MANIFEST"
+        ;;
+      status) [ "${RSP_NODE_DOWN:-0}" = 1 ] && exit 1 || exit 0 ;;
+    esac
+    ;;
+  block)  echo "${1:-}" >> "$RSP_HOME/.stub_block" ;;
+  unseed) echo "${1:-}" >> "$RSP_HOME/.stub_unseed" ;;
+  *) : ;;
+esac

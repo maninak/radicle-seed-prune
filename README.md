@@ -2,6 +2,7 @@
 
 [![Sponsor maninak on Liberapay](https://img.shields.io/badge/Liberapay-Donate-F6C915?logo=liberapay&logoColor=black)](https://liberapay.com/maninak/donate)
 
+[![version](https://img.shields.io/github/v/release/maninak/radicle-seed-prune?sort=semver&label=version&color=44CC11)](https://github.com/maninak/radicle-seed-prune/releases/latest)
 [![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-orange.svg)](./LICENSE)
 [![Shell](https://img.shields.io/badge/shell-bash-121011.svg?logo=gnu-bash&logoColor=white)](./radicle-seed-prune)
 [![rad: - zxvTkxzouwrYFwycnsctrMT3iM2E](https://img.shields.io/static/v1?label=rad%3A&message=zxvTkxzouwrYFwycnsctrMT3iM2E&color=6666FF&cacheSeconds=64800)](https://app.radicle.at/nodes/seed.radicle.at/rad:zxvTkxzouwrYFwycnsctrMT3iM2E)
@@ -28,13 +29,25 @@ home (your seed account).
 ## Usage
 
 ```sh
-./radicle-seed-prune                  # dry-run: print the plan, change nothing
-./radicle-seed-prune --apply          # execute
-./radicle-seed-prune --apply --force  # execute even if the plan trips the runaway caps
-./radicle-seed-prune --apply --restart  # ...then restart the node to flush its inventory
+./radicle-seed-prune                  # preview (dry-run): print the plan, change nothing
+./radicle-seed-prune --apply          # apply — asks [y/N] first when run in a terminal
+./radicle-seed-prune --apply --yes    # apply without the prompt (scripts, or when you're sure)
+./radicle-seed-prune --apply --force  # apply even if the plan trips the runaway caps
+./radicle-seed-prune --apply --restart-node  # ...and restart the node afterwards to flush its inventory
+./radicle-seed-prune --version
 ```
 
-Always read the dry-run first. The plan is sorted largest-first and totals the disk it will free.
+Always read the preview first. The plan is sorted largest-first and totals the disk it will free.
+
+One rule: **no flag previews, `--apply` does it.** `--apply` scans once, prints the plan, and then:
+
+- in a terminal, asks `[y/N]` before deleting anything — answer yes to apply the plan you just saw;
+- non-interactively (cron, a pipe), it just applies, since there is nobody to answer.
+
+The single scan is the point: a dry-run to preview and then a separate `--apply` would scan the whole
+seed twice. Pass `--yes` (`-y`) to skip the prompt in a terminal. Confirming interactively also
+bypasses the runaway caps (you have seen the numbers); cron and `--yes` still respect them, so add
+`--force` to exceed them unattended.
 
 ### Example output (anonymized)
 
@@ -148,7 +161,8 @@ Every knob is an environment variable. Defaults shown.
 | `FRESH_GUARD_DAYS`   | `2`     | Skip repos written this recently                    |
 | `MAX_PRUNE_COUNT`    | `1000`  | Runaway guard: abort over this many repos           |
 | `MAX_PRUNE_GB`       | `80`    | Runaway guard: abort over this much disk            |
-| `SERVICE`            | `radicle-node` | systemd unit used by `--restart`            |
+| `SERVICE`            | `radicle-node` | systemd unit used by `--restart-node`            |
+| `JOBS`               | `cores-1` | Parallel workers for the activity scan            |
 | `DISK_AWARE`         | `1`     | Scale thresholds with free disk (`0` to disable)    |
 | `PRESSURE_RELAX_PCT` / `PRESSURE_RELAX_GB` | `20` / `20` | Above this much free: no pressure   |
 | `PRESSURE_CRIT_PCT` / `PRESSURE_CRIT_GB`   | `10` / `2`  | At/below `min()` of these: full pressure |
@@ -199,7 +213,19 @@ awk -F'\t' '/reclaimed/{n++; g+=$3} END{print n" runs, "g" GiB total"}' ~/.radic
 
 The node keeps running during a prune. After a large first run, one
 `sudo systemctl restart radicle-node` flushes the node's in-memory inventory of the removed repos
-(`--restart` does this for you when run with sufficient rights).
+(`--restart-node` does this for you when run with sufficient rights).
+
+## Development
+
+Run the test suite (needs only `bash`, `git`, and coreutils):
+
+```sh
+bash tests/run.sh
+```
+
+It builds a fully isolated, hermetic fixture — a throwaway Radicle home, a `rad` stub on `PATH`, and
+real bare git repos with controlled activity dates and sizes — so it never reads or writes the real
+node. See [`CHANGELOG.md`](./CHANGELOG.md) for release history.
 
 ## Support
 

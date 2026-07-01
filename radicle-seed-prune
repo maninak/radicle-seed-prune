@@ -56,13 +56,18 @@
 #   Per-run runaway caps abort a suspiciously large plan unless --force. The node is left
 #   running; deleting a blocked repo's dir live is safe. After a large first run, one
 #   `sudo systemctl restart radicle-node` flushes the node's in-memory inventory of the
-#   now-gone repos (optional; --restart does it for you if run with the rights to).
+#   now-gone repos (optional; --restart-node does it for you if run with the rights to).
 #
 # USAGE
-#   radicle-seed-prune                 # dry-run, print the plan
-#   radicle-seed-prune --apply         # execute
-#   radicle-seed-prune --apply --force # execute even if the plan trips the runaway caps
-#   radicle-seed-prune --apply --restart   # ...and restart the node service afterwards
+#   radicle-seed-prune                        # preview (dry-run), print the plan
+#   radicle-seed-prune --apply                # apply; asks [y/N] first when run in a terminal
+#   radicle-seed-prune --apply --yes          # apply without the prompt (scripts / cron)
+#   radicle-seed-prune --apply --force        # apply even if the plan trips the runaway caps
+#   radicle-seed-prune --apply --restart-node # ...and restart the node service afterwards
+#
+# --apply scans ONCE, prints the plan, then in a terminal asks before deleting; run non-interactively
+# (cron, a pipe) it just applies. Confirming interactively also bypasses the runaway caps. --yes (-y)
+# skips the prompt.
 #
 # Run as the user that owns the Radicle home (the seed account). Cron-safe: dry-run by
 # default, deterministic, and self-logging.
@@ -74,13 +79,15 @@
 
 set -euo pipefail
 
+VERSION="0.2.0"
+
 # ----------------------------------------------------------------------------- config (env-overridable)
 RAD="${RAD:-rad}"
 RAD_HOME="${RAD_HOME:-$("$RAD" path 2>/dev/null || echo "${HOME:?}/.radicle")}"
 STORAGE="${STORAGE:-$RAD_HOME/storage}"
 CONFIG="${CONFIG:-$RAD_HOME/config.json}"
 OUR_NID="${OUR_NID:-$("$RAD" self --nid 2>/dev/null || true)}"
-SERVICE="${SERVICE:-radicle-node}"          # systemd unit, used only by --restart
+SERVICE="${SERVICE:-radicle-node}"          # systemd unit, used only by --restart-node
 
 ABS_SIZE_FLOOR_MB="${ABS_SIZE_FLOOR_MB:-500}"   # rule B absolute floor
 REL_PCTL="${REL_PCTL:-95}"                       # rule B relative percentile
@@ -113,6 +120,11 @@ STALE_YEARS_DAYS_AGG="${STALE_YEARS_DAYS_AGG:-60}"
 MIN_OTHER_SEEDS_AGG="${MIN_OTHER_SEEDS_AGG:-1}"  # hard floor 1: never delete the last network copy
 
 AUDIT_DIR="${AUDIT_DIR:-$RAD_HOME/prune-audit}"
+# Parallel workers for the per-repo activity scan. Dynamic default: one per core, less one, so the
+# running node keeps a core free. Note the scan is usually IO-bound (a single du over all storage),
+# so raising this mostly helps on seeds with ref-heavy (COB-heavy) repos. Override via JOBS.
+_cores=$(nproc 2>/dev/null || echo 4)
+JOBS="${JOBS:-$(( _cores > 1 ? _cores - 1 : 1 ))}"
 
 # Disposable-name patterns. The generic tokens foo/bar/baz match only as a WHOLE name
 # (so "BAR_widget" is safe); everything else matches as a boundary-delimited word.
@@ -120,13 +132,15 @@ JUNK_WORD_REGEX='(^|[-_.])(test|tests|testing|delete|deleted|tmp|temp|scratch|pl
 JUNK_EXACT_REGEX='^(foo|bar|baz)$'
 
 # ----------------------------------------------------------------------------- args
-APPLY=0; FORCE=0; RESTART=0
+APPLY=0; FORCE=0; RESTART=0; YES=0
 for a in "$@"; do
   case "$a" in
-    --apply)   APPLY=1 ;;
-    --force)   FORCE=1 ;;
-    --restart) RESTART=1 ;;
-    --help|-h) sed -n '2,75p' "$0"; exit 0 ;;
+    --apply)        APPLY=1 ;;
+    --yes|-y)       YES=1 ;;
+    --force)        FORCE=1 ;;
+    --restart-node) RESTART=1 ;;
+    --version)      echo "radicle-seed-prune $VERSION"; exit 0 ;;
+    --help|-h)      sed -n '2,79p' "$0"; exit 0 ;;
     *) echo "unknown arg: $a (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -158,7 +172,7 @@ outlier_cut=$(( now - eff_outlier_days*86400 ))
 junk_cut=$(( now - eff_junk_days*86400 ))
 stale_cut=$(( now - eff_stale_days*86400 ))
 
-echo "# radicle-seed-prune  $(date -u +%FT%TZ)   mode=$([ $APPLY = 1 ] && echo APPLY || echo DRY-RUN)"
+echo "# radicle-seed-prune $VERSION  $(date -u +%FT%TZ)   mode=$([ $APPLY = 1 ] && echo APPLY || echo DRY-RUN)"
 echo "# home=$RAD_HOME"
 echo "# disk: $(awk -v a="$disk_avail" 'BEGIN{printf "%.1f",a/1e9}')GB free ($(awk -v a="$disk_avail" -v t="$disk_total" 'BEGIN{printf "%.1f",(t>0)?100*a/t:0}')%)  pressure=$(awk -v p="$p" 'BEGIN{printf "%.0f",p*100}')%  [relax>=$(awk -v r="$relax_free" 'BEGIN{printf "%.0f",r/1e9}')GB crit<=$(awk -v c="$crit_free" 'BEGIN{printf "%.0f",c/1e9}')GB]"
 echo "# rules: A junk(>${eff_junk_days}d, seeds>=${JUNK_MIN_SEEDS})  B size(>${eff_abs_mb}MB & >=P${eff_pctl}, >${eff_outlier_days}d, seeds>=${eff_seeds})  C stale(>${eff_stale_days}d, seeds>=${eff_seeds})"
@@ -195,19 +209,36 @@ fi
   | jq -r --arg us "$OUR_NID" 'select(.nid != $us) | (.rid|sub("^rad:";""))' \
   | sort | uniq -c | awk '{print $2"\t"$1}' > "$tmp/seeds" || true
 
-# ----------------------------------------------------------------------------- one pass: size, mtime, last-life for every repo
-echo "# scanning $(ls -1 "$STORAGE" | wc -l) repos (size + activity)..." >&2
-: > "$tmp/repos"   # rid \t size \t mtime \t life
-n=0
-for d in "$STORAGE"/*/; do
-  rid=$(basename "$d")
-  sz=$(du -sb --apparent-size "$d" 2>/dev/null | cut -f1); [ -z "$sz" ] && continue
-  mt=$(stat -c %Y "$d" 2>/dev/null || echo 0)
+# ----------------------------------------------------------------------------- scan: size, mtime, activity
+# Batch the cheap per-repo work into one process each (size via a single du, mtime via a single
+# find), and fan the one unavoidable per-repo call - `git for-each-ref` for last activity - across
+# $JOBS workers. Everything then goes into bash maps so the classify loop spawns nothing per repo.
+nrepos=$(find "$STORAGE" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+echo "# scanning $nrepos repos (size + activity), $JOBS parallel workers..." >&2
+
+find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null \
+  | xargs -0r du -sb --apparent-size 2>/dev/null > "$tmp/du"
+find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -printf '%f\t%T@\n' 2>/dev/null > "$tmp/mtimes"
+cat > "$tmp/life.sh" <<'LIFE'
+#!/usr/bin/env bash
+for d; do
   life=$(GIT_DIR="$d" git for-each-ref --sort=-creatordate --format='%(creatordate:unix)' --count=1 2>/dev/null | head -1)
-  [ -z "$life" ] && life=0
-  printf '%s\t%s\t%s\t%s\n' "$rid" "$sz" "$mt" "$life" >> "$tmp/repos"
-  n=$((n+1)); [ $((n % 1000)) = 0 ] && echo "#   ...$n" >&2
+  printf '%s\t%s\n' "${d##*/}" "${life:-0}"
 done
+LIFE
+find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null \
+  | xargs -0r -P "$JOBS" -n 64 bash "$tmp/life.sh" > "$tmp/lives"
+
+declare -A SIZE MTIME LIFE NAME SEEDS EXCL
+while IFS=$'\t' read -r sz path; do SIZE[${path##*/}]=$sz; done < "$tmp/du"
+while IFS=$'\t' read -r rid mt;   do MTIME[$rid]=${mt%.*}; done < "$tmp/mtimes"
+while IFS=$'\t' read -r rid lf;   do LIFE[$rid]=$lf; done < "$tmp/lives"
+while IFS=$'\t' read -r rid nm;   do NAME[$rid]=$nm; done < "$tmp/names"
+while IFS=$'\t' read -r rid s;    do SEEDS[$rid]=$s; done < "$tmp/seeds"
+while read -r r; do [ -n "$r" ] && EXCL[$r]=1; done < "$tmp/excluded"
+
+: > "$tmp/repos"   # rid \t size \t mtime \t life
+{ for rid in "${!SIZE[@]}"; do printf '%s\t%s\t%s\t%s\n' "$rid" "${SIZE[$rid]}" "${MTIME[$rid]:-0}" "${LIFE[$rid]:-0}"; done; } > "$tmp/repos"
 total_repos=$(wc -l < "$tmp/repos")
 
 # percentiles for the relative size cut + transparency
@@ -220,21 +251,19 @@ relcut=$(cut -f2 "$tmp/repos" | sort -n | awk -v p="$eff_pctl" '{a[NR]=$1} END{ 
 abscut=$(( eff_abs_mb * 1024 * 1024 ))
 echo "# repos=$total_repos  sizes P50=$((p50/1048576))M P90=$((p90/1048576))M P95=$((p95/1048576))M P99=$((p99/1048576))M  rel-cut(P${eff_pctl})=$((relcut/1048576))M  abs-cut=${eff_abs_mb}M"
 
-name_of(){ awk -F'\t' -v r="$1" '$1==r{print $2; exit}' "$tmp/names"; }
-seeds_of(){ awk -F'\t' -v r="$1" '$1==r{print $2; exit}' "$tmp/seeds"; }
-
-# ----------------------------------------------------------------------------- classify
+# ----------------------------------------------------------------------------- classify (map lookups + native bash regex; zero per-repo subprocesses)
 : > "$tmp/plan"   # rid \t size \t seeds \t life \t reason \t name
 while IFS=$'\t' read -r rid sz mt life; do
-  grep -qxF "$rid" "$tmp/excluded" && continue
+  [ -n "${EXCL[$rid]:-}" ] && continue                # pinned / private / own
   [ "$life" = 0 ] && continue                         # unknown age -> leave alone
   [ "$mt" -ge "$fresh_cut" ] && continue              # freshly written -> in-flight fetch
 
-  name=$(name_of "$rid"); [ -z "$name" ] && name='(?)'
-  seeds=$(seeds_of "$rid"); [ -z "$seeds" ] && seeds=0
+  name=${NAME[$rid]:-}; [ -z "$name" ] && name='(?)'
+  seeds=${SEEDS[$rid]:-0}
 
+  lname=${name,,}
   is_junk=0
-  if printf '%s' "$name" | grep -qiE "$JUNK_WORD_REGEX" || printf '%s' "$name" | grep -qiE "$JUNK_EXACT_REGEX"; then is_junk=1; fi
+  if [[ $lname =~ $JUNK_WORD_REGEX ]] || [[ $lname =~ $JUNK_EXACT_REGEX ]]; then is_junk=1; fi
   is_big=0; [ "$sz" -gt "$abscut" ] && [ "$sz" -ge "$relcut" ] && is_big=1
 
   reason=""
@@ -268,16 +297,40 @@ if [ "$APPLY" = 0 ]; then
   exit 0
 fi
 
+# --apply: the (slow) scan above ran ONCE. In a terminal, ask before deleting; non-interactively
+# (cron, a pipe) just apply. --yes skips the prompt. A yes here is the human sign-off that lets a run
+# bypass the runaway caps below.
+[ "$nplan" = 0 ] && { echo "# nothing to do"; exit 0; }
+CONFIRMED=0
+if [ "$YES" = 0 ]; then
+  prompt="# Apply now? unseed + block + DELETE $nplan repos, reclaiming ${gib} GiB [y/N] "
+  reply=""; asked=1
+  if [ -t 0 ]; then                                   # stdin is a terminal
+    printf '%s' "$prompt"; IFS= read -r reply || reply=""
+  elif { : >/dev/tty; } 2>/dev/null; then             # piped input but a terminal exists
+    printf '%s' "$prompt" >/dev/tty; IFS= read -r reply </dev/tty || reply=""
+  else
+    asked=0                                           # no terminal (cron/CI/pipe): don't prompt
+  fi
+  if [ "$asked" = 1 ]; then
+    case "$reply" in
+      [yY]|[yY][eE][sS]) CONFIRMED=1; echo "# confirmed." ;;
+      *)                 echo "# aborted; nothing changed."; exit 0 ;;
+    esac
+  fi
+fi
+
 # ----------------------------------------------------------------------------- apply
-if [ "$FORCE" = 0 ]; then
+# Runaway caps guard unattended runs. An interactive yes (CONFIRMED) is the human sign-off, so a
+# confirmed run bypasses them (you just eyeballed the exact numbers); --yes and cron still respect them.
+if [ "$FORCE" = 0 ] && [ "$CONFIRMED" = 0 ]; then
   over_gb=$(awk -v b="$bytes" -v m="$MAX_PRUNE_GB" 'BEGIN{print (b/1073741824 > m) ? 1 : 0}')
   if [ "$nplan" -gt "$MAX_PRUNE_COUNT" ] || [ "$over_gb" = 1 ]; then
     echo "# ABORT: plan ($nplan repos, ${gib} GiB) trips runaway caps (count=$MAX_PRUNE_COUNT gb=$MAX_PRUNE_GB)." >&2
-    echo "# Review it, then re-run with --force if this is intended." >&2
+    echo "# Review it, then re-run with --force (unattended), or confirm interactively." >&2
     exit 3
   fi
 fi
-[ "$nplan" = 0 ] && { echo "# nothing to do"; exit 0; }
 
 mkdir -p "$AUDIT_DIR"
 run_ts=$(date -u +%FT%TZ)
