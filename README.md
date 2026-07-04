@@ -33,7 +33,7 @@ home (your seed account).
 ./radicle-seed-prune --apply          # apply — asks [y/N] first when run in a terminal
 ./radicle-seed-prune --apply --yes    # apply without the prompt (scripts, or when you're sure)
 ./radicle-seed-prune --apply --force  # apply even if the plan trips the runaway caps
-./radicle-seed-prune --apply --restart-node  # ...and restart the node afterwards to flush its inventory
+./radicle-seed-prune --apply --restart-node  # ...and restart the node afterwards (clears the stale inventory-announce log warning)
 ./radicle-seed-prune --version
 ```
 
@@ -212,8 +212,10 @@ awk -F'\t' '/reclaimed/{n++; g+=$3} END{print n" runs, "g" GiB total"}' ~/.radic
 - **Audit log** records every deletion for review or scripted recovery.
 
 The node keeps running during a prune. After a large first run, one
-`sudo systemctl restart radicle-node` flushes the node's in-memory inventory of the removed repos
-(`--restart-node` does this for you when run with sufficient rights).
+`sudo systemctl restart radicle-node` clears the stale "inventory announce limit" warning from the
+node log (`--restart-node` does this for you when run with sufficient rights). On some heartwood
+versions `rad node inventory` may still list the removed RIDs afterwards; that is cosmetic, the
+repos are gone from disk and blocked from re-seeding.
 
 ## Development
 

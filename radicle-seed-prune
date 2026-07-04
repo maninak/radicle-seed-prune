@@ -55,8 +55,10 @@
 # SAFETY
 #   Per-run runaway caps abort a suspiciously large plan unless --force. The node is left
 #   running; deleting a blocked repo's dir live is safe. After a large first run, one
-#   `sudo systemctl restart radicle-node` flushes the node's in-memory inventory of the
-#   now-gone repos (optional; --restart-node does it for you if run with the rights to).
+#   `sudo systemctl restart radicle-node` clears the stale "inventory announce limit" log
+#   warning (optional; --restart-node does it for you if run with the rights to). On some
+#   heartwood versions `rad node inventory` may still list the removed RIDs afterwards; that
+#   is cosmetic, the repos are gone from disk and blocked from re-seeding.
 #
 # USAGE
 #   radicle-seed-prune                        # preview (dry-run), print the plan
@@ -353,7 +355,7 @@ while IFS=$'\t' read -r rid sz seeds life reason name; do
 done < "$tmp/plan.sorted"
 
 if [ "$RESTART" = 1 ]; then
-  echo "# restarting $SERVICE to flush inventory..."
+  echo "# restarting $SERVICE (clears the stale inventory-announce warning)..."
   systemctl restart "$SERVICE" 2>&1 || sudo systemctl restart "$SERVICE" 2>&1 || echo "# WARN restart failed; run: sudo systemctl restart $SERVICE" >&2
 fi
 
@@ -363,4 +365,4 @@ printf '%s\tdeleted=%s\treclaimed_gib=%s\tpressure=%s%%\taudit=%s\n' \
   >> "$AUDIT_DIR/history.log"
 
 echo "# DONE: deleted $deleted repos, reclaimed ~${gib} GiB. Audit: $audit"
-[ "$RESTART" = 1 ] || echo "# tip: run 'sudo systemctl restart $SERVICE' once to flush the node's inventory of the removed repos."
+[ "$RESTART" = 1 ] || echo "# tip: run 'sudo systemctl restart $SERVICE' once to clear the stale inventory-announce log warning."
