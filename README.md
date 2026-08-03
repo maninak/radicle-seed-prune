@@ -88,7 +88,7 @@ rad:zEXAMPLExxxxxxxxxxxxxxxxxxxx5      29.9MB     14      446 junk-name     test
 | Code | Meaning                                                                                   |
 | ---- | ----------------------------------------------------------------------------------------- |
 | `0`  | Success, including a dry-run and an `--apply` you declined at the prompt                   |
-| `1`  | No storage directory, or an unexpected failure (the run prints the line and the command)   |
+| `1`  | Storage directory missing or unreadable, or an unexpected failure (the run prints the line and the command) |
 | `2`  | Bad argument                                                                                |
 | `3`  | The plan tripped a runaway cap. Read it, then re-run with `--force`                        |
 | `5`  | Refused to guess: node unreachable, NID unknown, routing table empty, exclusions unreadable, or too much of storage could not be read |

@@ -30,10 +30,14 @@ was touched.
 
 - **One unreadable repo no longer kills the run.** A live node can delete a storage directory while
   `find` and `du` are walking it. That returned non-zero, met `set -e`, and took the whole run down.
-  Scan errors are now counted and reported, and the affected repos are dropped from the plan instead
-  of being judged on half-read size and age data.
-  *Looked like:* output stops dead after `# scanning N repos (size + activity)...`, exit 1 or 123,
-  no message at all.
+  Every walk in the scan now tolerates it, scan errors are counted and reported, and the affected
+  repos are dropped from the plan instead of being judged on half-read size and age data.
+  *Looked like:* output stops dead at or just before `# scanning N repos (size + activity)...`,
+  exit 1 or 123, no message at all.
+
+- **Storage the tool cannot read is an abort, not an empty plan.** Run as the wrong user (root
+  against a seed-owned home, say), it scanned zero repos and finished with a calm
+  `# PLAN: prune 0 repos` and exit `0`. It now stops with exit `1` and names the directory.
 
 - **Failures now say where they happened.** Any unexpected error prints the line number, the command
   that failed, and its exit status, instead of exiting mute.

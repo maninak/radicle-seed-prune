@@ -165,6 +165,24 @@ for r in zjunk1 zbig2 zbar8; do chmod 755 "$STORAGE/$r"; done
 { [ "$rc" = 5 ] && grep -q 'could not read 3 of 10 repos' <<<"$out" && ! grep -q '# PLAN:' <<<"$out"; } \
   && ok "blind scan aborts instead of reporting a small plan" || no "blind scan aborts (got exit $rc)"
 
+# --- every walk in the scan can fail mid-flight without taking the run down ---
+# Regression: the repo-counting walk was the one find call left unguarded, so on a busy seed the run
+# died at the very first line of the scan, before printing anything a bug report could use.
+shimdir="$ROOT/shim"; mkdir -p "$shimdir"; cp "$HERE/find-shim" "$shimdir/find"; chmod +x "$shimdir/find"
+out=$(PATH="$shimdir:$PATH" DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" 2>&1); rc=$?
+{ [ "$rc" = 0 ] && grep -q '# scanning 10 repos' <<<"$out" && has "$out" "zjunk1"; } \
+  && ok "a failing find in the scan is survived, not fatal" || no "failing find survived (got exit $rc)"
+grep -qE '^# WARN: [0-9]+ scan error' <<<"$out" && ok "a failing find is still reported as a scan error" || no "failing find reported"
+
+# --- storage we cannot read is an abort, never a serene empty plan ---
+# Running as the wrong user reads as zero repos, and zero repos reads as "nothing to do" rather than
+# "I could not look".
+chmod 000 "$STORAGE"
+out=$(DISK_AWARE=0 "$SCRIPT" 2>&1); rc=$?
+chmod 755 "$STORAGE"
+{ [ "$rc" = 1 ] && grep -q 'cannot read storage dir' <<<"$out" && ! grep -q '# PLAN:' <<<"$out"; } \
+  && ok "unreadable storage dir aborts (no empty plan)" || no "unreadable storage aborts (got exit $rc)"
+
 # --- fail-safe: node down aborts --apply before touching anything ---
 RSP_NODE_DOWN=1 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" --apply >/dev/null 2>&1; rc=$?
 [ "$rc" = 5 ] && ok "node-down aborts --apply (exit 5)" || no "node-down aborts --apply (got exit $rc)"

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Test double for `find`: forwards to the real one, then reports a vanished path and exits 1, which
+# is what GNU find does when a live node deletes a repo dir mid-walk. Put its dir first on PATH to
+# make every walk in the scan race-fail deterministically.
+set -uo pipefail
+real=$(PATH="$(getconf PATH)" command -v find)
+"$real" "$@"
+echo "find: '${1:-?}/zvanished99': No such file or directory" >&2
+exit 1

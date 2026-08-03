@@ -172,6 +172,8 @@ for a in "$@"; do
 done
 
 [ -d "$STORAGE" ] || { echo "no storage dir at $STORAGE" >&2; exit 1; }
+# Without this, an unreadable storage dir scans zero repos and reports a serene "prune 0 repos".
+{ [ -r "$STORAGE" ] && [ -x "$STORAGE" ]; } || { echo "cannot read storage dir $STORAGE (wrong user?)" >&2; exit 1; }
 [ -n "$OUR_NID" ] || echo "# WARN: could not determine our NID; seed counts will include us" >&2
 
 now=$(date +%s)
@@ -251,12 +253,13 @@ fi
 # Batch the cheap per-repo work into one process each (size via a single du, mtime via a single
 # find), and fan the one unavoidable per-repo call - `git for-each-ref` for last activity - across
 # $JOBS workers. Everything then goes into bash maps so the classify loop spawns nothing per repo.
-nrepos=$(find "$STORAGE" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
-echo "# scanning $nrepos repos (size + activity), $JOBS parallel workers..." >&2
-
 # The scan races a live node: a repo dir can vanish or turn unreadable mid-walk, and find/du then
 # exit non-zero. Collect those errors instead of discarding them, and never let one abort the run.
+# This counting walk races exactly like the four below it, so it gets the same treatment.
 scanerr="$tmp/scan-errors"; : > "$scanerr"
+nrepos=$(find "$STORAGE" -mindepth 1 -maxdepth 1 -type d 2>>"$scanerr" | wc -l) || true
+echo "# scanning $nrepos repos (size + activity), $JOBS parallel workers..." >&2
+
 find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -print0 2>>"$scanerr" \
   | xargs -0r du -sb --apparent-size 2>>"$scanerr" > "$tmp/du" || true
 find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -printf '%f\t%T@\n' 2>>"$scanerr" > "$tmp/mtimes" || true
