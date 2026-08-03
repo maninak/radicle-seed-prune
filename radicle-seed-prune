@@ -71,21 +71,44 @@
 # (cron, a pipe) it just applies. Confirming interactively also bypasses the runaway caps. --yes (-y)
 # skips the prompt.
 #
-# Run as the user that owns the Radicle home (the seed account). Cron-safe: dry-run by
-# default, deterministic, and self-logging.
+# ENVIRONMENT
+#   Everything is configured by environment variable - there are no tuning flags. RAD_HOME is the
+#   same variable heartwood itself reads, so this reads exactly like any other rad invocation:
+#
+#     RAD_HOME=/var/lib/radicle radicle-seed-prune            # a seed home that is not ours
+#     RAD=/nix/store/.../bin/rad RAD_HOME=/var/lib/radicle radicle-seed-prune
+#     JOBS=4 OUTLIER_STALE_DAYS=120 radicle-seed-prune        # any tunable in the config block
+#
+#   RAD (default: rad from PATH) and RAD_HOME (default: `rad path`, else ~/.radicle) locate the node;
+#   STORAGE, CONFIG and AUDIT_DIR derive from RAD_HOME. The rest of the config block below - every
+#   threshold, the pressure watermarks, JOBS, the runaway caps - is overridable the same way.
+#
+# Run as the user that owns the Radicle home (the seed account), or point RAD_HOME at it.
+# Cron-safe: dry-run by default, deterministic, and self-logging.
 #
 # Copyright (c) 2026 Konstantinos Maninakis (@maninak).
 # Licensed under the PolyForm Noncommercial License 1.0.0 - noncommercial use only,
 # attribution required (preserve these notices). See the LICENSE file. Commercial use needs
-# a separate license from the author.
+# a separate license from the author: info@radicle.tools
 
 set -euo pipefail
 
-VERSION="0.2.0"
+VERSION="0.3.0"
+
+# `set -e` on its own exits mute: a command failing anywhere below would end the run with a bare
+# non-zero status and nothing to debug from. Name the line, the command, and the status instead.
+report_error(){
+  echo "# ERROR: line $2: [$3] exited $1" >&2
+  exit "$1"
+}
+trap 'report_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
 
 # ----------------------------------------------------------------------------- config (env-overridable)
 RAD="${RAD:-rad}"
 RAD_HOME="${RAD_HOME:-$("$RAD" path 2>/dev/null || echo "${HOME:?}/.radicle")}"
+# rad reads the home from its ENVIRONMENT: unexported, every rad call below would query the
+# default home, come back empty, and silently force a plan of zero repos.
+export RAD_HOME
 STORAGE="${STORAGE:-$RAD_HOME/storage}"
 CONFIG="${CONFIG:-$RAD_HOME/config.json}"
 OUR_NID="${OUR_NID:-$("$RAD" self --nid 2>/dev/null || true)}"
@@ -102,6 +125,7 @@ FRESH_GUARD_DAYS="${FRESH_GUARD_DAYS:-2}"        # never delete a dir touched th
 
 MAX_PRUNE_COUNT="${MAX_PRUNE_COUNT:-1000}"       # runaway guards (abort unless --force)
 MAX_PRUNE_GB="${MAX_PRUNE_GB:-80}"
+MAX_SCAN_FAIL_PCT="${MAX_SCAN_FAIL_PCT:-10}"     # abort if this share of storage could not be read
 
 # --- disk-pressure adaptivity ---
 # The thresholds above are the RELAXED (plenty-of-space) values. As free disk on the storage
@@ -142,7 +166,7 @@ for a in "$@"; do
     --force)        FORCE=1 ;;
     --restart-node) RESTART=1 ;;
     --version)      echo "radicle-seed-prune $VERSION"; exit 0 ;;
-    --help|-h)      sed -n '2,79p' "$0"; exit 0 ;;
+    --help|-h)      awk 'NR==1{next} /^#/{print; next} {exit}' "$0"; exit 0 ;;
     *) echo "unknown arg: $a (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -189,11 +213,16 @@ jq -r '.web.pinned.repositories[]?' "$CONFIG" 2>/dev/null | sed 's/^rad://' | so
 cat "$tmp/pinned" "$tmp/private" "$tmp/own" 2>/dev/null | sort -u > "$tmp/excluded"
 echo "# excluded: $(wc -l < "$tmp/pinned") pinned, $(wc -l < "$tmp/private") private, $(wc -l < "$tmp/own") own"
 
-# fail-safe (apply only): if the node is unreachable, exclusions can come back empty and we could
-# delete our own/pinned repos. Bail out fast, before the scan, rather than prune on bad data.
+# fail-safe: with no reachable node the exclusion sets and seed counts all come back empty. Under
+# --apply that risks deleting our own/pinned repos; in dry-run it forces a plan of zero repos, which
+# reads as "nothing to prune" when it means "saw nothing at all". Bail out in BOTH modes, up front.
+mode=$([ "$APPLY" = 1 ] && echo apply || echo dry-run)
+"$RAD" node status >/dev/null 2>&1 \
+  || { echo "# ABORT($mode): node not reachable via '$RAD' (home=$RAD_HOME); rad queries unusable." >&2; exit 5; }
+[ -n "$OUR_NID" ] \
+  || { echo "# ABORT($mode): could not determine our NID via '$RAD' (home=$RAD_HOME)." >&2; exit 5; }
+
 if [ "$APPLY" = 1 ]; then
-  "$RAD" node status >/dev/null 2>&1 || { echo "# ABORT(apply): node not running; rad queries unreliable." >&2; exit 5; }
-  [ -n "$OUR_NID" ] || { echo "# ABORT(apply): could not determine our NID." >&2; exit 5; }
   npin_cfg=$(jq -r '.web.pinned.repositories[]?' "$CONFIG" 2>/dev/null | wc -l)
   [ "$npin_cfg" -gt 0 ] && [ "$(wc -l < "$tmp/pinned")" = 0 ] && { echo "# ABORT(apply): pinned in config but none parsed; exclusion fetch failed." >&2; exit 5; }
 fi
@@ -210,6 +239,13 @@ fi
 "$RAD" node routing --json 2>/dev/null \
   | jq -r --arg us "$OUR_NID" 'select(.nid != $us) | (.rid|sub("^rad:";""))' \
   | sort | uniq -c | awk '{print $2"\t"$1}' > "$tmp/seeds" || true
+# Every rule gates on the other-seed count, so an empty routing table can only ever produce an empty
+# plan. Say so, instead of scanning the whole seed to report a misleading "prune 0 repos".
+[ -s "$tmp/seeds" ] || {
+  echo "# ABORT($mode): routing table empty via '$RAD' (home=$RAD_HOME)." >&2
+  echo "# Every rule gates on the other-seed count, so no repo could qualify." >&2
+  exit 5
+}
 
 # ----------------------------------------------------------------------------- scan: size, mtime, activity
 # Batch the cheap per-repo work into one process each (size via a single du, mtime via a single
@@ -218,9 +254,12 @@ fi
 nrepos=$(find "$STORAGE" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
 echo "# scanning $nrepos repos (size + activity), $JOBS parallel workers..." >&2
 
-find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null \
-  | xargs -0r du -sb --apparent-size 2>/dev/null > "$tmp/du"
-find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -printf '%f\t%T@\n' 2>/dev/null > "$tmp/mtimes"
+# The scan races a live node: a repo dir can vanish or turn unreadable mid-walk, and find/du then
+# exit non-zero. Collect those errors instead of discarding them, and never let one abort the run.
+scanerr="$tmp/scan-errors"; : > "$scanerr"
+find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -print0 2>>"$scanerr" \
+  | xargs -0r du -sb --apparent-size 2>>"$scanerr" > "$tmp/du" || true
+find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -printf '%f\t%T@\n' 2>>"$scanerr" > "$tmp/mtimes" || true
 cat > "$tmp/life.sh" <<'LIFE'
 #!/usr/bin/env bash
 for d; do
@@ -228,16 +267,34 @@ for d; do
   printf '%s\t%s\n' "${d##*/}" "${life:-0}"
 done
 LIFE
-find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null \
-  | xargs -0r -P "$JOBS" -n 64 bash "$tmp/life.sh" > "$tmp/lives"
+find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -print0 2>>"$scanerr" \
+  | xargs -0r -P "$JOBS" -n 64 bash "$tmp/life.sh" > "$tmp/lives" || true
 
-declare -A SIZE MTIME LIFE NAME SEEDS EXCL
+# A repo we could not fully read has an untrustworthy size and age, so exclude it from the plan
+# rather than judge it on partial data. find and du name the offending path, so take the component
+# right after $STORAGE/ instead of pattern-matching a rid: exact for any rid length, and literal
+# even where the path itself holds glob characters.
+while IFS= read -r line; do
+  rid=${line#*"$STORAGE/"}
+  [ "$rid" = "$line" ] && continue          # this error is not about a repo dir
+  rid=${rid%%/*}; rid=${rid%%\'*}           # first component, minus find/du's closing quote
+  case "$rid" in ?*) printf '%s\n' "$rid" ;; esac
+done < "$scanerr" | sort -u > "$tmp/scanfail"
+nscanerr=$(wc -l < "$scanerr"); nscanfail=$(wc -l < "$tmp/scanfail")
+if [ "$nscanerr" -gt 0 ]; then
+  echo "# WARN: $nscanerr scan error(s); $nscanfail repo(s) unreadable -> excluded from the plan:" >&2
+  head -3 "$scanerr" | sed 's/^/#   /' >&2
+  [ "$nscanerr" -gt 3 ] && echo "#   ...and $((nscanerr - 3)) more" >&2
+fi
+
+declare -A SIZE MTIME LIFE NAME SEEDS EXCL SCANFAIL
 while IFS=$'\t' read -r sz path; do SIZE[${path##*/}]=$sz; done < "$tmp/du"
 while IFS=$'\t' read -r rid mt;   do MTIME[$rid]=${mt%.*}; done < "$tmp/mtimes"
 while IFS=$'\t' read -r rid lf;   do LIFE[$rid]=$lf; done < "$tmp/lives"
 while IFS=$'\t' read -r rid nm;   do NAME[$rid]=$nm; done < "$tmp/names"
 while IFS=$'\t' read -r rid s;    do SEEDS[$rid]=$s; done < "$tmp/seeds"
 while read -r r; do [ -n "$r" ] && EXCL[$r]=1; done < "$tmp/excluded"
+while read -r r; do [ -n "$r" ] && SCANFAIL[$r]=1; done < "$tmp/scanfail"
 
 : > "$tmp/repos"   # rid \t size \t mtime \t life
 { for rid in "${!SIZE[@]}"; do printf '%s\t%s\t%s\t%s\n' "$rid" "${SIZE[$rid]}" "${MTIME[$rid]:-0}" "${LIFE[$rid]:-0}"; done; } > "$tmp/repos"
@@ -255,7 +312,9 @@ echo "# repos=$total_repos  sizes P50=$((p50/1048576))M P90=$((p90/1048576))M P9
 
 # ----------------------------------------------------------------------------- classify (map lookups + native bash regex; zero per-repo subprocesses)
 : > "$tmp/plan"   # rid \t size \t seeds \t life \t reason \t name
+nblind=0
 while IFS=$'\t' read -r rid sz mt life; do
+  [ -n "${SCANFAIL[$rid]:-}" ] && { nblind=$((nblind+1)); continue; }   # size and age untrustworthy
   [ -n "${EXCL[$rid]:-}" ] && continue                # pinned / private / own
   [ "$life" = 0 ] && continue                         # unknown age -> leave alone
   [ "$mt" -ge "$fresh_cut" ] && continue              # freshly written -> in-flight fetch
@@ -276,6 +335,16 @@ while IFS=$'\t' read -r rid sz mt life; do
   [ -z "$reason" ] && continue
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$rid" "$sz" "$seeds" "$life" "$reason" "$name" >> "$tmp/plan"
 done < "$tmp/repos"
+
+# A scan that missed a big share of storage produces a small plan, not an accurate one, and a small
+# plan reads like good news. Refuse to report one. Repos that vanished mid-walk never reached
+# $tmp/repos at all, unreadable ones did but with untrustworthy numbers; both are blind spots.
+blind=$(( nrepos - total_repos + nblind ))
+[ "$blind" -le $(( nrepos * MAX_SCAN_FAIL_PCT / 100 )) ] || {
+  echo "# ABORT($mode): could not read $blind of $nrepos repos (limit ${MAX_SCAN_FAIL_PCT}%)." >&2
+  echo "# A plan from a scan this blind would look small for the wrong reason." >&2
+  exit 5
+}
 
 # ----------------------------------------------------------------------------- report
 sort -t$'\t' -k2,2nr "$tmp/plan" > "$tmp/plan.sorted"
@@ -349,10 +418,17 @@ while IFS=$'\t' read -r rid sz seeds life reason name; do
   "$RAD" block  "rad:$rid" >/dev/null 2>&1 || { echo "#   WARN block failed, skipping delete: $rid" >&2; continue; }
   d="$STORAGE/$rid"
   case "$d" in
-    "$STORAGE"/z*) rm -rf -- "$d" && deleted=$((deleted+1)) ;;
+    "$STORAGE"/z*) rm -rf -- "$d" && deleted=$((deleted+1)) || echo "#   WARN delete failed: $d" >&2 ;;
     *) echo "#   SKIP unsafe path: $d" >&2 ;;
   esac
 done < "$tmp/plan.sorted"
+
+# The audit log and the GiB total were both written from the PLAN. If deletions failed, saying
+# nothing here would leave a record claiming disk was reclaimed that never was.
+[ "$deleted" = "$nplan" ] || {
+  echo "# WARN: $((nplan - deleted)) of $nplan deletions failed; less than ${gib} GiB was reclaimed." >&2
+  echo "# The audit log lists the plan, not what actually got deleted." >&2
+}
 
 if [ "$RESTART" = 1 ]; then
   echo "# restarting $SERVICE (clears the stale inventory-announce warning)..."

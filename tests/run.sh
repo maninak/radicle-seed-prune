@@ -114,6 +114,57 @@ has "$plan_hi" "zbwid9" && ok "pressure prunes a repo that was kept at p=0"   ||
 has "$plan_hi" "zfews5" && ok "pressure drops seed gate to 1 (under-seeded now pruned)" || no "pressure drops seed gate"
 ! has "$plan_hi" "zfresh4" && ok "pressure still keeps a fresh repo"          || no "pressure keeps fresh repo"
 
+# --- RAD_HOME reaches rad as ENVIRONMENT, not just as a shell variable ---
+# Regression: the script resolved RAD_HOME but never exported it, so every rad call queried the
+# default home instead, came back empty, and forced a plan of zero repos. Unset it in the caller so
+# the only way the stub can see it is the script exporting what it resolved from `rad path`.
+: > "$RSP_HOME/.stub_radhome"
+env -u RAD_HOME DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" >/dev/null 2>&1; rc=$?
+{ grep -qxF "$RSP_HOME" "$RSP_HOME/.stub_radhome" && [ "$rc" = 0 ]; } \
+  && ok "resolved RAD_HOME is exported to rad" || no "resolved RAD_HOME is exported to rad (rc=$rc)"
+
+# --- an unexpected failure names the line and the command instead of exiting silently ---
+# Regression: `set -e` plus muted stderr meant any hiccup exited non-zero with no output whatsoever,
+# which is undebuggable from a bug report. Inject a failure and demand a diagnosable message.
+inj="$ROOT/injected-failure"; sed 's|^nrepos=|false  # injected\nnrepos=|' "$SCRIPT" > "$inj"; chmod +x "$inj"
+out=$(DISK_AWARE=0 "$inj" 2>&1); rc=$?
+{ [ "$rc" != 0 ] && grep -qE '^# ERROR: line [0-9]+: \[false' <<<"$out"; } \
+  && ok "unexpected failure reports line + command" || no "unexpected failure reports line + command (rc=$rc)"
+
+# --- blind runs abort instead of reporting a reassuring, meaningless "prune 0 repos" ---
+out=$(RSP_NODE_DOWN=1 DISK_AWARE=0 "$SCRIPT" 2>&1); rc=$?
+{ [ "$rc" = 5 ] && grep -q 'ABORT(dry-run)' <<<"$out" && ! grep -q '# PLAN:' <<<"$out"; } \
+  && ok "node-down aborts dry-run too (exit 5, no plan)" || no "node-down aborts dry-run (got exit $rc)"
+
+out=$(RSP_NO_ROUTING=1 DISK_AWARE=0 "$SCRIPT" 2>&1); rc=$?
+{ [ "$rc" = 5 ] && grep -q 'routing table empty' <<<"$out" && ! grep -q '# PLAN:' <<<"$out"; } \
+  && ok "empty routing table aborts (exit 5, no plan)" || no "empty routing aborts (got exit $rc)"
+
+# --- an unreadable repo survives the scan: reported and excluded, never fatal ---
+# Regression: du hit one unreadable dir, xargs returned 123, and `set -e` killed the whole run with
+# no output at all. The unreadable dir is INSIDE the repo, so its refs stay readable and ztwoyr3
+# still looks prunable on age - only the scan-error exclusion keeps it out of the plan.
+mkdir -p "$STORAGE/ztwoyr3/unreadable" && chmod 000 "$STORAGE/ztwoyr3/unreadable"
+touch -d "10 days ago" "$STORAGE/ztwoyr3"   # creating the subdir bumped mtime; keep it out of the
+                                            # freshness guard so ONLY the scan-error rule excludes it
+# a high blind-scan limit, so this tests the per-repo exclusion and not the aggregate guard below
+out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 MAX_SCAN_FAIL_PCT=50 "$SCRIPT" 2>&1); rc=$?
+chmod 755 "$STORAGE/ztwoyr3/unreadable"; rmdir "$STORAGE/ztwoyr3/unreadable"
+{ [ "$rc" = 0 ] && grep -q '# PLAN:' <<<"$out"; } \
+  && ok "unreadable repo does not abort the scan" || no "unreadable repo does not abort the scan (got exit $rc)"
+grep -qE '^# WARN: [0-9]+ scan error' <<<"$out" && ok "scan errors are reported, not swallowed" || no "scan errors reported"
+{ ! has "$out" "ztwoyr3" && has "$out" "zjunk1"; } \
+  && ok "unreadable repo excluded from plan, others still planned" || no "unreadable repo excluded from plan"
+
+# --- a scan that missed too much of storage refuses to report a plan at all ---
+# Three unreadable repos out of ten, against a 10% limit. Without this the run would report a
+# plausible-looking small plan built from a scan that never saw a third of the seed.
+for r in zjunk1 zbig2 zbar8; do chmod 000 "$STORAGE/$r"; done
+out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 MAX_SCAN_FAIL_PCT=10 "$SCRIPT" 2>&1); rc=$?
+for r in zjunk1 zbig2 zbar8; do chmod 755 "$STORAGE/$r"; done
+{ [ "$rc" = 5 ] && grep -q 'could not read 3 of 10 repos' <<<"$out" && ! grep -q '# PLAN:' <<<"$out"; } \
+  && ok "blind scan aborts instead of reporting a small plan" || no "blind scan aborts (got exit $rc)"
+
 # --- fail-safe: node down aborts --apply before touching anything ---
 RSP_NODE_DOWN=1 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" --apply >/dev/null 2>&1; rc=$?
 [ "$rc" = 5 ] && ok "node-down aborts --apply (exit 5)" || no "node-down aborts --apply (got exit $rc)"
@@ -126,6 +177,19 @@ gone=1; for r in zjunk1 zbig2 ztwoyr3 zbar8;                do [ -e "$STORAGE/$r
 kept=1; for r in zfresh4 zpin6 zpriv7 zown22 zbwid9 zfews5; do [ -e "$STORAGE/$r" ] || kept=0; done
 { [ "$gone" = 1 ] && [ "$kept" = 1 ]; } && ok "non-interactive --apply prunes exactly the plan" || no "non-interactive --apply prunes the plan"
 { [ -s "$RSP_HOME/.stub_block" ] && [ -s "$RSP_HOME/.stub_unseed" ]; } && ok "apply calls rad unseed + block" || no "apply calls unseed+block"
+
+# --- a failed deletion is never reported as reclaimed disk ---
+# A read-only storage dir lets the whole plan compute, then makes every rm fail. The audit log and
+# the GiB total are both written from the plan, so silence here would record disk that never freed.
+build_fixture; assert_isolated
+before=$(ls "$STORAGE" | wc -l)
+chmod 555 "$STORAGE"
+out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
+chmod 755 "$STORAGE"
+after=$(ls "$STORAGE" | wc -l)
+{ [ "$before" = "$after" ] && grep -q 'WARN delete failed' <<<"$out" \
+    && grep -qE 'WARN: [0-9]+ of [0-9]+ deletions failed' <<<"$out" && grep -q 'DONE: deleted 0 repos' <<<"$out"; } \
+  && ok "failed deletions are reported, not counted as reclaimed" || no "failed deletions reported (rc=$rc)"
 
 # interactive prompt via a pty (needs util-linux `script`): n aborts, y applies.
 if command -v script >/dev/null 2>&1; then

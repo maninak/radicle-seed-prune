@@ -6,6 +6,64 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-03
+
+Reliability release. Every way the tool could report a confident answer it had not earned is now
+closed: it either has the data, or it says so and stops. No pruning rule changed, so a plan from a
+healthy 0.2.0 run is still a valid plan.
+
+> **Re-run if you used `RAD_HOME`.** On 0.2.0, pointing the tool at a Radicle home other than the
+> calling user's own reported `prune 0 repos` no matter what was on disk. That was this bug, not a
+> tidy seed.
+
+**Upgrading:** replace the script, change nothing else. One caveat for automation: a dry-run can now
+exit `5` (it previously only exited `0` or `1`). Exit 5 means the tool refused to guess, and nothing
+was touched.
+
+### Fixed
+
+- **`RAD_HOME` now reaches `rad`.** It was resolved but never exported, so every `rad` call queried
+  the *default* home, found nothing, and left the other-seed count at zero for every repo. All three
+  rules gate on that count, so the plan could only ever come out empty.
+  *Looked like:* `# WARN: could not determine our NID`, `excluded: 0 private, 0 own`, then a
+  confident `# PLAN: prune 0 repos`.
+
+- **One unreadable repo no longer kills the run.** A live node can delete a storage directory while
+  `find` and `du` are walking it. That returned non-zero, met `set -e`, and took the whole run down.
+  Scan errors are now counted and reported, and the affected repos are dropped from the plan instead
+  of being judged on half-read size and age data.
+  *Looked like:* output stops dead after `# scanning N repos (size + activity)...`, exit 1 or 123,
+  no message at all.
+
+- **Failures now say where they happened.** Any unexpected error prints the line number, the command
+  that failed, and its exit status, instead of exiting mute.
+
+- **A failed deletion is no longer reported as reclaimed disk.** Under `--apply`, each failed `rm` is
+  named, and the run warns when fewer repos were deleted than planned. Both the audit log and the
+  GiB total are written from the plan, so a partially-applied run used to leave a record claiming
+  disk that was never freed. The audit log still lists the plan, not the outcome.
+
+### Added
+
+- **`MAX_SCAN_FAIL_PCT`** (default `10`). If more than this share of storage could not be read, the
+  run aborts instead of reporting a plan. A scan that missed a third of the seed produces a small
+  plan, and a small plan reads like good news, so the number needs a floor under it.
+
+### Changed
+
+- **A blind run aborts (exit 5) instead of reporting "prune 0 repos".** The preflight (node
+  reachable, NID resolvable, routing table non-empty) used to run only under `--apply`. Dry-run now
+  checks it too: with no usable routing table no repo can qualify, so a zero-repo plan was not an
+  all-clear, it was the tool failing quietly.
+
+- **Environment variables are documented** in `--help` and the README: `RAD`, `RAD_HOME`, and every
+  threshold. There are deliberately no tuning flags. `RAD_HOME` is the variable heartwood itself
+  reads, so a run reads like any other `rad` invocation:
+  `RAD_HOME=/var/lib/radicle radicle-seed-prune`.
+
+- **`--help` prints the full header** rather than a hardcoded line range that quietly drifted out of
+  date whenever the header grew.
+
 ## [0.2.0] - 2026-07-01
 
 ### Added
@@ -44,6 +102,7 @@ All notable changes to this project are documented here. The format is based on
 - `--restart` to flush the node inventory after a large run; a weekly `cron.d` recipe.
 - PolyForm Noncommercial 1.0.0 license.
 
-[Unreleased]: https://github.com/maninak/radicle-seed-prune/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/maninak/radicle-seed-prune/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/maninak/radicle-seed-prune/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/maninak/radicle-seed-prune/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/maninak/radicle-seed-prune/releases/tag/v0.1.0

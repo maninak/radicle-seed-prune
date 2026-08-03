@@ -39,6 +39,17 @@ home (your seed account).
 
 Always read the preview first. The plan is sorted largest-first and totals the disk it will free.
 
+Run it as the user that owns the Radicle home, or point `RAD_HOME` at one. That is the same variable
+heartwood itself reads, so a run reads like any other `rad` invocation, and `RAD` picks the binary:
+
+```sh
+RAD_HOME=/var/lib/radicle ./radicle-seed-prune                          # a seed home that isn't yours
+RAD=/nix/store/.../bin/rad RAD_HOME=/var/lib/radicle ./radicle-seed-prune # ...and a specific rad
+```
+
+There are deliberately no tuning flags: every knob is an environment variable, listed under
+[Configuration](#configuration).
+
 One rule: **no flag previews, `--apply` does it.** `--apply` scans once, prints the plan, and then:
 
 - in a terminal, asks `[y/N]` before deleting anything — answer yes to apply the plan you just saw;
@@ -71,6 +82,19 @@ rad:zEXAMPLExxxxxxxxxxxxxxxxxxxx5      29.9MB     14      446 junk-name     test
 #   stale           649 repos      5.69 GiB
 # DRY-RUN: nothing changed. Re-run with --apply to execute.
 ```
+
+### Exit codes
+
+| Code | Meaning                                                                                   |
+| ---- | ----------------------------------------------------------------------------------------- |
+| `0`  | Success, including a dry-run and an `--apply` you declined at the prompt                   |
+| `1`  | No storage directory, or an unexpected failure (the run prints the line and the command)   |
+| `2`  | Bad argument                                                                                |
+| `3`  | The plan tripped a runaway cap. Read it, then re-run with `--force`                        |
+| `5`  | Refused to guess: node unreachable, NID unknown, routing table empty, exclusions unreadable, or too much of storage could not be read |
+
+Exit 5 always means the tool could not see enough to be trusted, never that there was nothing to do.
+Nothing was touched.
 
 ## How a prune works
 
@@ -151,6 +175,8 @@ Every knob is an environment variable. Defaults shown.
 
 | Variable             | Default | Meaning                                            |
 | -------------------- | ------- | -------------------------------------------------- |
+| `RAD`                | `rad`   | The rad binary to call                              |
+| `RAD_HOME`           | `rad path`, else `~/.radicle` | Radicle home to operate on; `STORAGE`, `CONFIG` and `AUDIT_DIR` derive from it |
 | `ABS_SIZE_FLOOR_MB`  | `500`   | Rule B absolute size floor                          |
 | `REL_PCTL`           | `95`    | Rule B relative size percentile                     |
 | `OUTLIER_STALE_DAYS` | `90`    | Rule B staleness                                    |
@@ -161,6 +187,7 @@ Every knob is an environment variable. Defaults shown.
 | `FRESH_GUARD_DAYS`   | `2`     | Skip repos written this recently                    |
 | `MAX_PRUNE_COUNT`    | `1000`  | Runaway guard: abort over this many repos           |
 | `MAX_PRUNE_GB`       | `80`    | Runaway guard: abort over this much disk            |
+| `MAX_SCAN_FAIL_PCT`  | `10`    | Abort if more than this share of storage could not be read |
 | `SERVICE`            | `radicle-node` | systemd unit used by `--restart-node`            |
 | `JOBS`               | `cores-1` | Parallel workers for the activity scan            |
 | `DISK_AWARE`         | `1`     | Scale thresholds with free disk (`0` to disable)    |
@@ -239,11 +266,34 @@ If this saved you some disk space, some time, and a few bucks on your VPS bill, 
 
 [![Sponsor maninak on Liberapay](https://img.shields.io/badge/Liberapay-Donate-F6C915?logo=liberapay&logoColor=black)](https://liberapay.com/maninak/donate)
 
+## Commercial use
+
+The license is noncommercial, and the intent behind it is narrow: keep the script from being
+repackaged and sold. It is not meant to get in the way of anyone running a seed.
+
+**Free, no need to ask:**
+
+- Personal use, hobby projects, research, experiments, and testing.
+- Charitable organizations, educational institutions, public research organizations, public safety
+  or health organizations, environmental protection organizations, and government institutions,
+  regardless of how they are funded.
+
+So running a public seed as an individual, a collective, or a nonprofit is free, and always will be.
+
+**Needs a separate license:**
+
+- For-profit companies, including running it only on your own infrastructure to cut your own hosting
+  bill. Nothing has to be sold for the use to count as commercial.
+
+If that is you, or you are not sure which side of the line you land on, email
+[info@radicle.tools](mailto:info@radicle.tools). It is usually a short conversation, and I would
+much rather say yes than have you guess.
+
 ## License
 
 [PolyForm Noncommercial License 1.0.0](./LICENSE). Free to use, modify, and share for any
 **noncommercial** purpose; you must preserve the copyright and required-notice lines (attribution).
-**Commercial use is not permitted** without a separate license. For commercial licensing, contact
-the author.
+**Commercial use is not permitted** without a separate license. For commercial licensing, email
+[info@radicle.tools](mailto:info@radicle.tools).
 
 Built by Kostis ([@maninak](https://github.com/maninak)).

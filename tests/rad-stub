@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Test double for `rad`, driven by env: RSP_HOME, RSP_NID, RSP_MANIFEST, RSP_NODE_DOWN.
-# Manifest columns: rid  name  seeds  vis  own  days  size
+# Test double for `rad`, driven by env: RSP_HOME, RSP_NID, RSP_MANIFEST, RSP_NODE_DOWN,
+# RSP_NO_ROUTING. Manifest columns: rid  name  seeds  vis  own  days  size
 set -uo pipefail
+# Real rad takes its home from the ENVIRONMENT, so record what we were actually handed: that is the
+# only way a test can tell an exported RAD_HOME from one the script merely set as a shell variable.
+printf '%s\n' "${RAD_HOME:-<unset>}" >> "$RSP_HOME/.stub_radhome"
 sub="${1:-}"; shift || true
 case "$sub" in
   path) echo "$RSP_HOME" ;;
@@ -20,12 +23,14 @@ case "$sub" in
   node)
     case "${1:-}" in
       routing)
-        while IFS=$'\t' read -r rid name seeds vis own days size; do
-          [ -z "$rid" ] && continue
-          n=0; while [ "$n" -lt "${seeds:-0}" ]; do
-            printf '{"rid":"rad:%s","nid":"zo%s%02d"}\n' "$rid" "$rid" "$n"; n=$((n+1))
-          done
-        done < "$RSP_MANIFEST"
+        if [ "${RSP_NO_ROUTING:-0}" != 1 ]; then
+          while IFS=$'\t' read -r rid name seeds vis own days size; do
+            [ -z "$rid" ] && continue
+            n=0; while [ "$n" -lt "${seeds:-0}" ]; do
+              printf '{"rid":"rad:%s","nid":"zo%s%02d"}\n' "$rid" "$rid" "$n"; n=$((n+1))
+            done
+          done < "$RSP_MANIFEST"
+        fi
         ;;
       status) [ "${RSP_NODE_DOWN:-0}" = 1 ] && exit 1 || exit 0 ;;
     esac
