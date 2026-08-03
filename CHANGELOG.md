@@ -12,10 +12,6 @@ Reliability release. Every way the tool could report a confident answer it had n
 closed: it either has the data, or it says so and stops. No pruning rule changed, so a plan from a
 healthy 0.2.0 run is still a valid plan.
 
-> **Re-run if you used `RAD_HOME`.** On 0.2.0, pointing the tool at a Radicle home other than the
-> calling user's own reported `prune 0 repos` no matter what was on disk. That was this bug, not a
-> tidy seed.
-
 **Upgrading:** replace the script, change nothing else. One caveat for automation: a dry-run can now
 exit `5` (it previously only exited `0` or `1`). Exit 5 means the tool refused to guess, and nothing
 was touched.
