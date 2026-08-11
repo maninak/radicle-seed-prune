@@ -2,6 +2,28 @@
 
 All notable changes to this project are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Adds rule E, which catches spam by the address a repo sends traffic to rather than by how it is named, and changes rule D to measure age from when a repo was created instead of from its last activity. The `spam-family` verdict is renamed to `spam-batch`.
+
+**Upgrading:** replace the script, change nothing else. Rule E is new and on by default, so read the preview before applying. If you grep plans or audit logs for `spam-family`, change it to `spam-batch`.
+
+### Added
+
+- **Rule E, link farms.** A link farm is a repo published to carry links rather than code. The tool collects every hostname mentioned anywhere in every repo, folds each to its registrable domain, and calls a domain spam when many repos link to it but almost none of their own code does. A repo is pruned when its own delegates link it to `LINK_MIN_SCORE` such domains; a stranger opening spam issues on your repo cannot get it deleted. Both counts are recomputed from storage every run, so there is no blocklist to maintain and registering new domains buys a spammer nothing. `LINK_SCAN=0` turns the rule off, and with it the only part of a run that reads file content. Like `spam-batch`, `link-farm` defaults to a seed floor of `0` and so may delete a repo no other node we know of is seeding; `LINK_MIN_SEEDS=1` restores a floor. [How it works, and what it deliberately does not do](./README.md#rule-e-link-farms).
+
+- **A creation-date ledger, `$RAD_HOME/prune-audit/first-seen.tsv`.** Every date inside a repo is set by whoever pushed it, so force-pushing fresh dates onto every ref would renew rules D and E indefinitely. The tool now records when it first saw each repo, on every run including dry ones, and takes the older of that and the repo's oldest ref date. Nothing outside the seed can reach the ledger. Without it the tool still runs, on ref dates alone, and says so.
+
+- **The plan reports what the run left alone**, as a `# skipped:` line counting the repos that were unreadable, written too recently, or had no readable refs. These were previously absent with no explanation.
+
+### Changed
+
+- **`spam-family` is now `spam-batch`** and `SPAM_MIN_FAMILY` is now `SPAM_MIN_BATCH`. Same rule, plainer name.
+
+- **Rule D measures age from a repo's creation, not its last activity.** The spam wave this was written against appends a comment to its own repos every few days, which resets a last-activity clock. On a real seed that spared the whole wave: repos six days into a seven-day window, missed by one day, every day. Rules A, B and C still measure last activity, because for a legitimate repo being touched is exactly what a staleness rule should notice.
+
+- **The plan's `AGE(d)` column shows the age the matching rule measured**: days since last activity for rules A to C, days since creation for D and E. A `spam-batch` repo touched yesterday used to print `1` next to a 7-day minimum, which read as a bug rather than as the verdict it is. Each per-run audit log gains a final `age_from_unix` column carrying the same date; the existing columns keep their positions.
+
 ## [0.4.0] - 2026-08-11
 
 Adds rule D, which catches mass-generated spam repos, splits rule A by how strong its evidence is, lets the two conclusive spam verdicts take the last copy we know of, and fixes a metadata parsing bug that could file a repo under the wrong RID.
@@ -10,7 +32,7 @@ Adds rule D, which catches mass-generated spam repos, splits rule A by how stron
 
 ### Added
 
-- **Rule D, spam families.** Bulk-generated repos give nothing away one at a time and are obvious in aggregate, so this rule is decided by the corpus, never by a single repo. Names and descriptions are skeletonised (digit runs to `#`, random-id tokens to `%`), and a repo is pruned only when its name skeleton carries a random-id slot, at least `SPAM_MIN_FAMILY` repos share that skeleton, and at least `SPAM_DESC_AGREE_PCT`% of them agree on one description skeleton. Demanding those two independent signals is what keeps false positives near zero: on a real 11,684-repo seed it flags 974 repos in 10 template families and nothing else, leaving large legitimate mirror imports alone because each of their repos carries its own real description. Costs about 0.4s on 11.7k repos. [Full rationale, and the two things it deliberately does not do](./README.md#rule-d-spam-families).
+- **Rule D, spam families.** Bulk-generated repos give nothing away one at a time and are obvious in aggregate, so this rule is decided by the corpus, never by a single repo. Names and descriptions are skeletonised (digit runs to `#`, random-id tokens to `%`), and a repo is pruned only when its name skeleton carries a random-id slot, at least `SPAM_MIN_FAMILY` repos share that skeleton, and at least `SPAM_DESC_AGREE_PCT`% of them agree on one description skeleton. Two independent signals are required, the name shape and the description: on a real 11,684-repo seed the rule flags 974 repos in 10 template families and nothing else, leaving large legitimate mirror imports alone because each of their repos carries its own real description. Costs about 0.4s on 11.7k repos. [Full rationale, and the two evidence choices behind it](./README.md#rule-d-spam-batches).
 
 - **Two verdicts may now delete the last copy we know of.** `junk-id` and `spam-family` default to a seed count floor of `0`; every other rule keeps its previous floor. "Other seeds" counts the nodes our routing table says announce a repo, which is not proof a copy exists elsewhere, so the floor is dropped only where the evidence is conclusive: for machine-generated bulk, "nobody else seeds it" measures worthlessness rather than rarity. A disposable *word* in a name is a guess, and a large or long-abandoned *unique* repo is what a seed exists to preserve, so `junk-name`, `size` and `stale` are unchanged. `JUNK_ID_MIN_SEEDS=1 SPAM_MIN_SEEDS=1` restores the old behaviour everywhere. Measured on a real 11,685-repo seed this currently changes nothing: every offending repo there has at least 2 other seeds, so it is future-proofing rather than a change in today's plan.
 
