@@ -9,10 +9,7 @@
 
 Reclaim disk on a Radicle seed by safely pruning lower-value repos.
 
-A [Radicle](https://radicle.dev) seed that seeds everything mirrors the whole public network and
-grows without bounds. This tool finds the repos least worth holding onto — stale giants,
-long-abandoned repos, and obviously disposable ones — and prunes them: **dry-run first**, seed-count
-gated so it never deletes the last known copy, and self-tightening as free disk runs low.
+A [Radicle](https://radicle.dev) seed that seeds everything mirrors the whole public network and grows without bounds. This tool finds the repos least worth holding onto (stale giants, long-abandoned repos, and obviously disposable ones) and prunes them: **dry-run first**, seed-count gated so it never deletes the last known copy, and self-tightening as free disk runs low.
 
 ## Install
 
@@ -23,14 +20,13 @@ chmod +x radicle-seed-prune
 
 Or copy-paste the script manually from [`radicle-seed-prune`](./radicle-seed-prune).
 
-Requirements: `bash`, `git`, `jq`, and `rad` on `PATH`. Run it as the user that owns the Radicle
-home (your seed account).
+Requirements: `bash`, `git`, `jq`, and `rad` on `PATH`. Run it as the user that owns the Radicle home (your seed account).
 
 ## Usage
 
 ```sh
 ./radicle-seed-prune                  # preview (dry-run): print the plan, change nothing
-./radicle-seed-prune --apply          # apply — asks [y/N] first when run in a terminal
+./radicle-seed-prune --apply          # apply, asks [y/N] first when run in a terminal
 ./radicle-seed-prune --apply --yes    # apply without the prompt (scripts, or when you're sure)
 ./radicle-seed-prune --apply --force  # apply even if the plan trips the runaway caps
 ./radicle-seed-prune --apply --restart-node  # ...and restart the node afterwards (clears the stale inventory-announce log warning)
@@ -39,26 +35,21 @@ home (your seed account).
 
 Always read the preview first. The plan is sorted largest-first and totals the disk it will free.
 
-Run it as the user that owns the Radicle home, or point `RAD_HOME` at one. That is the same variable
-heartwood itself reads, so a run reads like any other `rad` invocation, and `RAD` picks the binary:
+Run it as the user that owns the Radicle home, or point `RAD_HOME` at one. That is the same variable heartwood itself reads, so a run reads like any other `rad` invocation, and `RAD` picks the binary:
 
 ```sh
 RAD_HOME=/var/lib/radicle ./radicle-seed-prune                          # a seed home that isn't yours
 RAD=/nix/store/.../bin/rad RAD_HOME=/var/lib/radicle ./radicle-seed-prune # ...and a specific rad
 ```
 
-There are deliberately no tuning flags: every knob is an environment variable, listed under
-[Configuration](#configuration).
+There are deliberately no tuning flags: every knob is an environment variable, listed under [Configuration](#configuration).
 
 One rule: **no flag previews, `--apply` does it.** `--apply` scans once, prints the plan, and then:
 
-- in a terminal, asks `[y/N]` before deleting anything — answer yes to apply the plan you just saw;
+- in a terminal, asks `[y/N]` before deleting anything: answer yes to apply the plan you just saw;
 - non-interactively (cron, a pipe), it just applies, since there is nobody to answer.
 
-The single scan is the point: a dry-run to preview and then a separate `--apply` would scan the whole
-seed twice. Pass `--yes` (`-y`) to skip the prompt in a terminal. Confirming interactively also
-bypasses the runaway caps (you have seen the numbers); cron and `--yes` still respect them, so add
-`--force` to exceed them unattended.
+The single scan is the point: a dry-run to preview and then a separate `--apply` would scan the whole seed twice. Pass `--yes` (`-y`) to skip the prompt in a terminal. Confirming interactively also bypasses the runaway caps (you have seen the numbers); cron and `--yes` still respect them, so add `--force` to exceed them unattended.
 
 ### Example output (anonymized)
 
@@ -85,16 +76,15 @@ rad:zEXAMPLExxxxxxxxxxxxxxxxxxxx5      29.9MB     14      446 junk-name     test
 
 ### Exit codes
 
-| Code | Meaning                                                                                   |
-| ---- | ----------------------------------------------------------------------------------------- |
-| `0`  | Success, including a dry-run and an `--apply` you declined at the prompt                   |
-| `1`  | Storage directory missing or unreadable, or an unexpected failure (the run prints the line and the command) |
-| `2`  | Bad argument                                                                                |
-| `3`  | The plan tripped a runaway cap. Read it, then re-run with `--force`                        |
+| Code | Meaning                                                                                                                               |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`  | Success, including a dry-run and an `--apply` you declined at the prompt                                                              |
+| `1`  | Storage directory missing or unreadable, or an unexpected failure (the run prints the line and the command)                           |
+| `2`  | Bad argument                                                                                                                          |
+| `3`  | The plan tripped a runaway cap. Read it, then re-run with `--force`                                                                   |
 | `5`  | Refused to guess: node unreachable, NID unknown, routing table empty, exclusions unreadable, or too much of storage could not be read |
 
-Exit 5 always means the tool could not see enough to be trusted, never that there was nothing to do.
-Nothing was touched.
+Exit 5 always means the tool could not see enough to be trusted, never that there was nothing to do. Nothing was touched.
 
 ## How a prune works
 
@@ -106,13 +96,9 @@ rad block  <rid>        # set an explicit block, so default-allow won't re-fetch
 rm -rf  <storage>/<rid> # the only step that actually frees disk
 ```
 
-Order matters: `rad unseed` removes whichever policy row a repo has, so it must run **before**
-`rad block`, never after, or it would wipe the block you just set and the repo would re-seed.
+Order matters: `rad unseed` removes whichever policy row a repo has, so it must run **before** `rad block`, never after, or it would wipe the block you just set and the repo would re-seed.
 
-**Recoverability.** Deletion is local. A pruned repo is re-fetchable from the network later
-(`rad unseed` to clear the block, then `rad seed`) as long as other nodes still hold it. That is
-why every size/age rule has a minimum other-seed-count gate: the tool never deletes the last known
-copy. Every prune is written to an audit log under `$RAD_HOME/prune-audit/`.
+**Recoverability.** Deletion is local. A pruned repo is re-fetchable from the network later (`rad unseed` to clear the block, then `rad seed`) as long as other nodes still hold it. That is why every size/age rule has a minimum other-seed-count gate: the tool never deletes the last known copy. Every prune is written to an audit log under `$RAD_HOME/prune-audit/`.
 
 ## The pruning algorithm
 
@@ -130,70 +116,56 @@ A repo is pruned if it is **not excluded** and matches **at least one rule**.
 
 ### Rules
 
-| Rule              | Fires when                                                                                                                                       |
-| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| **A — junk-name** | name looks disposable **and** no new commit/COB for > `JUNK_STALE_DAYS` **and** other-seeds ≥ `JUNK_MIN_SEEDS`                                    |
-| **B — size**      | size > `ABS_SIZE_FLOOR_MB` **and** size ≥ the `REL_PCTL`-th percentile of all repo sizes **and** stale > `OUTLIER_STALE_DAYS` **and** seeds ≥ `MIN_OTHER_SEEDS` |
-| **C — stale**     | anything A/B missed: stale > `STALE_YEARS_DAYS` **and** seeds ≥ `MIN_OTHER_SEEDS`                                                                 |
+| Rule             | Fires when                                                                                                                                                      |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **A, junk-name** | name looks disposable **and** no new commit/COB for > `JUNK_STALE_DAYS` **and** other-seeds ≥ `JUNK_MIN_SEEDS`                                                  |
+| **B, size**      | size > `ABS_SIZE_FLOOR_MB` **and** size ≥ the `REL_PCTL`-th percentile of all repo sizes **and** stale > `OUTLIER_STALE_DAYS` **and** seeds ≥ `MIN_OTHER_SEEDS` |
+| **C, stale**     | anything A/B missed: stale > `STALE_YEARS_DAYS` **and** seeds ≥ `MIN_OTHER_SEEDS`                                                                               |
 
-**"Activity" means any signed change, however small.** Every Radicle interaction — a commit, a new
-issue or patch, a comment, a reaction, an edit, a label — is stored as a git commit appended under
-some peer's `refs/cobs/*`, and it also advances that peer's `refs/rad/sigrefs`. The tool reads the
-newest `creatordate` across **all** refs (every peer's namespace included), so the freshest of any
-of these wins. It measures when the change was *authored*, not when we replicated it, so a
-just-fetched old comment correctly still reads as old, not as fresh activity.
+**"Activity" means any signed change, however small.** Every Radicle interaction (a commit, a new issue or patch, a comment, a reaction, an edit, a label) is stored as a git commit appended under some peer's `refs/cobs/*`, and it also advances that peer's `refs/rad/sigrefs`. The tool reads the newest `creatordate` across **all** refs (every peer's namespace included), so the freshest of any of these wins. It measures when the change was *authored*, not when we replicated it, so a just-fetched old comment correctly still reads as old, not as fresh activity.
 
-Disposable names match `test`, `tmp`, `temp`, `scratch`, `playground`, `sandbox`, `demo`, `dummy`,
-`wip`, `trash`, `junk`, `old`, `throwaway`, `helloworld` (as whole, boundary-delimited words), plus
-`foo` / `bar` / `baz` only when they are the **entire** name (so `BAR_widget` is safe).
+Disposable names match `test`, `tmp`, `temp`, `scratch`, `playground`, `sandbox`, `demo`, `dummy`, `wip`, `trash`, `junk`, `old`, `throwaway`, `helloworld` (as whole, boundary-delimited words), plus `foo` / `bar` / `baz` only when they are the **entire** name (so `BAR_widget` is safe).
 
 ### Disk-pressure adaptivity
 
-The thresholds above are the **relaxed** values, used when there is plenty of free space. As free
-disk on the storage filesystem falls, the tool **self-tightens**: pressure `p` rises from `0` to
-`1` linearly between a relax watermark (`max(PRESSURE_RELAX_PCT%, PRESSURE_RELAX_GB)` free) and a
-critical watermark (`min(PRESSURE_CRIT_PCT%, PRESSURE_CRIT_GB)` free, default `min(10%, 2GB)`), and
-every knob is interpolated from its relaxed value toward an aggressive one:
+The thresholds above are the **relaxed** values, used when there is plenty of free space. As free disk on the storage filesystem falls, the tool **self-tightens**: pressure `p` rises from `0` to `1` linearly between a relax watermark (`max(PRESSURE_RELAX_PCT%, PRESSURE_RELAX_GB)` free) and a critical watermark (`min(PRESSURE_CRIT_PCT%, PRESSURE_CRIT_GB)` free, default `min(10%, 2GB)`), and every knob is interpolated from its relaxed value toward an aggressive one:
 
-| knob              | relaxed (`p=0`) | aggressive (`p=1`) |
-| ----------------- | --------------- | ------------------ |
-| `STALE_YEARS_DAYS`  | 730  | 60  |
-| `OUTLIER_STALE_DAYS`| 90   | 14  |
-| `JUNK_STALE_DAYS`   | 30   | 7   |
-| `ABS_SIZE_FLOOR_MB` | 500  | 50  |
-| `REL_PCTL`          | 95   | 50  |
-| `MIN_OTHER_SEEDS`   | 3    | 1   |
+| knob                 | relaxed (`p=0`) | aggressive (`p=1`) |
+| -------------------- | --------------- | ------------------ |
+| `STALE_YEARS_DAYS`   | 730             | 60                 |
+| `OUTLIER_STALE_DAYS` | 90              | 14                 |
+| `JUNK_STALE_DAYS`    | 30              | 7                  |
+| `ABS_SIZE_FLOOR_MB`  | 500             | 50                 |
+| `REL_PCTL`           | 95              | 50                 |
+| `MIN_OTHER_SEEDS`    | 3               | 1                  |
 
-The header prints the live pressure and the effective thresholds every run. On one node, pruning
-scaled from ~1.3k repos / 18 GiB at `p=0` to ~7.1k repos / 92 GiB at `p=1`. **Hard floors never
-scale:** `MIN_OTHER_SEEDS` bottoms out at 1 (never delete the last network copy), and the
-pinned/private/own exclusions always hold. Set `DISK_AWARE=0` to disable scaling entirely.
+The header prints the live pressure and the effective thresholds every run. On one node, pruning scaled from ~1.3k repos / 18 GiB at `p=0` to ~7.1k repos / 92 GiB at `p=1`. **Hard floors never scale:** `MIN_OTHER_SEEDS` bottoms out at 1 (never delete the last network copy), and the pinned/private/own exclusions always hold. Set `DISK_AWARE=0` to disable scaling entirely.
 
 ## Configuration
 
 Every knob is an environment variable. Defaults shown.
 
-| Variable             | Default | Meaning                                            |
-| -------------------- | ------- | -------------------------------------------------- |
-| `RAD`                | `rad`   | The rad binary to call                              |
-| `RAD_HOME`           | `rad path`, else `~/.radicle` | Radicle home to operate on; `STORAGE`, `CONFIG` and `AUDIT_DIR` derive from it |
-| `ABS_SIZE_FLOOR_MB`  | `500`   | Rule B absolute size floor                          |
-| `REL_PCTL`           | `95`    | Rule B relative size percentile                     |
-| `OUTLIER_STALE_DAYS` | `90`    | Rule B staleness                                    |
-| `JUNK_STALE_DAYS`    | `30`    | Rule A staleness                                    |
-| `STALE_YEARS_DAYS`   | `730`   | Rule C staleness (~2 years)                         |
-| `MIN_OTHER_SEEDS`    | `3`     | Rules B & C: required other seeds                   |
-| `JUNK_MIN_SEEDS`     | `1`     | Rule A: never delete the last copy                  |
-| `FRESH_GUARD_DAYS`   | `2`     | Skip repos written this recently                    |
-| `MAX_PRUNE_COUNT`    | `1000`  | Runaway guard: abort over this many repos           |
-| `MAX_PRUNE_GB`       | `80`    | Runaway guard: abort over this much disk            |
-| `MAX_SCAN_FAIL_PCT`  | `10`    | Abort if more than this share of storage could not be read |
-| `SERVICE`            | `radicle-node` | systemd unit used by `--restart-node`            |
-| `JOBS`               | `cores-1` | Parallel workers for the activity scan            |
-| `DISK_AWARE`         | `1`     | Scale thresholds with free disk (`0` to disable)    |
-| `PRESSURE_RELAX_PCT` / `PRESSURE_RELAX_GB` | `20` / `20` | Above this much free: no pressure   |
-| `PRESSURE_CRIT_PCT` / `PRESSURE_CRIT_GB`   | `10` / `2`  | At/below `min()` of these: full pressure |
-| `*_AGG` (e.g. `STALE_YEARS_DAYS_AGG`) | see above | Full-pressure endpoint for each knob |
+| Variable                                   | Default                       | Meaning                                                                        |
+| ------------------------------------------ | ----------------------------- | ------------------------------------------------------------------------------ |
+| `RAD`                                      | `rad`                         | The rad binary to call                                                         |
+| `RAD_HOME`                                 | `rad path`, else `~/.radicle` | Radicle home to operate on; `STORAGE`, `CONFIG` and `AUDIT_DIR` derive from it |
+| `ABS_SIZE_FLOOR_MB`                        | `500`                         | Rule B absolute size floor                                                     |
+| `REL_PCTL`                                 | `95`                          | Rule B relative size percentile                                                |
+| `OUTLIER_STALE_DAYS`                       | `90`                          | Rule B staleness                                                               |
+| `JUNK_STALE_DAYS`                          | `30`                          | Rule A staleness                                                               |
+| `STALE_YEARS_DAYS`                         | `730`                         | Rule C staleness (~2 years)                                                    |
+| `MIN_OTHER_SEEDS`                          | `3`                           | Rules B & C: required other seeds                                              |
+| `JUNK_MIN_SEEDS`                           | `1`                           | Rule A: never delete the last copy                                             |
+| `FRESH_GUARD_DAYS`                         | `2`                           | Skip repos written this recently                                               |
+| `MAX_PRUNE_COUNT`                          | `1000`                        | Runaway guard: abort over this many repos                                      |
+| `MAX_PRUNE_GB`                             | `80`                          | Runaway guard: abort over this much disk                                       |
+| `MAX_SCAN_FAIL_PCT`                        | `10`                          | Abort if more than this share of storage could not be read                     |
+| `SERVICE`                                  | `radicle-node`                | systemd unit used by `--restart-node`                                          |
+| `JOBS`                                     | `cores-1`                     | Parallel workers for the activity scan                                         |
+| `DISK_AWARE`                               | `1`                           | Scale thresholds with free disk (`0` to disable)                               |
+| `PRESSURE_RELAX_PCT` / `PRESSURE_RELAX_GB` | `20` / `20`                   | Above this much free: no pressure                                              |
+| `PRESSURE_CRIT_PCT` / `PRESSURE_CRIT_GB`   | `10` / `2`                    | At/below `min()` of these: full pressure                                       |
+| `*_AGG` (e.g. `STALE_YEARS_DAYS_AGG`)      | see above                     | Full-pressure endpoint for each knob                                           |
 
 ```sh
 # example: only chase the giants, leave everything else
@@ -202,11 +174,10 @@ ABS_SIZE_FLOOR_MB=1000 STALE_YEARS_DAYS=99999 ./radicle-seed-prune
 
 ## Run it on a schedule
 
-After a reviewed first run, a weekly cron keeps the seed trimmed. Deltas are small, so no restart
-is needed, and dropping `--force` keeps the runaway cap active as a safety net:
+After a reviewed first run, a weekly cron keeps the seed trimmed. Deltas are small, so no restart is needed, and dropping `--force` keeps the runaway cap active as a safety net:
 
 ```cron
-# /etc/cron.d/radicle-seed-prune  — Sundays 04:17, as the seed user
+# /etc/cron.d/radicle-seed-prune  Sundays 04:17, as the seed user
 SHELL=/bin/sh
 17 4 * * 0 seed HOME=/home/seed PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/radicle-seed-prune --apply >> /home/seed/.radicle/prune-audit/cron.log 2>&1
 ```
@@ -215,11 +186,9 @@ SHELL=/bin/sh
 
 Every `--apply` run writes to `$RAD_HOME/prune-audit/` (default `~/.radicle/prune-audit/`):
 
-- **`prune-<UTC-timestamp>.log`** — one file per run, the full list of repos removed that run, each
-  with size, other-seed count, last-activity, reason, and name. Self-describing header on top.
-- **`history.log`** — append-only, one line per run: timestamp, repos deleted, GiB reclaimed,
-  disk pressure. The quickest "what has this been doing" view.
-- **`cron.log`** — when run from the cron above, the full console output of every run appended.
+- **`prune-<UTC-timestamp>.log`**: one file per run, the full list of repos removed that run, each with size, other-seed count, last-activity, reason, and name. Self-describing header on top.
+- **`history.log`**: append-only, one line per run: timestamp, repos deleted, GiB reclaimed, disk pressure. The quickest "what has this been doing" view.
+- **`cron.log`**: when run from the cron above, the full console output of every run appended.
 
 ```sh
 tail ~/.radicle/prune-audit/history.log              # totals per run, newest last
@@ -233,16 +202,11 @@ awk -F'\t' '/reclaimed/{n++; g+=$3} END{print n" runs, "g" GiB total"}' ~/.radic
 - **Seed-count gates** keep the last network copy of any repo.
 - **Runaway caps** (`MAX_PRUNE_COUNT`, `MAX_PRUNE_GB`) abort an unexpectedly large plan unless `--force`.
 - **Freshness guard** skips repos with an in-flight fetch.
-- **Apply preflight** aborts if the node is down or exclusions can't be read, so a transient failure
-  never deletes your own or pinned repos.
+- **Apply preflight** aborts if the node is down or exclusions can't be read, so a transient failure never deletes your own or pinned repos.
 - **Exclusions** protect pinned, private, and your own repos.
 - **Audit log** records every deletion for review or scripted recovery.
 
-The node keeps running during a prune. After a large first run, one
-`sudo systemctl restart radicle-node` clears the stale "inventory announce limit" warning from the
-node log (`--restart-node` does this for you when run with sufficient rights). On some heartwood
-versions `rad node inventory` may still list the removed RIDs afterwards; that is cosmetic, the
-repos are gone from disk and blocked from re-seeding.
+The node keeps running during a prune. After a large first run, one `sudo systemctl restart radicle-node` clears the stale "inventory announce limit" warning from the node log (`--restart-node` does this for you when run with sufficient rights). On some heartwood versions `rad node inventory` may still list the removed RIDs afterwards; that is cosmetic, the repos are gone from disk and blocked from re-seeding.
 
 ## Development
 
@@ -252,9 +216,7 @@ Run the test suite (needs only `bash`, `git`, and coreutils):
 bash tests/run.sh
 ```
 
-It builds a fully isolated, hermetic fixture — a throwaway Radicle home, a `rad` stub on `PATH`, and
-real bare git repos with controlled activity dates and sizes — so it never reads or writes the real
-node. See [`CHANGELOG.md`](./CHANGELOG.md) for release history.
+It builds a fully isolated, hermetic fixture (a throwaway Radicle home, a `rad` stub on `PATH`, and real bare git repos with controlled activity dates and sizes) so it never reads or writes the real node. See [`CHANGELOG.md`](./CHANGELOG.md) for release history.
 
 ## Support
 
@@ -268,32 +230,23 @@ If this saved you some disk space, some time, and a few bucks on your VPS bill, 
 
 ## Commercial use
 
-The license is noncommercial, and the intent behind it is narrow: keep the script from being
-repackaged and sold. It is not meant to get in the way of anyone running a seed.
+The license is noncommercial, and the intent behind it is narrow: keep the script from being repackaged and sold. It is not meant to get in the way of anyone running a seed.
 
 **Free, no need to ask:**
 
 - Personal use, hobby projects, research, experiments, and testing.
-- Charitable organizations, educational institutions, public research organizations, public safety
-  or health organizations, environmental protection organizations, and government institutions,
-  regardless of how they are funded.
+- Charitable organizations, educational institutions, public research organizations, public safety or health organizations, environmental protection organizations, and government institutions, regardless of how they are funded.
 
 So running a public seed as an individual, a collective, or a nonprofit is free, and always will be.
 
 **Needs a separate license:**
 
-- For-profit companies, including running it only on your own infrastructure to cut your own hosting
-  bill. Nothing has to be sold for the use to count as commercial.
+- For-profit companies, including running it only on your own infrastructure to cut your own hosting bill. Nothing has to be sold for the use to count as commercial.
 
-If that is you, or you are not sure which side of the line you land on, email
-[info@radicle.tools](mailto:info@radicle.tools). It is usually a short conversation, and I would
-much rather say yes than have you guess.
+If that is you, or you are not sure which side of the line you land on, email [info@radicle.tools](mailto:info@radicle.tools). It is usually a short conversation, and I would much rather say yes than have you guess.
 
 ## License
 
-[PolyForm Noncommercial License 1.0.0](./LICENSE). Free to use, modify, and share for any
-**noncommercial** purpose; you must preserve the copyright and required-notice lines (attribution).
-**Commercial use is not permitted** without a separate license. For commercial licensing, email
-[info@radicle.tools](mailto:info@radicle.tools).
+[PolyForm Noncommercial License 1.0.0](./LICENSE). Free to use, modify, and share for any **noncommercial** purpose; you must preserve the copyright and required-notice lines (attribution). **Commercial use is not permitted** without a separate license. For commercial licensing, email [info@radicle.tools](mailto:info@radicle.tools).
 
 Built by Kostis ([@maninak](https://github.com/maninak)).
