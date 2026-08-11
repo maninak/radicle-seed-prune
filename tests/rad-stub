@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 # Test double for `rad`, driven by env: RSP_HOME, RSP_NID, RSP_MANIFEST, RSP_NODE_DOWN,
-# RSP_NO_ROUTING, RSP_NO_LS, RSP_DELEGATES. Manifest columns: rid name seeds vis own days size desc
+# RSP_NO_ROUTING, RSP_NO_LS, RSP_DELEGATES. Manifest columns: rid name seeds vis own days size
+# desc
 set -uo pipefail
-# Real rad takes its home from the ENVIRONMENT, so record what we were actually handed: that is the
-# only way a test can tell an exported RAD_HOME from one the script merely set as a shell variable.
+# Real rad takes its home from the ENVIRONMENT, so record what we were actually handed: that is
+# the only way a test can tell an exported RAD_HOME from one the script merely set as a shell
+# variable.
 printf '%s\n' "${RAD_HOME:-<unset>}" >> "$RSP_HOME/.stub_radhome"
 sub="${1:-}"; shift || true
 case "$sub" in
   path) echo "$RSP_HOME" ;;
   self) echo "$RSP_NID" ;;                    # `rad self --nid`
   ls)
-    [ "${RSP_NO_LS:-0}" = 1 ] && exit 0        # `rad ls` yields nothing: names blank, rule D blind
+    [ "${RSP_NO_LS:-0}" = 1 ] && exit 0        # `rad ls` yields nothing: rule D goes blind
     priv=0; allf=0
     for a in "$@"; do [ "$a" = --private ] && priv=1; [ "$a" = --all ] && allf=1; done
     while IFS=$'\t' read -r rid name seeds vis own days size desc; do
@@ -18,7 +20,8 @@ case "$sub" in
       if   [ "$priv" = 1 ]; then [ "$vis" = private ] || continue
       elif [ "$allf" = 0 ]; then [ "$own" = 1 ] || continue   # bare `rad ls` = our own repos
       fi
-      # real rad prints a 7-hex head; keep it exact, the script's column walk depends on the shape
+      # real rad prints a 7-hex head; keep it exact, the script's column walk reads
+      # the shape
       printf '| %s rad:%s %s abc1234 %s |\n' "$name" "$rid" "$vis" "$desc"
     done < "$RSP_MANIFEST"
     ;;
@@ -38,8 +41,9 @@ case "$sub" in
     esac
     ;;
   inspect)
-    # `rad inspect rad:<rid> --delegates`. RSP_DELEGATES holds "rid<TAB>nid" lines; a rid with no
-    # row prints nothing, which is how a test stands in for a repo whose delegates cannot be read.
+    # `rad inspect rad:<rid> --delegates`. RSP_DELEGATES holds "rid<TAB>nid" lines; a rid with
+    # no row prints nothing, which is how a test stands in for a repo whose delegates cannot be
+    # read.
     rid=""; want=0
     for a in "$@"; do
       case "$a" in --delegates) want=1 ;; rad:*) rid=${a#rad:} ;; esac

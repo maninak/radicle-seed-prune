@@ -47,46 +47,48 @@ RAD=/nix/store/.../bin/rad ./radicle-seed-prune         # a specific rad binary
 ### Example output
 
 ```text
-# radicle-seed-prune 0.4.0  2026-06-28T18:31:50Z   mode=DRY-RUN
-# home=/home/radicle/.radicle
-# disk: 126.6GB free (46.9%)  pressure=0%  [relax>=54GB crit<=2GB]
+# radicle-seed-prune 0.4.0  2026-08-11T23:20:54Z   mode=DRY-RUN
+# home=/home/seed/.radicle
+# disk: 126.9GB free (47.0%)  pressure=0% [relax>=54GB crit<=2GB]
 # rules: A junk(>30d, seeds>=1; id-names seeds>=0)  B size(>500MB & >=P95, >90d, seeds>=3)  C stale(>730d, seeds>=3)  D spam(batch>=5 & desc>=80%, >7d, seeds>=0)
 # rule E link-farm(>=5 spam domains, each linked from >=0.4% of repos and from the code of <10% of them, >7d, seeds>=0)
-# excluded: 9 pinned, 2 private, 0 own
-# spam batches: 10 template(s) matching 974 repos, before the age and seed checks:
-#     110  flatten-*-*
+# rule F media-dump(>=64KB of media and <2048B of anything else, >7d, seeds>=1)  media-batch(that media held by >=5 repos, <65536B of anything else)
+# excluded: 9 pinned, 6 private, 0 own
+# spam batches: 10 template(s) matching 444 repos, before the age and seed checks:
+#      54  evens-*-*
 #   ...and 9 more
-# scanning 9171 repos (size + activity), 15 parallel workers...
-# harvesting referenced hosts from repo contents (15 workers)...
-# harvested 41208 repo/host pairs over 6033 repos
-# spam domains: 68 domain(s) linked from >=36 repos, <10% from code;
-#   406 repo(s) link to >=5 of them, before the age and seed checks:
-#     312 repos  somegallery.test
-#   ...and 67 more
-# rule E: 2 repo(s) spared, the spam links were pushed by peers that are not their delegates
-# repos=9171  sizes P50=0M P90=14M P95=45M P99=267M  rel-cut(P95)=45M  abs-cut=500M
-# skipped: 0 unreadable, 3 written in the last 2d, 0 with no readable refs
+# scanning 11151 repos (size + activity), 5 parallel workers...
+# measuring repo trees for rule F (5 workers)...
+# harvesting referenced hosts from repo contents (5 workers)...
+# harvested 272404 repo/host pairs over 9988 repos
+# spam domains: 96 domain(s) linked from >=44 repos, <10% from code;
+#   491 repo(s) link to >=5 of them, before the age and seed checks:
+#     423 repos  somegallery.test
+#   ...and 95 more
+# rule E: 43 repo(s) spared, the spam links were pushed by peers that are not their delegates
+# repos=11151  sizes P50=0M P90=10M P95=33M P99=199M rel-cut(P95)=33M  abs-cut=500M
+# skipped: 0 unreadable, 108 written in the last 2d, 1 with no readable refs
 
 RID                                     SIZE  SEEDS   AGE(d) REASON        NAME
-rad:zEXAMPLExxxxxxxxxxxxxxxxxxxx1       1.2GB      6      615 size-outlier  distro-pkgs-mirror
-rad:zEXAMPLExxxxxxxxxxxxxxxxxxxx2     909.6MB      9      830 size-outlier  typesetter-source
-rad:zEXAMPLExxxxxxxxxxxxxxxxxxxx3     395.9MB      6      819 stale         some-old-project
-rad:zEXAMPLExxxxxxxxxxxxxxxxxxxx4     127.6MB     12      229 junk-name     someproject-test
-rad:zEXAMPLExxxxxxxxxxxxxxxxxxxx6     512.3KB     11       94 link-farm     photo-album-nine
-rad:zEXAMPLExxxxxxxxxxxxxxxxxxxx7     100.4KB     11       31 spam-batch   flatten-2-33ed7115
+zEXAMPLExxxxxxxxxxxxxxxxxxxxx1       409.5MB     14      184 media-batch   init
+zEXAMPLExxxxxxxxxxxxxxxxxxxxx2       330.8MB     13      190 media-dump    PlayDrive
+zEXAMPLExxxxxxxxxxxxxxxxxxxxx3       127.6MB     12      229 junk-name     someproject-test
+zEXAMPLExxxxxxxxxxxxxxxxxxxxx4       512.3KB     11       94 link-farm     photo-album-nine
+zEXAMPLExxxxxxxxxxxxxxxxxxxxx5       100.4KB     11       31 spam-batch    flatten-2-33ed7115
 
-# PLAN: prune 2719 repos, reclaim 18.33 GiB
-#   junk-name       677 repos      0.99 GiB
-#   link-farm       404 repos      0.21 GiB
-#   size-outlier     15 repos     11.35 GiB
-#   spam-batch      974 repos      0.09 GiB
-#   stale           649 repos      5.69 GiB
+# PLAN: prune 519 repos, reclaim 2.51 GiB
+#   junk-name         2 repos      0.00 GiB
+#   link-farm        34 repos      0.40 GiB
+#   media-batch      23 repos      1.29 GiB
+#   media-dump       23 repos      0.75 GiB
+#   spam-batch      434 repos      0.05 GiB
+#   stale             3 repos      0.03 GiB
 # DRY-RUN: nothing changed. Re-run with --apply to execute.
 ```
 
 Top to bottom: free disk and the pressure it produces, the thresholds **actually in effect at that pressure**, what was excluded, what each spam rule found, the size distribution rule B draws its percentile from, and what the run left alone. Then the plan, largest-first, with a total per reason.
 
-`AGE(d)` is the age the matching rule measured: days since last activity for A, B and C, days since creation for D and E. Progress lines go to stderr, the plan to stdout, so `> plan.txt` keeps them apart.
+`AGE(d)` is the age the matching rule measured: days since last activity for A, B and C, days since creation for D, E and F. Progress lines go to stderr, the plan to stdout, so `> plan.txt` keeps them apart.
 
 `spam-batch` frees little disk and is still worth it: each of those repos is an entry the node announces, fetches and re-announces forever, and a row in every listing you read.
 
@@ -126,15 +128,17 @@ Every rule has the same shape: **something about the repo**, *and* it is old eno
 | **A, junk-name**   | a disposable *word* in the name (`test`, `tmp`, `old`, `demo`)                      | `JUNK_STALE_DAYS`, 30d    | ≥ `JUNK_MIN_SEEDS`, 1    |
 | **A, junk-id**     | the name is *nothing but* a random hex id (`08a25d0f666d`)                          | `JUNK_STALE_DAYS`, 30d    | ≥ `JUNK_ID_MIN_SEEDS`, 0 |
 | **B, size**        | a giant: over `ABS_SIZE_FLOOR_MB` (500M) *and* in the top `REL_PCTL`% by size (P95) | `OUTLIER_STALE_DAYS`, 90d | ≥ `MIN_OTHER_SEEDS`, 3   |
-| **C, stale**       | nothing in particular; the catch-all for whatever A/B/D/E missed                    | `STALE_YEARS_DAYS`, 730d  | ≥ `MIN_OTHER_SEEDS`, 3   |
+| **C, stale**       | nothing in particular; the catch-all for whatever the other rules missed                    | `STALE_YEARS_DAYS`, 730d  | ≥ `MIN_OTHER_SEEDS`, 3   |
 | **D, spam-batch**  | one of a batch stamped out from one template ([more](#rule-d-spam-batches))         | `SPAM_STALE_DAYS`, 7d     | ≥ `SPAM_MIN_SEEDS`, 0    |
 | **E, link-farm**   | published to carry links rather than code ([more](#rule-e-link-farms))              | `LINK_STALE_DAYS`, 7d     | ≥ `LINK_MIN_SEEDS`, 0    |
+| **F, media-dump**  | video, images or audio with no project around them ([more](#rule-f-media-dumps))    | `MEDIA_STALE_DAYS`, 7d    | ≥ `MEDIA_MIN_SEEDS`, 1   |
+| **F, media-batch** | the same media files, published across many repos ([more](#rule-f-media-dumps))     | `MEDIA_STALE_DAYS`, 7d    | ≥ `MEDIA_MIN_SEEDS`, 1   |
 
 #### How age is measured
 
 A, B and C measure **last activity**: they are about abandonment, and a repo somebody touched is not abandoned. Activity is any signed change, however small (a commit, an issue, a comment, a reaction, a label), since each is a git commit under some peer's `refs/cobs/*`. The tool takes the newest `creatordate` across every peer's refs, and reads when the change was *authored*, so a just-fetched old comment still counts as old.
 
-D and E measure **creation** instead, because the spam wave this tool was written against appends a comment to its own repos every few days, which would reset a last-activity clock and make the whole wave permanently immune. Creation is the older of the repo's oldest ref date and the day this seed first saw it (`$RAD_HOME/prune-audit/first-seen.tsv`, appended on every run, dry or not). A pusher controls the first date and cannot reach the second.
+D, E and F measure **creation** instead, because the spam wave this tool was written against appends a comment to its own repos every few days, which would reset a last-activity clock and make the whole wave permanently immune. Creation is the older of the repo's oldest ref date and the day this seed first saw it (`$RAD_HOME/prune-audit/first-seen.tsv`, appended on every run, dry or not). A pusher controls the first date and cannot reach the second.
 
 #### Verdicts that may delete the last copy we know of
 
@@ -233,12 +237,22 @@ Every knob is an environment variable. Defaults shown.
 | E    | `LINK_MIN_REPOS_PCT`  | `0.4`     | Share of storage that must link to a host before it can be a spam host  |
 | E    | `LINK_MIN_REPOS`      | `8`       | Absolute floor under that share                                         |
 | E    | `LINK_CODE_MAX_PCT`   | `10`      | Share of a host's linkers that may link from their own code             |
+| E    | `LINK_REPO_BUDGET`    | `8000000` | Bytes read per repo, per pass                                          |
 | E    | `LINK_MIN_SCORE`      | `5`       | Spam domains a repo must link to before it is flagged                   |
 | E    | `LINK_DELEGATE_CHECK` | `1`       | Count only links from the repo's own delegates (`0` is faster, unsafe)  |
 | E    | `LINK_STALE_DAYS`     | `7`       | Age since creation, a grace period rather than evidence                 |
 | E    | `LINK_MIN_SEEDS`      | `0`       | Other seeds required; `0` may take the last copy we know of             |
+| F    | `MEDIA_SCAN`          | `1`       | List repo trees at all (`0` turns rule F off entirely)                  |
+| F    | `MEDIA_MIN_BYTES`     | `65536`   | Media bytes below which a repo is not worth judging                     |
+| F    | `MEDIA_TEXT_MAX_BYTES`| `2048`    | Everything that is not media, added up, must stay under this            |
+| F    | `MEDIA_STALE_DAYS`    | `7`       | Age since creation, a grace period rather than evidence                 |
+| F    | `MEDIA_MIN_SEEDS`     | `1`       | Other seeds required; `1` keeps the last copy we know of                |
+| F    | `MEDIA_MIN_BATCH`     | `5`       | Repos holding one media file, byte for byte, to call it a campaign      |
+| F    | `MEDIA_TEXT_CEIL_BYTES`| `65536`  | The batch path's wider budget for everything that is not media          |
+| F    | `MEDIA_MAX_REFS`      | `10000`   | Refs above which a repo is too costly to read, so it goes unjudged      |
+| F    | `MEDIA_EXTS`          | see below | Extensions judged as media                                             |
 
-Rule E has three more knobs that tune how it reads rather than what it deletes: `LINK_BLOB_PREFIX`, `LINK_REPO_BUDGET` and `LINK_CODE_LOOSE_PCT`. They are described [with the rule itself](#rule-e-link-farms).
+Two more are for shaping rather than firing: `MEDIA_EXTS` is the list of extensions rule F judges as media, and `LINK_REPO_BUDGET` (8000000) caps how many bytes rule E reads per repo per pass. Everything else the two rules use to classify is a constant in the script, next to the comment saying why it has that value.
 
 **Brakes**
 
@@ -284,7 +298,7 @@ Every `--apply` run writes to `$RAD_HOME/prune-audit/` (default `~/.radicle/prun
 - **`prune-<UTC-timestamp>.log`**: one file per run, every repo removed, tab-separated as rid, size, other-seed count, last activity, reason, name, and the date the matching rule measured. Self-describing header on top.
 - **`history.log`**: append-only, one line per run: timestamp, repos deleted, GiB reclaimed, disk pressure.
 - **`cron.log`**: with the cron above, the full console output of every run.
-- **`first-seen.tsv`**: the creation-date ledger rules D and E read. Written on every run, dry or not.
+- **`first-seen.tsv`**: the creation-date ledger rules D, E and F read. Written on every run, dry or not.
 
 ```sh
 tail ~/.radicle/prune-audit/history.log              # totals per run, newest last
@@ -306,7 +320,7 @@ Every name and description in storage is *skeletonised*: digit runs become `#`, 
 
 Only the members carrying that agreed description are pruned, so a genuine repo that happens to share the name shape is left alone. Collapsing `#` and `%` for grouping matters because a random hex token comes out all-digits about 2% of the time (`chunk-1-96180521`), which would otherwise split a batch and strand those siblings.
 
-**Two independent signals are required: the name shape and the description.** On a real 11,684-repo seed the rule flags 974 repos in 10 batches and nothing else. The description agreement does that work, not the batch size: on the same corpus, dropping `SPAM_MIN_BATCH` to 3 flags the identical 974 repos and no extra batch. What it leaves alone there:
+**Two independent signals are required: the name shape and the description.** On a real 11,151-repo seed the rule flags 442 repos in 10 batches and nothing else. The description agreement does that work, not the batch size: on the same corpus, dropping `SPAM_MIN_BATCH` to 3 finds the same 10 batches and one repo more. What it leaves alone there:
 
 - a 240-repo hardware-driver mirror import, one repo per board: one name skeleton, but every repo carries its own real description;
 - a 427-repo set with one repo per standard code, likewise;
@@ -346,11 +360,41 @@ Both counts are recomputed from storage on every run, so **there is no blocklist
 
 **Why registrable domains and not hostnames.** A wildcard DNS record and one subdomain per repo would otherwise hold every name under condition 1 for free. The cost is that a shared platform (a blog host, an image host) is judged as one domain, and condition 2 is what protects the ones real projects actually use.
 
-**What it costs.** Rule E reads file content, which makes it the slow part of a run. `LINK_SCAN=0` turns it off. Reads are capped per blob (`LINK_BLOB_PREFIX`, 65536 bytes) and per repo (`LINK_REPO_BUDGET`, 8000000 bytes per pass), and the caps truncate rather than skip a blob, so a link near the start of a large file is still seen. Reaching a cap is normal on a large repo and does not exclude it.
+**What it costs.** Rule E reads file content. On an 11,151-repo seed its harvest takes about 4 minutes of a 9-minute dry run with 5 workers, which is also about what rule F costs. `LINK_SCAN=0` turns it off. Reads are capped per blob (`LINK_BLOB_PREFIX`, 65536 bytes) and per repo (`LINK_REPO_BUDGET`, 8000000 bytes per pass), and the caps truncate rather than skip a blob, so a link near the start of a large file is still seen. Reaching a cap is normal on a large repo and does not exclude it.
 
 **Known limit.** A spammer can still disqualify a domain, but only with repos neither pass marks suspect: individually named, individually described, each linking to that one domain and nothing else, and enough of them to reach `LINK_CODE_MAX_PCT` of its linkers. That is one such repo for every ten that link to the domain, paid again for every new domain, and they have to be hand-made rather than generated. Rule E does not stop that, it only makes it expensive.
 
 Rule E leans on rule D for one thing: rule D's batch list is one of the two ways a repo gets marked suspect. Turning rule D off leaves rule E working with a weaker suspect list.
+
+## Rule F: media dumps
+
+A **media dump** is a repo whose files are video, images or audio with no project around them. Radicle storage exists for collaborating on code, and a repo holding one `.mp4` and nothing else is using the seed as free file hosting. The spam wave does exactly that, and the files are often ones you would not want your seed serving.
+
+A repo is flagged when all of:
+
+1. it carries at least `MEDIA_MIN_BYTES` (64 KiB) of media;
+2. everything that is *not* media adds up to less than `MEDIA_TEXT_MAX_BYTES` (2048);
+3. it is older than `MEDIA_STALE_DAYS` (7d, since creation, the same clock rules D and E use, and not backdatable);
+4. it has at least `MEDIA_MIN_SEEDS` (1) other seeds.
+
+**Condition 2 is what tells a dump from a real repo that holds media.** A game, a design system or a documented photo archive has a README, a licence, a manifest or a build file, and clears the text budget many times over. A repo carrying a video has nothing else at all. The budget is in bytes rather than files so that one 40-byte placeholder cannot buy an exemption.
+
+**What a file is decides, not what it is called.** Extensions (`MEDIA_EXTS`, `MEDIA_TEXT_EXTS`, `MEDIA_TEXT_NAMES`) are only a fast path. A file on neither list is read, just its first 16 bytes, and matched against a table of media signatures, so renaming a video to `.dat` does not hide it. Archives (zip, gzip, rar, 7z) count as media too, because zipping a video is a one-command evasion; the cost is that a repo holding a release tarball and nothing else reads as a dump, which the seed floor bounds. A file matching no signature counts as text and spares the repo. A recognised *text* file over `MEDIA_SNIFF_TEXT_BYTES` (256 KiB) is read too, or a video called `README.md` would both hide itself and blow the budget that spares the repo. Reading is capped at `MEDIA_SNIFF_MAX_FILES` (200) per repo, and only happens while the repo could still be a dump. Files past that cap count as text, so a repo with more unrecognised files than the cap is spared rather than judged on a sample.
+
+**Only the repo's own content counts.** That means the canonical branches and tags, plus the namespaces of the delegates named in `refs/rad/id`, a ref the local node writes only after verifying the identity document's signatures. The delegates' own issues and comments therefore count, because a dump hides as well in an attachment as in a commit, and a COB is read across its whole history: it gains one commit per op and each tree holds only that op's own files, so an attachment from an older comment is still on disk and still counts. Any blob a non-delegate's refs also hold is subtracted, since a peer's merged issue thread can carry the blobs of everyone who wrote in it. Without that subtraction, pushing a video onto a stranger's near-empty repo would put *their* repo in the plan. What sits on a **canonical branch or tag** is never subtracted, though, because only a delegate can move one: replicating a repo mirrors its branches into the replicating peer's own namespace, and subtracting on that would erase a real project's README and lockfile and leave whatever the peers had not fetched yet, which is a repo that looks exactly like a dump. A branch or tag is read at its tip, so media committed and then deleted in a later commit is missed: walking every branch's history would cost far more and would count against a repo that legitimately dropped a big asset years ago. The walk also stops the moment a repo's text passes the wider of the two budgets, since nothing still unread can change the answer: on a mirror of a real project that is the first few files out of a million. A repo whose listing dies part-way is left unjudged too, because the fragment reads as a repo holding less text, and less text is the direction that condemns. A repo with more than `MEDIA_MAX_REFS` (10000) refs is left unjudged on the same warning line: reading every peer's refs is what this rule costs, and one repo on an 11k-repo seed has 152k of them, minutes of walking to learn that a repo half the network replicates is not a dump.
+
+**A token README defeats the budget**, and nothing measurable about *one* repo can tell it from a small real project's README: they are the same bytes. A ratio does not help, because a 40 MB dump and a 40 MB photo archive, each behind a 2 KB README, are both 99.99% media.
+
+That is what the **batch path** is for. Publishing the same files across many repos is evidence no single repo can manufacture, so where it exists the text budget widens and the fig leaf stops working. A repo is flagged `media-batch` when it meets conditions 1, 3 and 4 above, *and*:
+
+- at least `MEDIA_MIN_BYTES` of its media sits in files that `MEDIA_MIN_BATCH` (5) or more repos in storage also hold, byte for byte, and that this repo was not the first to hold. The first holder is left out of its own batch, or reposting somebody's photos into five repos of your own would put *their* repo in the plan. First is by the creation-date ledger, the one date a pusher cannot backdate, so on a seed whose ledger starts today the exemption falls to whichever repo sorts first until the ledger has some history;
+- everything that is not media adds up to less than `MEDIA_TEXT_CEIL_BYTES` (64 KiB), the wider budget. A README big enough to clear *that* is a document rather than a fig leaf, and spares the repo either way.
+
+**A dump no other node seeds is listed, not pruned.** Rule F's evidence is about one repo, weaker than a corpus of identical repos or a paid link, so unlike `spam-batch` and `link-farm` it keeps the last copy we know of. Those repos are printed under `# review:` rather than passed over, so the floor cannot quietly become a hiding place for anyone who makes sure nobody else seeds their dump. `MEDIA_MIN_SEEDS=0` drops the floor.
+
+**What it costs.** Rule F lists every file of every repo, so it is one of the two slow phases. On an 11,151-repo seed it takes about 4 minutes of a 9-minute dry run with 5 workers, roughly what rule E costs. Most of that is the short circuit doing its job: without it one mirror of a large project took 26 minutes on its own, because the walk read half a million files to learn what its first source file had already settled. `MEDIA_SCAN=0` turns the rule off.
+
+**Known limit.** A distinct, plausible README over distinct media, per repo, still evades rule F. At that point nothing separates the repo from a small real archive, and the tool spares it. Rule F prices the dump rather than stopping it, and an actor who pays that price across many repos becomes visible to rule D instead.
 
 ## Development
 
