@@ -85,7 +85,7 @@ rad:zEXAMPLExxxxxxxxxxxxxxxxxxxx6     100.4KB     11       13 spam-family   even
 
 Reading the header top to bottom: free disk and the pressure it produces, the four rules with the thresholds **actually in effect at that pressure**, what was excluded, the spam families found, and the size distribution rule B's percentile is drawn from. Then the plan itself, largest-first, and a total per reason.
 
-The `spam-family` line is the one that looks like a waste of time and is not: 974 repos for 0.09 GiB. Rule D is about inventory hygiene more than disk. A thousand template repos are a few dozen MB, but they are a thousand entries your node announces, fetches and re-announces forever.
+In those per-reason totals, `spam-family` reads as a lot of work for nothing: 974 repos for 0.09 GiB. It is not. Rule D is about inventory hygiene more than disk. A thousand template repos are a few dozen MB, but they are a thousand entries your node announces, fetches and re-announces forever, and each one is a row in every listing you read.
 
 ### Exit codes
 
@@ -251,13 +251,17 @@ ABS_SIZE_FLOOR_MB=1000 STALE_YEARS_DAYS=99999 ./radicle-seed-prune
 
 ## Run it on a schedule
 
-After a reviewed first run, a weekly cron keeps the seed trimmed. Deltas are small, so no restart is needed, and dropping `--force` keeps the runaway cap active as a safety net:
+After a reviewed first run, a weekly cron keeps the seed trimmed. Deltas are small, so no restart is needed, and dropping `--force` keeps the runaway cap active as a safety net.
+
+Substitute the user your node runs as and that user's home; the example uses `radicle` with `/home/radicle`, but nothing in the tool assumes either. Cron runs with a minimal environment, so `HOME` and `PATH` have to be spelled out:
 
 ```cron
-# /etc/cron.d/radicle-seed-prune  Sundays 04:17, as the seed user
+# /etc/cron.d/radicle-seed-prune  Sundays 04:17
 SHELL=/bin/sh
-17 4 * * 0 seed HOME=/home/seed PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/radicle-seed-prune --apply >> /home/seed/.radicle/prune-audit/cron.log 2>&1
+17 4 * * 0 radicle HOME=/home/radicle PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/radicle-seed-prune --apply >> /home/radicle/.radicle/prune-audit/cron.log 2>&1
 ```
+
+Point `RAD_HOME` at the node's home instead if it does not live at `$HOME/.radicle`.
 
 ## Audit trail: what got pruned over time
 
