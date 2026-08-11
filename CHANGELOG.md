@@ -2,11 +2,11 @@
 
 All notable changes to this project are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] - 2026-08-11
 
-Adds rule D, which catches mass-generated spam repos, and fixes a metadata parsing bug that could file a repo under the wrong RID.
+Adds rule D, which catches mass-generated spam repos, splits rule A by how strong its evidence is, lets the two conclusive spam verdicts take the last copy we know of, and fixes a metadata parsing bug that could file a repo under the wrong RID.
 
-**Upgrading:** replace the script, change nothing else. Rule D is on by default and will add a `spam-family` block to your next plan, so read the preview before applying. `SPAM_MIN_FAMILY=999999` turns it off.
+**Upgrading:** replace the script, change nothing else. Two defaults are more aggressive than 0.3.0, so read the preview before applying. Rule D is on and will add a `spam-family` block to your plan (`SPAM_MIN_FAMILY=999999` turns it off), and the `junk-id` and `spam-family` verdicts now default to a seed floor of `0`, so they may delete a repo no other node we know of is seeding (`JUNK_ID_MIN_SEEDS=1 SPAM_MIN_SEEDS=1` restores the old floor).
 
 ### Added
 
@@ -81,4 +81,4 @@ Reliability release. Every way the tool could report a confident answer it had n
 - `--restart` to flush the node inventory after a large run; a weekly `cron.d` recipe.
 - PolyForm Noncommercial 1.0.0 license.
 
-[Unreleased]: https://github.com/maninak/radicle-seed-prune/compare/v0.3.0...HEAD [0.3.0]: https://github.com/maninak/radicle-seed-prune/compare/v0.2.0...v0.3.0 [0.2.0]: https://github.com/maninak/radicle-seed-prune/compare/v0.1.0...v0.2.0 [0.1.0]: https://github.com/maninak/radicle-seed-prune/releases/tag/v0.1.0
+[0.4.0]: https://github.com/maninak/radicle-seed-prune/compare/v0.3.0...v0.4.0 [0.3.0]: https://github.com/maninak/radicle-seed-prune/compare/v0.2.0...v0.3.0 [0.2.0]: https://github.com/maninak/radicle-seed-prune/compare/v0.1.0...v0.2.0 [0.1.0]: https://github.com/maninak/radicle-seed-prune/releases/tag/v0.1.0

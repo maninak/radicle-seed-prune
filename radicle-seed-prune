@@ -121,7 +121,7 @@
 
 set -euo pipefail
 
-VERSION="0.4.0-dev"
+VERSION="0.4.0"
 
 # `set -e` on its own exits mute: a command failing anywhere below would end the run with a bare
 # non-zero status and nothing to debug from. Name the line, the command, and the status instead.
