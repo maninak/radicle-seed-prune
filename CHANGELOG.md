@@ -16,6 +16,8 @@ Adds rule D, which catches mass-generated spam repos, and fixes a metadata parsi
 
 ### Fixed
 
+- **The launch directory can no longer manufacture scan errors.** Started from a directory the running user cannot read (`sudo -u seed` from `/root`, say), every `find` in the scan emitted `Failed to restore initial working directory` and each one counted as a scan error, so a healthy run reported `WARN: 4 scan error(s)` and buried the warnings that mean something. The script now resolves `RAD_HOME`, `STORAGE`, `CONFIG`, `AUDIT_DIR` and a path-qualified `RAD` against the caller's directory and then anchors itself at `/`, so it no longer depends on where it was launched from.
+
 - **A repo whose description quotes an RID is no longer filed under the quoted RID.** The `rad ls` parser took the *last* `rad:z…` token on a row, and descriptions do quote RIDs, so such a repo appeared in the plan as `(?)` while its name landed on an unrelated entry. It now takes the first token, walks the trailing columns instead of counting fields (visibility, head and description are each independently missing on some rows), and keeps names containing spaces intact.
 
 ## [0.3.0] - 2026-08-03

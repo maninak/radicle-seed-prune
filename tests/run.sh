@@ -302,6 +302,29 @@ else
   echo "skip - interactive prompt tests (no util-linux 'script' for a pty)"
 fi
 
+# The script anchors its cwd (cd /) so a launch directory the running user cannot read
+# never turns every find into a "Failed to restore initial working directory" scan
+# error. Both halves are guarded: the anchor, and the path resolution before it.
+build_fixture; assert_isolated
+blind="$ROOT/unreadable"; mkdir -p "$blind"
+if [ "$(id -u)" != 0 ]; then
+  out=$(cd "$blind" && chmod 000 . && "$SCRIPT" 2>&1); rc=$?
+  chmod 755 "$blind"
+  { [ "$rc" = 0 ] && ! grep -q 'Failed to restore initial working directory' <<<"$out" \
+      && ! grep -q 'scan error' <<<"$out" && grep -q '# PLAN:' <<<"$out"; } \
+    && ok "an unreadable launch directory produces no scan errors" || no "unreadable cwd is clean (rc=$rc)"
+else
+  echo "skip - unreadable-cwd test (running as root bypasses the mode bits)"
+fi
+
+# cd / must not change what a RELATIVE RAD_HOME/STORAGE/RAD meant to the caller.
+build_fixture; assert_isolated
+out=$(cd "$ROOT" && env RAD_HOME="./rad-home" STORAGE="./rad-home/storage" \
+        CONFIG="./rad-home/config.json" AUDIT_DIR="./rad-home/prune-audit" \
+        RAD="./bin/rad" "$SCRIPT" 2>&1); rc=$?
+{ [ "$rc" = 0 ] && grep -qE '^zjunk1 ' <<<"$out" && grep -q '# PLAN:' <<<"$out"; } \
+  && ok "relative RAD_HOME/STORAGE/RAD survive the cwd anchor" || no "relative paths survive cd / (rc=$rc)"
+
 rm -rf "$ROOT"
 # ============================================================================
 echo "-----------------------------------------"

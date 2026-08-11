@@ -173,6 +173,18 @@ STALE_YEARS_DAYS_AGG="${STALE_YEARS_DAYS_AGG:-60}"
 MIN_OTHER_SEEDS_AGG="${MIN_OTHER_SEEDS_AGG:-1}"  # hard floor 1: never delete the last network copy
 
 AUDIT_DIR="${AUDIT_DIR:-$RAD_HOME/prune-audit}"
+
+# Anchor the cwd somewhere any user can read. Launched from a directory the running
+# user cannot read (`sudo -u seed` started from /root, say), every `find` below emits
+# "Failed to restore initial working directory", which inflates the scan-error count
+# and buries the warnings that matter. Relative paths resolve against the caller's cwd
+# FIRST, so they still mean what the caller meant.
+_abs(){ case $1 in /*) printf '%s' "$1" ;; *) printf '%s/%s' "$PWD" "$1" ;; esac; }
+RAD_HOME=$(_abs "$RAD_HOME"); STORAGE=$(_abs "$STORAGE")
+CONFIG=$(_abs "$CONFIG");     AUDIT_DIR=$(_abs "$AUDIT_DIR")
+case $RAD in */*) RAD=$(_abs "$RAD") ;; esac   # a bare "rad" keeps resolving through PATH
+cd /
+
 # Parallel workers for the per-repo activity scan. Dynamic default: one per core, less one, so the
 # running node keeps a core free. Note the scan is usually IO-bound (a single du over all storage),
 # so raising this mostly helps on seeds with ref-heavy (COB-heavy) repos. Override via JOBS.
