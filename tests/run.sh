@@ -30,7 +30,9 @@ zown22\tmyproj\t5\tpublic\t1\t800\t2000\ta real project
 zhexid23\t08a25d0f666d\t5\tpublic\t0\t300\t2000\ta real project
 zdigit24\t12345678\t5\tpublic\t0\t300\t2000\ta real project
 zridin25\tridquoter\t5\tpublic\t0\t800\t2000\tstatic site generator used for the site in rad:zsomeotherrepo
-zspaced26\tBlog e64\t5\tpublic\t0\t800\t2000\ta real project'
+zspaced26\tBlog e64\t5\tpublic\t0\t800\t2000\ta real project
+zhexzero27\t9f3c1a7b2e4d8506\t0\tpublic\t0\t300\t2000\ta real project
+zwordzero28\ttest-orphan\t0\tpublic\t0\t300\t2000\ta real project'
 
 # Rule D is decided by the CORPUS, so it needs whole families, and the families below are a
 # controlled experiment: all five are 9 repos, the same age, the same size, and a name skeleton
@@ -57,10 +59,11 @@ build_families(){
     rows+="znodesc$i\tblank-$i-${hex[$i]}\t5\tpublic\t0\t90\t2000\t\n"
     rows+="zdate$i\tsnapshot-2024010$i\t5\tpublic\t0\t90\t2000\tNightly snapshot $i\n"
   done
+  rows+="zspamzero\tevens-10-4b7e2c91\t0\tpublic\t0\t90\t2000\tKeep only even values from an array. Variant 10.\n"
   printf '%b' "$rows"
 }
 MANIFEST_ROWS="$MANIFEST_ROWS"$'\n'"$(build_families)"
-NREPOS=59
+NREPOS=62
 
 build_fixture(){
   [ -n "${ROOT:-}" ] && rm -rf "$ROOT" 2>/dev/null # re-runnable: drop the previous fixture
@@ -140,7 +143,7 @@ has "$plan" "zbar8"   && grep -qE "^zbar8 .*junk-name"      <<<"$plan" && ok "wh
 ! has "$plan" "zpriv7"  && ok "private repo excluded"           || no "private repo excluded"
 ! has "$plan" "zown22"  && ok "own repo excluded"               || no "own repo excluded"
 ! has "$plan" "zbwid9"  && ok "'BAR_widget' not treated as junk" || no "'BAR_widget' not junk"
-has "$plan" "zhexid23" && grep -qE "^zhexid23 .*junk-name" <<<"$plan" && ok "name that is only a random hex id pruned (junk-name)" || no "random-hex-id name pruned"
+has "$plan" "zhexid23" && grep -qE "^zhexid23 .*junk-id" <<<"$plan" && ok "name that is only a random hex id pruned (junk-id)" || no "random-hex-id name pruned"
 ! has "$plan" "zdigit24" && ok "all-digit name '12345678' not treated as a random id"  || no "'12345678' not a random id"
 
 # --- rule D: generated-bulk families, decided by the corpus ---
@@ -161,7 +164,7 @@ grep -qE '^# spam families: 1 template' <<<"$plan" && ok "the plan header report
 
 # The gate must be able to say no: raise the family threshold above the family size and the exact
 # same repos have to survive, or the rule is passing on something other than the evidence it claims.
-plan_k=$(SPAM_MIN_FAMILY=10 run)
+plan_k=$(SPAM_MIN_FAMILY=11 run)   # the evens family is 10 members
 [ "$(grep -cE "^zspam[1-9] " <<<"$plan_k" || true)" = 0 ] && ok "SPAM_MIN_FAMILY above the family size spares it" || no "SPAM_MIN_FAMILY gate is vacuous"
 # ...and so must the description-agreement gate, on its own.
 plan_d=$(SPAM_DESC_AGREE_PCT=101 run)
@@ -171,6 +174,29 @@ plan_id=$(SPAM_REQUIRE_ID=0 run)
 { [ "$(grep -cE "^zenum[1-9] .*spam-family" <<<"$plan_id" || true)" = 9 ] \
   && [ "$(grep -cE "^zdecoy[1-9] " <<<"$plan_id" || true)" = 0 ]; } \
   && ok "SPAM_REQUIRE_ID=0 reaches enumeration families, still not the decoy" || no "SPAM_REQUIRE_ID=0 reaches enum family"
+# --- taking the last copy WE KNOW OF, but only where the evidence is conclusive ---
+# "No other seed has it" is worthlessness for machine-generated bulk and preservation value for
+# anything else, so the two rule-A branches are gated apart and rule C is not in this game at all.
+has "$plan" "zhexzero27" && grep -qE "^zhexzero27 .*junk-id" <<<"$plan" \
+  && ok "zero-seed random-id name is pruned (junk-id takes the last copy)" || no "zero-seed junk-id pruned"
+! has "$plan" "zwordzero28" \
+  && ok "zero-seed 'test-orphan' is kept (a word in a name is a guess, not proof)" || no "zero-seed junk-name kept"
+has "$plan" "zspamzero" && grep -qE "^zspamzero .*spam-family" <<<"$plan" \
+  && ok "zero-seed spam family member is pruned" || no "zero-seed spam-family pruned"
+
+# Both new floors must be able to say no, or they are decoration.
+plan_i=$(JUNK_ID_MIN_SEEDS=1 run)
+! has "$plan_i" "zhexzero27" && has "$plan_i" "zhexid23" \
+  && ok "JUNK_ID_MIN_SEEDS=1 spares the zero-seed id repo, keeps the seeded one" || no "JUNK_ID_MIN_SEEDS gate is vacuous"
+# ...and the word branch's floor must be the REASON zwordzero28 survives, not a coincidence of it
+# also failing every other rule: drop the floor and it has to appear.
+plan_w=$(JUNK_MIN_SEEDS=0 run)
+grep -qE "^zwordzero28 .*junk-name" <<<"$plan_w" \
+  && ok "JUNK_MIN_SEEDS=0 does reach the zero-seed word repo (so the keep above is real)" || no "zero-seed junk-name keep is vacuous"
+plan_s=$(SPAM_MIN_SEEDS=1 run)
+! has "$plan_s" "zspamzero" && has "$plan_s" "zspam1" \
+  && ok "SPAM_MIN_SEEDS=1 spares the zero-seed spam repo, keeps the seeded ones" || no "SPAM_MIN_SEEDS gate is vacuous"
+
 # A repo whose description quotes an rid must still be filed under its OWN rid, not the quoted one.
 # Regression: a description may itself quote an rid ("...used for the site in rad:z3U9..."), and
 # taking the LAST rad: token on the row filed the whole repo under the rid it merely mentioned.
@@ -234,10 +260,10 @@ grep -qE '^# WARN: [0-9]+ scan error' <<<"$out" && ok "scan errors are reported,
   && ok "unreadable repo excluded from plan, others still planned" || no "unreadable repo excluded from plan"
 
 # --- a scan that missed too much of storage refuses to report a plan at all ---
-# Three unreadable repos, against a 5% limit. Without this the run would report a
-# plausible-looking small plan built from a scan that never saw a third of the seed.
+# Three unreadable repos against a 1% limit, so the assertion does not ride on the fixture size.
+# Without this the run would report a plausible-looking small plan built from a partial scan.
 for r in zjunk1 zbig2 zbar8; do chmod 000 "$STORAGE/$r"; done
-out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 MAX_SCAN_FAIL_PCT=5 "$SCRIPT" 2>&1); rc=$?
+out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 MAX_SCAN_FAIL_PCT=1 "$SCRIPT" 2>&1); rc=$?
 for r in zjunk1 zbig2 zbar8; do chmod 755 "$STORAGE/$r"; done
 { [ "$rc" = 5 ] && grep -q "could not read 3 of $NREPOS repos" <<<"$out" && ! grep -q '# PLAN:' <<<"$out"; } \
   && ok "blind scan aborts instead of reporting a small plan" || no "blind scan aborts (got exit $rc)"

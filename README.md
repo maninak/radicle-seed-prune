@@ -9,7 +9,7 @@
 
 Reclaim disk on a Radicle seed by safely pruning lower-value repos.
 
-A [Radicle](https://radicle.dev) seed that seeds everything mirrors the whole public network and grows without bounds. This tool finds the repos least worth holding onto (stale giants, long-abandoned repos, obviously disposable ones, and mass-generated spam families) and prunes them: **dry-run first**, seed-count gated so it never deletes the last known copy, and self-tightening as free disk runs low.
+A [Radicle](https://radicle.dev) seed that seeds everything mirrors the whole public network and grows without bounds. This tool finds the repos least worth holding onto (stale giants, long-abandoned repos, obviously disposable ones, and mass-generated spam families) and prunes them: **dry-run first**, seed-count gated so it keeps the last copy it knows of (except for conclusive spam verdicts), and self-tightening as free disk runs low.
 
 ## Install
 
@@ -111,7 +111,7 @@ rm -rf  <storage>/<rid> # the only step that actually frees disk
 
 Order matters: `rad unseed` removes whichever policy row a repo has, so it must run **before** `rad block`, never after, or it would wipe the block you just set and the repo would re-seed.
 
-**Recoverability.** Deletion is local. A pruned repo is re-fetchable from the network later as long as other nodes still hold it. That is why every rule has a minimum other-seed-count gate: the tool never deletes the last known copy. Undoing a prune is clearing the block and seeding again, and the [audit log](#audit-trail-what-got-pruned-over-time) holds every RID that was removed:
+**Recoverability.** Deletion is local. A pruned repo is re-fetchable from the network later as long as other nodes still hold it. That is why every rule has a minimum other-seed-count gate, and why only the two conclusive spam verdicts (`junk-id`, `spam-family`) are allowed to set it to zero. Undoing a prune is clearing the block and seeding again, and the [audit log](#audit-trail-what-got-pruned-over-time) holds every RID that was removed:
 
 ```sh
 rad unseed rad:<rid> && rad seed rad:<rid>    # one repo
@@ -139,14 +139,17 @@ A repo is pruned if it is **not excluded** and matches **at least one rule**.
 
 Every rule has the same shape: **something about the repo**, *and* it has sat untouched long enough, *and* enough other nodes still hold it. All three, always.
 
-| Rule               | The repo looks like                                                                 | No activity for           | Other seeds            |
-| ------------------ | ----------------------------------------------------------------------------------- | ------------------------- | ---------------------- |
-| **A, junk-name**   | a disposable name (`test`, `tmp`, a bare random hex id)                             | `JUNK_STALE_DAYS`, 30d    | ≥ `JUNK_MIN_SEEDS`, 1  |
-| **B, size**        | a giant: over `ABS_SIZE_FLOOR_MB` (500M) *and* in the top `REL_PCTL`% by size (P95) | `OUTLIER_STALE_DAYS`, 90d | ≥ `MIN_OTHER_SEEDS`, 3 |
-| **C, stale**       | nothing in particular; the catch-all for whatever A/B/D missed                      | `STALE_YEARS_DAYS`, 730d  | ≥ `MIN_OTHER_SEEDS`, 3 |
-| **D, spam-family** | one of a mass-generated template family ([below](#rule-d-spam-families))            | `SPAM_STALE_DAYS`, 7d     | ≥ `SPAM_MIN_SEEDS`, 1  |
+| Rule               | The repo looks like                                                                 | No activity for           | Other seeds              |
+| ------------------ | ----------------------------------------------------------------------------------- | ------------------------- | ------------------------ |
+| **A, junk-name**   | a disposable *word* in the name (`test`, `tmp`, `old`, `demo`)                      | `JUNK_STALE_DAYS`, 30d    | ≥ `JUNK_MIN_SEEDS`, 1    |
+| **A, junk-id**     | the name is *nothing but* a random hex id (`08a25d0f666d`)                          | `JUNK_STALE_DAYS`, 30d    | ≥ `JUNK_ID_MIN_SEEDS`, 0 |
+| **B, size**        | a giant: over `ABS_SIZE_FLOOR_MB` (500M) *and* in the top `REL_PCTL`% by size (P95) | `OUTLIER_STALE_DAYS`, 90d | ≥ `MIN_OTHER_SEEDS`, 3   |
+| **C, stale**       | nothing in particular; the catch-all for whatever A/B/D missed                      | `STALE_YEARS_DAYS`, 730d  | ≥ `MIN_OTHER_SEEDS`, 3   |
+| **D, spam-family** | one of a mass-generated template family ([below](#rule-d-spam-families))            | `SPAM_STALE_DAYS`, 7d     | ≥ `SPAM_MIN_SEEDS`, 0    |
 
 Defaults are shown; each one is an environment variable, and each tightens under [disk pressure](#disk-pressure-adaptivity).
+
+**Two verdicts are allowed to take the last copy we know of**, and only those two. `junk-id` and `spam-family` default to a seed floor of `0`. "Other seeds" counts the nodes *our routing table* says announce a repo, which is not proof a copy exists elsewhere: gossip is incomplete, and the author almost certainly still has theirs. So the floor is dropped only where the evidence is conclusive, on the reasoning that for machine-generated bulk "nobody else seeds it" measures worthlessness rather than rarity. A disposable *word* in a name is a guess (`my-old-thesis` is somebody's thesis), and a large or long-abandoned *unique* repo is the very thing a seed exists to preserve, so `junk-name`, `size` and `stale` keep their floors. Set `JUNK_ID_MIN_SEEDS=1 SPAM_MIN_SEEDS=1` to restore never-take-the-last-copy everywhere.
 
 **"Activity" means any signed change, however small.** Every Radicle interaction (a commit, a new issue or patch, a comment, a reaction, an edit, a label) is stored as a git commit appended under some peer's `refs/cobs/*`, and it also advances that peer's `refs/rad/sigrefs`. The tool reads the newest `creatordate` across **all** refs (every peer's namespace included), so the freshest of any of these wins. It measures when the change was *authored*, not when we replicated it, so a just-fetched old comment correctly still reads as old, not as fresh activity.
 
@@ -193,7 +196,7 @@ The thresholds above are the **relaxed** values, used when there is plenty of fr
 | `REL_PCTL`           | 95              | 50                 |
 | `MIN_OTHER_SEEDS`    | 3               | 1                  |
 
-The header prints the live pressure and the effective thresholds every run. On one node, pruning scaled from ~1.3k repos / 18 GiB at `p=0` to ~7.1k repos / 92 GiB at `p=1`. **Hard floors never scale:** `MIN_OTHER_SEEDS` bottoms out at 1 (never delete the last network copy), and the pinned/private/own exclusions always hold. Set `DISK_AWARE=0` to disable scaling entirely.
+The header prints the live pressure and the effective thresholds every run. On one node, pruning scaled from ~1.3k repos / 18 GiB at `p=0` to ~7.1k repos / 92 GiB at `p=1`. **Hard floors never scale:** `MIN_OTHER_SEEDS` bottoms out at 1, so rules B and C never take the last copy we know of, and the pinned/private/own exclusions always hold. Set `DISK_AWARE=0` to disable scaling entirely.
 
 ## Configuration
 
@@ -213,7 +216,8 @@ Every knob is an environment variable, so a run is configured the same way `rad`
 | Rule | Variable              | Default | Meaning                                                                 |
 | ---- | --------------------- | ------- | ----------------------------------------------------------------------- |
 | A    | `JUNK_STALE_DAYS`     | `30`    | Staleness required                                                      |
-| A    | `JUNK_MIN_SEEDS`      | `1`     | Other seeds required; never delete the last copy                        |
+| A    | `JUNK_MIN_SEEDS`      | `1`     | Other seeds for the *word* branch; keeps the last copy we know of       |
+| A    | `JUNK_ID_MIN_SEEDS`   | `0`     | Other seeds for the *random-id* branch; `0` may take the last copy      |
 | A    | `JUNK_ID_MIN_LEN`     | `8`     | Length at which an all-hex name counts as a random id (`0` disables it) |
 | B    | `ABS_SIZE_FLOOR_MB`   | `500`   | Absolute size floor                                                     |
 | B    | `REL_PCTL`            | `95`    | Size percentile, across all repos on the seed                           |
@@ -224,7 +228,7 @@ Every knob is an environment variable, so a run is configured the same way `rad`
 | D    | `SPAM_DESC_AGREE_PCT` | `80`    | Share of that family that must agree on one description skeleton        |
 | D    | `SPAM_REQUIRE_ID`     | `1`     | Demand a random-id slot in the name skeleton (`0` is looser)            |
 | D    | `SPAM_STALE_DAYS`     | `7`     | Staleness, here a grace period rather than evidence                     |
-| D    | `SPAM_MIN_SEEDS`      | `1`     | Other seeds required; never delete the last copy                        |
+| D    | `SPAM_MIN_SEEDS`      | `0`     | Other seeds required; `0` may take the last copy we know of             |
 
 **Brakes**
 
@@ -280,7 +284,7 @@ awk -F'\t' '/reclaimed/{n++; g+=$3} END{print n" runs, "g" GiB total"}' ~/.radic
 ## Safety model, in one place
 
 - **Dry-run by default.** Nothing is deleted without `--apply`.
-- **Seed-count gates** keep the last network copy of any repo.
+- **Seed-count gates** keep the last copy we know of, except for the two conclusive verdicts (`junk-id`, `spam-family`), which default to a floor of `0`. `JUNK_ID_MIN_SEEDS=1 SPAM_MIN_SEEDS=1` applies the floor everywhere.
 - **Runaway caps** (`MAX_PRUNE_COUNT`, `MAX_PRUNE_GB`) abort an unexpectedly large plan unless `--force`.
 - **Freshness guard** skips repos with an in-flight fetch.
 - **Apply preflight** aborts if the node is down or exclusions can't be read, so a transient failure never deletes your own or pinned repos.
