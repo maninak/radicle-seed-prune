@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Test double for `rad`, driven by env: RSP_HOME, RSP_NID, RSP_MANIFEST, RSP_NODE_DOWN,
-# RSP_NO_ROUTING. Manifest columns: rid  name  seeds  vis  own  days  size
+# RSP_NO_ROUTING, RSP_NO_LS. Manifest columns: rid  name  seeds  vis  own  days  size  desc
 set -uo pipefail
 # Real rad takes its home from the ENVIRONMENT, so record what we were actually handed: that is the
 # only way a test can tell an exported RAD_HOME from one the script merely set as a shell variable.
@@ -10,21 +10,23 @@ case "$sub" in
   path) echo "$RSP_HOME" ;;
   self) echo "$RSP_NID" ;;                    # `rad self --nid`
   ls)
+    [ "${RSP_NO_LS:-0}" = 1 ] && exit 0        # `rad ls` yields nothing: names blank, rule D blind
     priv=0; allf=0
     for a in "$@"; do [ "$a" = --private ] && priv=1; [ "$a" = --all ] && allf=1; done
-    while IFS=$'\t' read -r rid name seeds vis own days size; do
+    while IFS=$'\t' read -r rid name seeds vis own days size desc; do
       [ -z "$rid" ] && continue
       if   [ "$priv" = 1 ]; then [ "$vis" = private ] || continue
       elif [ "$allf" = 0 ]; then [ "$own" = 1 ] || continue   # bare `rad ls` = our own repos
       fi
-      printf '| %s rad:%s %s abc123 desc |\n' "$name" "$rid" "$vis"
+      # real rad prints a 7-hex head; keep it exact, the script's column walk depends on the shape
+      printf '| %s rad:%s %s abc1234 %s |\n' "$name" "$rid" "$vis" "$desc"
     done < "$RSP_MANIFEST"
     ;;
   node)
     case "${1:-}" in
       routing)
         if [ "${RSP_NO_ROUTING:-0}" != 1 ]; then
-          while IFS=$'\t' read -r rid name seeds vis own days size; do
+          while IFS=$'\t' read -r rid name seeds vis own days size desc; do
             [ -z "$rid" ] && continue
             n=0; while [ "$n" -lt "${seeds:-0}" ]; do
               printf '{"rid":"rad:%s","nid":"zo%s%02d"}\n' "$rid" "$rid" "$n"; n=$((n+1))

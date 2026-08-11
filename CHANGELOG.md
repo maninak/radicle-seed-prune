@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on 
 
 ## [Unreleased]
 
+Adds rule D, which catches mass-generated spam repos, and fixes a metadata parsing bug that could file a repo under the wrong RID.
+
+**Upgrading:** replace the script, change nothing else. Rule D is on by default and will add a `spam-family` block to your next plan, so read the preview before applying. `SPAM_MIN_FAMILY=999999` turns it off.
+
+### Added
+
+- **Rule D, spam families.** Bulk-generated repos give nothing away one at a time and are obvious in aggregate, so this rule is decided by the corpus, never by a single repo. Names and descriptions are skeletonised (digit runs to `#`, random-id tokens to `%`), and a repo is pruned only when its name skeleton carries a random-id slot, at least `SPAM_MIN_FAMILY` repos share that skeleton, and at least `SPAM_DESC_AGREE_PCT`% of them agree on one description skeleton. Demanding those two independent signals is what keeps false positives near zero: on a real 11,684-repo seed it flags 974 repos in 10 template families and nothing else, leaving large legitimate mirror imports alone because each of their repos carries its own real description. Costs about 0.4s on 11.7k repos. [Full rationale, and the two things it deliberately does not do](./README.md#rule-d-spam-families).
+
+- **Rule A also treats a name that is nothing but a random hex id as disposable** (`08a25d0f666d`; both letters and digits required, so `12345678` and `facade` are left alone). This is the one shape of generated bulk that rule D cannot see, since such repos carry no description to corroborate with. `JUNK_ID_MIN_LEN=0` disables it.
+
+### Fixed
+
+- **A repo whose description quotes an RID is no longer filed under the quoted RID.** The `rad ls` parser took the *last* `rad:z…` token on a row, and descriptions do quote RIDs, so such a repo appeared in the plan as `(?)` while its name landed on an unrelated entry. It now takes the first token, walks the trailing columns instead of counting fields (visibility, head and description are each independently missing on some rows), and keeps names containing spaces intact.
+
 ## [0.3.0] - 2026-08-03
 
 Reliability release. Every way the tool could report a confident answer it had not earned is now closed: it either has the data, or it says so and stops. No pruning rule changed, so a plan from a healthy 0.2.0 run is still a valid plan.

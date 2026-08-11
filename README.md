@@ -9,7 +9,7 @@
 
 Reclaim disk on a Radicle seed by safely pruning lower-value repos.
 
-A [Radicle](https://radicle.dev) seed that seeds everything mirrors the whole public network and grows without bounds. This tool finds the repos least worth holding onto (stale giants, long-abandoned repos, and obviously disposable ones) and prunes them: **dry-run first**, seed-count gated so it never deletes the last known copy, and self-tightening as free disk runs low.
+A [Radicle](https://radicle.dev) seed that seeds everything mirrors the whole public network and grows without bounds. This tool finds the repos least worth holding onto (stale giants, long-abandoned repos, obviously disposable ones, and mass-generated spam families) and prunes them: **dry-run first**, seed-count gated so it never deletes the last known copy, and self-tightening as free disk runs low.
 
 ## Install
 
@@ -20,7 +20,7 @@ chmod +x radicle-seed-prune
 
 Or copy-paste the script manually from [`radicle-seed-prune`](./radicle-seed-prune).
 
-Requirements: `bash`, `git`, `jq`, and `rad` on `PATH`. Run it as the user that owns the Radicle home (your seed account).
+Requirements: `bash`, `git`, `jq`, and `rad` on `PATH`.
 
 ## Usage
 
@@ -44,7 +44,7 @@ RAD=/nix/store/.../bin/rad RAD_HOME=/var/lib/radicle ./radicle-seed-prune # ...a
 
 There are deliberately no tuning flags: every knob is an environment variable, listed under [Configuration](#configuration).
 
-One rule: **no flag previews, `--apply` does it.** `--apply` scans once, prints the plan, and then:
+**There is no `--dry-run` flag, because running with no flags *is* the dry run.** `--apply` scans once, prints that same plan, and then:
 
 - in a terminal, asks `[y/N]` before deleting anything: answer yes to apply the plan you just saw;
 - non-interactively (cron, a pipe), it just applies, since there is nobody to answer.
@@ -56,8 +56,15 @@ The single scan is the point: a dry-run to preview and then a separate `--apply`
 ```text
 # radicle-seed-prune  2026-06-28T18:31:50Z   mode=DRY-RUN
 # disk: 126.6GB free (46.9%)  pressure=0%  [relax>=54GB crit<=2GB]
-# rules: A junk(>30d, seeds>=1)  B size(>500MB & >=P95, >90d, seeds>=3)  C stale(>730d, seeds>=3)
+# rules: A junk(>30d, seeds>=1)  B size(>500MB & >=P95, >90d, seeds>=3)  C stale(>730d, seeds>=3)  D spam(family>=5 & desc>=80%, >7d, seeds>=1)
 # excluded: 9 pinned, 2 private, 0 own
+# spam families: 10 template(s) matching 974 repos, before the age/seed gates:
+#     110  palindrome-*-*
+#     103  sum-*-*
+#     101  factorial-*-*
+#      99  evens-*-*
+#      97  unique-*-*
+#   ...and 5 more
 # repos=9171  sizes P50=0M P90=14M P95=45M P99=267M  rel-cut(P95)=45M  abs-cut=500M
 
 RID                                     SIZE  SEEDS   AGE(d) REASON        NAME
@@ -66,13 +73,19 @@ rad:zEXAMPLExxxxxxxxxxxxxxxxxxxx2     909.6MB      9      830 size-outlier  texl
 rad:zEXAMPLExxxxxxxxxxxxxxxxxxxx3     395.9MB      6      819 stale         some-old-project
 rad:zEXAMPLExxxxxxxxxxxxxxxxxxxx4     127.6MB     12      229 junk-name     darkfi-redicle-test
 rad:zEXAMPLExxxxxxxxxxxxxxxxxxxx5      29.9MB     14      446 junk-name     test
+rad:zEXAMPLExxxxxxxxxxxxxxxxxxxx6     100.4KB     11       13 spam-family   evens-2-33ed7115
 
-# PLAN: prune 1341 repos, reclaim 18.04 GiB
+# PLAN: prune 2315 repos, reclaim 18.13 GiB
 #   junk-name       677 repos      0.99 GiB
 #   size-outlier     15 repos     11.35 GiB
+#   spam-family     974 repos      0.09 GiB
 #   stale           649 repos      5.69 GiB
 # DRY-RUN: nothing changed. Re-run with --apply to execute.
 ```
+
+Reading the header top to bottom: free disk and the pressure it produces, the four rules with the thresholds **actually in effect at that pressure**, what was excluded, the spam families found, and the size distribution rule B's percentile is drawn from. Then the plan itself, largest-first, and a total per reason.
+
+The `spam-family` line is the one that looks like a waste of time and is not: 974 repos for 0.09 GiB. Rule D is about inventory hygiene more than disk. A thousand template repos are a few dozen MB, but they are a thousand entries your node announces, fetches and re-announces forever.
 
 ### Exit codes
 
@@ -98,7 +111,15 @@ rm -rf  <storage>/<rid> # the only step that actually frees disk
 
 Order matters: `rad unseed` removes whichever policy row a repo has, so it must run **before** `rad block`, never after, or it would wipe the block you just set and the repo would re-seed.
 
-**Recoverability.** Deletion is local. A pruned repo is re-fetchable from the network later (`rad unseed` to clear the block, then `rad seed`) as long as other nodes still hold it. That is why every size/age rule has a minimum other-seed-count gate: the tool never deletes the last known copy. Every prune is written to an audit log under `$RAD_HOME/prune-audit/`.
+**Recoverability.** Deletion is local. A pruned repo is re-fetchable from the network later as long as other nodes still hold it. That is why every rule has a minimum other-seed-count gate: the tool never deletes the last known copy. Undoing a prune is clearing the block and seeding again, and the [audit log](#audit-trail-what-got-pruned-over-time) holds every RID that was removed:
+
+```sh
+rad unseed rad:<rid> && rad seed rad:<rid>    # one repo
+
+# ...or every repo a given run removed, read back out of that run's audit log
+awk -F'\t' '!/^#/ {print "rad:"$1}' ~/.radicle/prune-audit/prune-20260628T183150Z.log |
+  while read -r rid; do rad unseed "$rid" && rad seed "$rid"; done
+```
 
 ## The pruning algorithm
 
@@ -116,15 +137,47 @@ A repo is pruned if it is **not excluded** and matches **at least one rule**.
 
 ### Rules
 
-| Rule             | Fires when                                                                                                                                                      |
-| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **A, junk-name** | name looks disposable **and** no new commit/COB for > `JUNK_STALE_DAYS` **and** other-seeds ≥ `JUNK_MIN_SEEDS`                                                  |
-| **B, size**      | size > `ABS_SIZE_FLOOR_MB` **and** size ≥ the `REL_PCTL`-th percentile of all repo sizes **and** stale > `OUTLIER_STALE_DAYS` **and** seeds ≥ `MIN_OTHER_SEEDS` |
-| **C, stale**     | anything A/B missed: stale > `STALE_YEARS_DAYS` **and** seeds ≥ `MIN_OTHER_SEEDS`                                                                               |
+Every rule has the same shape: **something about the repo**, *and* it has sat untouched long enough, *and* enough other nodes still hold it. All three, always.
+
+| Rule               | The repo looks like                                                                 | No activity for           | Other seeds            |
+| ------------------ | ----------------------------------------------------------------------------------- | ------------------------- | ---------------------- |
+| **A, junk-name**   | a disposable name (`test`, `tmp`, a bare random hex id)                             | `JUNK_STALE_DAYS`, 30d    | ≥ `JUNK_MIN_SEEDS`, 1  |
+| **B, size**        | a giant: over `ABS_SIZE_FLOOR_MB` (500M) *and* in the top `REL_PCTL`% by size (P95) | `OUTLIER_STALE_DAYS`, 90d | ≥ `MIN_OTHER_SEEDS`, 3 |
+| **C, stale**       | nothing in particular; the catch-all for whatever A/B/D missed                      | `STALE_YEARS_DAYS`, 730d  | ≥ `MIN_OTHER_SEEDS`, 3 |
+| **D, spam-family** | one of a mass-generated template family ([below](#rule-d-spam-families))            | `SPAM_STALE_DAYS`, 7d     | ≥ `SPAM_MIN_SEEDS`, 1  |
+
+Defaults are shown; each one is an environment variable, and each tightens under [disk pressure](#disk-pressure-adaptivity).
 
 **"Activity" means any signed change, however small.** Every Radicle interaction (a commit, a new issue or patch, a comment, a reaction, an edit, a label) is stored as a git commit appended under some peer's `refs/cobs/*`, and it also advances that peer's `refs/rad/sigrefs`. The tool reads the newest `creatordate` across **all** refs (every peer's namespace included), so the freshest of any of these wins. It measures when the change was *authored*, not when we replicated it, so a just-fetched old comment correctly still reads as old, not as fresh activity.
 
-Disposable names match `test`, `tmp`, `temp`, `scratch`, `playground`, `sandbox`, `demo`, `dummy`, `wip`, `trash`, `junk`, `old`, `throwaway`, `helloworld` (as whole, boundary-delimited words), plus `foo` / `bar` / `baz` only when they are the **entire** name (so `BAR_widget` is safe).
+Disposable names match `test`, `tmp`, `temp`, `scratch`, `playground`, `sandbox`, `demo`, `dummy`, `wip`, `trash`, `junk`, `old`, `throwaway`, `helloworld` (as whole words, delimited by `-`, `_`, `.` or the ends of the name), plus `foo` / `bar` / `baz` only when they are the **entire** name (so `BAR_widget` is safe). A space is deliberately *not* a delimiter: names with spaces read as prose, where "old" or "demo" are ordinary English words rather than the slug marker being hunted, so `test-old` matches and `The old man` does not. A name that is *nothing but* a random hex id of `JUNK_ID_MIN_LEN`+ characters counts too (`08a25d0f666d`), but not `12345678` and not `facade`, since both letters and digits are required.
+
+### Rule D: spam families
+
+Bulk-generated repos give nothing away one at a time. A repo called `evens-2-33ed7115` described as *"Keep only even values from an array. Variant 2."* could be anybody's scratch work. A hundred of them is a generator. So rule D is decided by the **corpus**, never by a single repo.
+
+Every name and description in storage is *skeletonised*: digit runs become `#`, random-id tokens (6+ hex characters carrying both a letter and a digit) become `%`. `evens-2-33ed7115` becomes `evens-#-%`. Repos are then grouped by that skeleton with `#` and `%` collapsed into one wildcard, so `evens-*-*`, and a group is a spam family only when **all** of these hold:
+
+1. at least `SPAM_MIN_FAMILY` repos share the skeleton;
+2. at least one of them carries a **random-id** slot rather than a plain enumeration; `SPAM_REQUIRE_ID=0` drops this requirement;
+3. at least `SPAM_DESC_AGREE_PCT`% of them share **one** non-empty description skeleton.
+
+Only the members carrying that agreed description are pruned, so a genuine repo that happens to share the name shape is left where it is. Collapsing `#` and `%` for grouping matters because a random hex token comes out all-digits about 2% of the time (`sum-1-96180521`), which would otherwise split a family and strand those siblings.
+
+**Two independent signals are required, and that is what keeps false positives near zero.** On a real 11,684-repo seed the rule flags 974 repos in 10 families and nothing else. It is the description agreement doing that work, not the family size: on the same corpus, dropping `SPAM_MIN_FAMILY` all the way to 3 flags the identical 974 repos and no extra family. Specifically:
+
+- a 240-repo `Adafruit_CircuitPython_*.git` mirror import shares a name skeleton, but every repo carries its own real description, so it is never flagged;
+- a 427-repo `cloud-itonami-isic-####` per-standard-code set likewise;
+- 48 unrelated repos share the description *"Migrated from Forgejo"* while their names have nothing in common, so that never fires either.
+
+The random-id requirement is the third guard. Version and enumeration slots (`linux-6.1.y`, `serde-1.0.195`, `release-202401`) mean something to a human; an 8-hex-char token in a repo name is a machine artifact. Demanding both a letter and a digit in that token is what keeps a date or sequence suffix on the enumeration side of the line. Turning the requirement off is looser and can reach a version-mirror farm whose descriptions are also templated.
+
+Two deliberate limits, so you know what the rule does not do:
+
+- **Timing is not a signal.** Measured on a real seed, the legitimate 240-repo mirror import spans `0.00` days of activity while the spam family spans `14.8`. "Created in a burst" would flag the mirror and miss the spam, so it is not used.
+- **Descriptions differing only by a number count as agreeing**, because *"Variant 2"* vs *"Variant 3"* is exactly the signature being hunted. A set whose descriptions differ only by a version number therefore rests entirely on the random-id requirement above.
+
+Repos with no description at all are never flagged: with no description there is only one signal left, and one is not enough.
 
 ### Disk-pressure adaptivity
 
@@ -135,6 +188,7 @@ The thresholds above are the **relaxed** values, used when there is plenty of fr
 | `STALE_YEARS_DAYS`   | 730             | 60                 |
 | `OUTLIER_STALE_DAYS` | 90              | 14                 |
 | `JUNK_STALE_DAYS`    | 30              | 7                  |
+| `SPAM_STALE_DAYS`    | 7               | 1                  |
 | `ABS_SIZE_FLOOR_MB`  | 500             | 50                 |
 | `REL_PCTL`           | 95              | 50                 |
 | `MIN_OTHER_SEEDS`    | 3               | 1                  |
@@ -143,29 +197,52 @@ The header prints the live pressure and the effective thresholds every run. On o
 
 ## Configuration
 
-Every knob is an environment variable. Defaults shown.
+Every knob is an environment variable, so a run is configured the same way `rad` itself is. Defaults shown.
 
-| Variable                                   | Default                       | Meaning                                                                        |
-| ------------------------------------------ | ----------------------------- | ------------------------------------------------------------------------------ |
-| `RAD`                                      | `rad`                         | The rad binary to call                                                         |
-| `RAD_HOME`                                 | `rad path`, else `~/.radicle` | Radicle home to operate on; `STORAGE`, `CONFIG` and `AUDIT_DIR` derive from it |
-| `ABS_SIZE_FLOOR_MB`                        | `500`                         | Rule B absolute size floor                                                     |
-| `REL_PCTL`                                 | `95`                          | Rule B relative size percentile                                                |
-| `OUTLIER_STALE_DAYS`                       | `90`                          | Rule B staleness                                                               |
-| `JUNK_STALE_DAYS`                          | `30`                          | Rule A staleness                                                               |
-| `STALE_YEARS_DAYS`                         | `730`                         | Rule C staleness (~2 years)                                                    |
-| `MIN_OTHER_SEEDS`                          | `3`                           | Rules B & C: required other seeds                                              |
-| `JUNK_MIN_SEEDS`                           | `1`                           | Rule A: never delete the last copy                                             |
-| `FRESH_GUARD_DAYS`                         | `2`                           | Skip repos written this recently                                               |
-| `MAX_PRUNE_COUNT`                          | `1000`                        | Runaway guard: abort over this many repos                                      |
-| `MAX_PRUNE_GB`                             | `80`                          | Runaway guard: abort over this much disk                                       |
-| `MAX_SCAN_FAIL_PCT`                        | `10`                          | Abort if more than this share of storage could not be read                     |
-| `SERVICE`                                  | `radicle-node`                | systemd unit used by `--restart-node`                                          |
-| `JOBS`                                     | `cores-1`                     | Parallel workers for the activity scan                                         |
-| `DISK_AWARE`                               | `1`                           | Scale thresholds with free disk (`0` to disable)                               |
-| `PRESSURE_RELAX_PCT` / `PRESSURE_RELAX_GB` | `20` / `20`                   | Above this much free: no pressure                                              |
-| `PRESSURE_CRIT_PCT` / `PRESSURE_CRIT_GB`   | `10` / `2`                    | At/below `min()` of these: full pressure                                       |
-| `*_AGG` (e.g. `STALE_YEARS_DAYS_AGG`)      | see above                     | Full-pressure endpoint for each knob                                           |
+**Where it runs**
+
+| Variable   | Default                       | Meaning                                                                        |
+| ---------- | ----------------------------- | ------------------------------------------------------------------------------ |
+| `RAD`      | `rad`                         | The rad binary to call                                                         |
+| `RAD_HOME` | `rad path`, else `~/.radicle` | Radicle home to operate on; `STORAGE`, `CONFIG` and `AUDIT_DIR` derive from it |
+| `SERVICE`  | `radicle-node`                | systemd unit used by `--restart-node`                                          |
+| `JOBS`     | `cores-1`                     | Parallel workers for the activity scan                                         |
+
+**What each rule needs to fire**
+
+| Rule | Variable              | Default | Meaning                                                                 |
+| ---- | --------------------- | ------- | ----------------------------------------------------------------------- |
+| A    | `JUNK_STALE_DAYS`     | `30`    | Staleness required                                                      |
+| A    | `JUNK_MIN_SEEDS`      | `1`     | Other seeds required; never delete the last copy                        |
+| A    | `JUNK_ID_MIN_LEN`     | `8`     | Length at which an all-hex name counts as a random id (`0` disables it) |
+| B    | `ABS_SIZE_FLOOR_MB`   | `500`   | Absolute size floor                                                     |
+| B    | `REL_PCTL`            | `95`    | Size percentile, across all repos on the seed                           |
+| B    | `OUTLIER_STALE_DAYS`  | `90`    | Staleness required                                                      |
+| C    | `STALE_YEARS_DAYS`    | `730`   | Staleness required (~2 years)                                           |
+| B, C | `MIN_OTHER_SEEDS`     | `3`     | Other seeds required, shared by both rules                              |
+| D    | `SPAM_MIN_FAMILY`     | `5`     | Repos sharing a name skeleton before it counts as a family              |
+| D    | `SPAM_DESC_AGREE_PCT` | `80`    | Share of that family that must agree on one description skeleton        |
+| D    | `SPAM_REQUIRE_ID`     | `1`     | Demand a random-id slot in the name skeleton (`0` is looser)            |
+| D    | `SPAM_STALE_DAYS`     | `7`     | Staleness, here a grace period rather than evidence                     |
+| D    | `SPAM_MIN_SEEDS`      | `1`     | Other seeds required; never delete the last copy                        |
+
+**Brakes**
+
+| Variable            | Default | Meaning                                                    |
+| ------------------- | ------- | ---------------------------------------------------------- |
+| `FRESH_GUARD_DAYS`  | `2`     | Skip repos written this recently (an in-flight fetch)      |
+| `MAX_PRUNE_COUNT`   | `1000`  | Runaway guard: abort over this many repos                  |
+| `MAX_PRUNE_GB`      | `80`    | Runaway guard: abort over this much disk                   |
+| `MAX_SCAN_FAIL_PCT` | `10`    | Abort if more than this share of storage could not be read |
+
+**Disk pressure** ([what it does](#disk-pressure-adaptivity))
+
+| Variable                                   | Default     | Meaning                                          |
+| ------------------------------------------ | ----------- | ------------------------------------------------ |
+| `DISK_AWARE`                               | `1`         | Scale thresholds with free disk (`0` to disable) |
+| `PRESSURE_RELAX_PCT` / `PRESSURE_RELAX_GB` | `20` / `20` | Above this much free: no pressure                |
+| `PRESSURE_CRIT_PCT` / `PRESSURE_CRIT_GB`   | `10` / `2`  | At/below `min()` of these: full pressure         |
+| `*_AGG`, e.g. `STALE_YEARS_DAYS_AGG`       | see above   | Full-pressure endpoint for each knob that scales |
 
 ```sh
 # example: only chase the giants, leave everything else
@@ -186,7 +263,7 @@ SHELL=/bin/sh
 
 Every `--apply` run writes to `$RAD_HOME/prune-audit/` (default `~/.radicle/prune-audit/`):
 
-- **`prune-<UTC-timestamp>.log`**: one file per run, the full list of repos removed that run, each with size, other-seed count, last-activity, reason, and name. Self-describing header on top.
+- **`prune-<UTC-timestamp>.log`**: one file per run, the full list of repos removed that run, tab-separated as `rid`, size, other-seed count, last-activity, reason, and name. Self-describing header on top.
 - **`history.log`**: append-only, one line per run: timestamp, repos deleted, GiB reclaimed, disk pressure. The quickest "what has this been doing" view.
 - **`cron.log`**: when run from the cron above, the full console output of every run appended.
 

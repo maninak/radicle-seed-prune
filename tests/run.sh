@@ -16,17 +16,51 @@ no(){ FAIL=$((FAIL+1)); printf 'FAIL - %s\n' "$1"; }
 has(){ grep -qE "^$2 " <<<"$1"; }
 
 # ---- fixture -----------------------------------------------------------------
-# columns: rid  name  seeds  vis  own  days_since_activity  size_bytes
-MANIFEST_ROWS='zjunk1\ttest-old\t5\tpublic\t0\t400\t2000
-zbig2\tbigmirror\t5\tpublic\t0\t200\t2200000
-ztwoyr3\tnormalproj\t4\tpublic\t0\t800\t2000
-zfresh4\tactiveproj\t5\tpublic\t0\t5\t2000
-zfews5\tcoolproj\t1\tpublic\t0\t800\t2000
-zpin6\tpinnedproj\t5\tpublic\t0\t800\t2000
-zpriv7\tsecretproj\t5\tprivate\t0\t800\t2000
-zbar8\tbar\t5\tpublic\t0\t300\t2000
-zbwid9\tBAR_widget\t5\tpublic\t0\t300\t2000
-zown22\tmyproj\t5\tpublic\t1\t800\t2000'
+# columns: rid  name  seeds  vis  own  days_since_activity  size_bytes  description
+MANIFEST_ROWS='zjunk1\ttest-old\t5\tpublic\t0\t400\t2000\ta real project
+zbig2\tbigmirror\t5\tpublic\t0\t200\t2200000\ta real project
+ztwoyr3\tnormalproj\t4\tpublic\t0\t800\t2000\ta real project
+zfresh4\tactiveproj\t5\tpublic\t0\t5\t2000\ta real project
+zfews5\tcoolproj\t1\tpublic\t0\t800\t2000\ta real project
+zpin6\tpinnedproj\t5\tpublic\t0\t800\t2000\ta real project
+zpriv7\tsecretproj\t5\tprivate\t0\t800\t2000\ta real project
+zbar8\tbar\t5\tpublic\t0\t300\t2000\ta real project
+zbwid9\tBAR_widget\t5\tpublic\t0\t300\t2000\ta real project
+zown22\tmyproj\t5\tpublic\t1\t800\t2000\ta real project
+zhexid23\t08a25d0f666d\t5\tpublic\t0\t300\t2000\ta real project
+zdigit24\t12345678\t5\tpublic\t0\t300\t2000\ta real project
+zridin25\tridquoter\t5\tpublic\t0\t800\t2000\tstatic site generator used for the site in rad:zsomeotherrepo
+zspaced26\tBlog e64\t5\tpublic\t0\t800\t2000\ta real project'
+
+# Rule D is decided by the CORPUS, so it needs whole families, and the families below are a
+# controlled experiment: all five are 9 repos, the same age, the same size, and a name skeleton
+# with a variable slot. They differ in exactly one variable each, so a failure names its own cause.
+#   zspam*   name has a random-id slot AND all 9 share one description template  -> pruned
+#   zdecoy*  same name shape, but every repo carries its OWN real description    -> kept
+#   zenum*   descriptions agree, but the varying slot is a plain enumeration     -> kept by default
+#   znodesc* random-id slot, but no descriptions at all, so only ONE signal      -> kept
+#   zdate*   agreeing descriptions and a 6+ digit slot, but no LETTER in it, so
+#            it is a date/sequence rather than a random id                        -> kept
+# 90 days old: too young for rules A/C, too small for B, so rule D is the only thing that can fire
+# and a hit can be nothing else.
+build_families(){
+  local i rows=""
+  local hex=(- 33ed7115 6cf239e8 28036e03 1d9ce82f e9a0b26f df68129a 944f76e9 283bed8c 9e1437e9)
+  # a mirror farm's descriptions differ in WORDS, the way real ones do, not merely in a number
+  local word=(- gyroscope barometer thermometer altimeter magnetometer hygrometer photodiode tachometer voltmeter)
+  # rids index from 1: 0 is not in the base58 alphabet, so a "zspam0" would be correctly rejected
+  # as a malformed rid and the family would come up one member short.
+  for i in $(seq 1 9); do
+    rows+="zspam$i\tevens-$i-${hex[$i]}\t5\tpublic\t0\t90\t2000\tKeep only even values from an array. Variant $i.\n"
+    rows+="zdecoy$i\tmirror-$i-${hex[$i]}\t5\tpublic\t0\t90\t2000\tCircuitPython driver for the ${word[$i]} breakout board\n"
+    rows+="zenum$i\tlinuxstable-$i\t5\tpublic\t0\t90\t2000\tLinux kernel stable tree branch $i\n"
+    rows+="znodesc$i\tblank-$i-${hex[$i]}\t5\tpublic\t0\t90\t2000\t\n"
+    rows+="zdate$i\tsnapshot-2024010$i\t5\tpublic\t0\t90\t2000\tNightly snapshot $i\n"
+  done
+  printf '%b' "$rows"
+}
+MANIFEST_ROWS="$MANIFEST_ROWS"$'\n'"$(build_families)"
+NREPOS=59
 
 build_fixture(){
   [ -n "${ROOT:-}" ] && rm -rf "$ROOT" 2>/dev/null # re-runnable: drop the previous fixture
@@ -59,7 +93,7 @@ build_fixture(){
   printf '{ "web": { "pinned": { "repositories": ["rad:zpin6"] } } }\n' > "$CONFIG"
 
   # real bare git repos with controlled activity date + size (all under $ROOT)
-  while IFS=$'\t' read -r rid name seeds vis own days size; do
+  while IFS=$'\t' read -r rid name seeds vis own days size desc; do
     [ -z "$rid" ] && continue
     local d="$STORAGE/$rid"
     git init -q --bare "$d"
@@ -106,6 +140,49 @@ has "$plan" "zbar8"   && grep -qE "^zbar8 .*junk-name"      <<<"$plan" && ok "wh
 ! has "$plan" "zpriv7"  && ok "private repo excluded"           || no "private repo excluded"
 ! has "$plan" "zown22"  && ok "own repo excluded"               || no "own repo excluded"
 ! has "$plan" "zbwid9"  && ok "'BAR_widget' not treated as junk" || no "'BAR_widget' not junk"
+has "$plan" "zhexid23" && grep -qE "^zhexid23 .*junk-name" <<<"$plan" && ok "name that is only a random hex id pruned (junk-name)" || no "random-hex-id name pruned"
+! has "$plan" "zdigit24" && ok "all-digit name '12345678' not treated as a random id"  || no "'12345678' not a random id"
+
+# --- rule D: generated-bulk families, decided by the corpus ---
+# The three families are identical except for the one variable each tests, so these assertions
+# isolate a single cause. Every zspam* member must be pruned, including the LAST one, since the
+# family-extension pass is what carries stragglers whose random slot came out all-digits.
+spamhits=$(grep -cE "^zspam[1-9] .*spam-family" <<<"$plan" || true)
+[ "$spamhits" = 9 ] && ok "templated family (id slot + one description) pruned (spam-family)" || no "spam family pruned (got $spamhits/9)"
+decoyhits=$(grep -cE "^zdecoy[1-9] " <<<"$plan" || true)
+[ "$decoyhits" = 0 ] && ok "same name shape but real per-repo descriptions kept (mirror farm)" || no "decoy family kept (got $decoyhits/9 pruned)"
+enumhits=$(grep -cE "^zenum[1-9] " <<<"$plan" || true)
+[ "$enumhits" = 0 ] && ok "enumeration-only family kept by default (SPAM_REQUIRE_ID=1)" || no "enum family kept (got $enumhits/9 pruned)"
+datehits=$(grep -cE "^zdate[1-9] " <<<"$plan" || true)
+[ "$datehits" = 0 ] && ok "date-suffixed family kept (a digit run is an enumeration, not an id)" || no "date family kept (got $datehits/9 pruned)"
+nodeschits=$(grep -cE "^znodesc[1-9] " <<<"$plan" || true)
+[ "$nodeschits" = 0 ] && ok "id-slot family with no descriptions kept (one signal is not enough)" || no "no-description family kept (got $nodeschits/9 pruned)"
+grep -qE '^# spam families: 1 template' <<<"$plan" && ok "the plan header reports the family it found" || no "plan header reports spam families"
+
+# The gate must be able to say no: raise the family threshold above the family size and the exact
+# same repos have to survive, or the rule is passing on something other than the evidence it claims.
+plan_k=$(SPAM_MIN_FAMILY=10 run)
+[ "$(grep -cE "^zspam[1-9] " <<<"$plan_k" || true)" = 0 ] && ok "SPAM_MIN_FAMILY above the family size spares it" || no "SPAM_MIN_FAMILY gate is vacuous"
+# ...and so must the description-agreement gate, on its own.
+plan_d=$(SPAM_DESC_AGREE_PCT=101 run)
+[ "$(grep -cE "^zspam[1-9] " <<<"$plan_d" || true)" = 0 ] && ok "unreachable description agreement spares the family" || no "SPAM_DESC_AGREE_PCT gate is vacuous"
+# Opting out of the random-id requirement is what reaches an enumeration-only family.
+plan_id=$(SPAM_REQUIRE_ID=0 run)
+{ [ "$(grep -cE "^zenum[1-9] .*spam-family" <<<"$plan_id" || true)" = 9 ] \
+  && [ "$(grep -cE "^zdecoy[1-9] " <<<"$plan_id" || true)" = 0 ]; } \
+  && ok "SPAM_REQUIRE_ID=0 reaches enumeration families, still not the decoy" || no "SPAM_REQUIRE_ID=0 reaches enum family"
+# A repo whose description quotes an rid must still be filed under its OWN rid, not the quoted one.
+# Regression: a description may itself quote an rid ("...used for the site in rad:z3U9..."), and
+# taking the LAST rad: token on the row filed the whole repo under the rid it merely mentioned.
+grep -qE "^zridin25 .*ridquoter$" <<<"$plan" && ok "a description quoting an rid still files under the row's own rid" || no "row filed under its own rid"
+# Regression: the name column was read as field 2, so any name with a space was silently truncated
+# ("Blog e64" became "Blog") - and a truncated name is what rule D skeletonises.
+grep -qE "^zspaced26 .*Blog e64$" <<<"$plan" && ok "a name containing spaces survives the parse" || no "spaced name survives the parse"
+
+# --- an empty `rad ls` degrades loudly: blank names and a blind rule D look exactly like a clean seed ---
+out=$(RSP_NO_LS=1 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 run)
+{ grep -q "WARN: .*returned no repos" <<<"$out" && ! grep -q '^# spam families' <<<"$out"; } \
+  && ok "an empty repo listing is reported, not silently read as 'no spam'" || no "empty repo listing warns"
 
 # --- disk-pressure: at full pressure, stale window shrinks + seed gate drops to 1 ---
 plan_hi=$(DISK_AWARE=1 PRESSURE_CRIT_PCT=100 PRESSURE_CRIT_GB=99999999 PRESSURE_RELAX_PCT=100 PRESSURE_RELAX_GB=999999999 ABS_SIZE_FLOOR_MB=1 run)
@@ -157,12 +234,12 @@ grep -qE '^# WARN: [0-9]+ scan error' <<<"$out" && ok "scan errors are reported,
   && ok "unreadable repo excluded from plan, others still planned" || no "unreadable repo excluded from plan"
 
 # --- a scan that missed too much of storage refuses to report a plan at all ---
-# Three unreadable repos out of ten, against a 10% limit. Without this the run would report a
+# Three unreadable repos, against a 5% limit. Without this the run would report a
 # plausible-looking small plan built from a scan that never saw a third of the seed.
 for r in zjunk1 zbig2 zbar8; do chmod 000 "$STORAGE/$r"; done
-out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 MAX_SCAN_FAIL_PCT=10 "$SCRIPT" 2>&1); rc=$?
+out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 MAX_SCAN_FAIL_PCT=5 "$SCRIPT" 2>&1); rc=$?
 for r in zjunk1 zbig2 zbar8; do chmod 755 "$STORAGE/$r"; done
-{ [ "$rc" = 5 ] && grep -q 'could not read 3 of 10 repos' <<<"$out" && ! grep -q '# PLAN:' <<<"$out"; } \
+{ [ "$rc" = 5 ] && grep -q "could not read 3 of $NREPOS repos" <<<"$out" && ! grep -q '# PLAN:' <<<"$out"; } \
   && ok "blind scan aborts instead of reporting a small plan" || no "blind scan aborts (got exit $rc)"
 
 # --- every walk in the scan can fail mid-flight without taking the run down ---
@@ -170,7 +247,7 @@ for r in zjunk1 zbig2 zbar8; do chmod 755 "$STORAGE/$r"; done
 # died at the very first line of the scan, before printing anything a bug report could use.
 shimdir="$ROOT/shim"; mkdir -p "$shimdir"; cp "$HERE/find-shim" "$shimdir/find"; chmod +x "$shimdir/find"
 out=$(PATH="$shimdir:$PATH" DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" 2>&1); rc=$?
-{ [ "$rc" = 0 ] && grep -q '# scanning 10 repos' <<<"$out" && has "$out" "zjunk1"; } \
+{ [ "$rc" = 0 ] && grep -q "# scanning $NREPOS repos" <<<"$out" && has "$out" "zjunk1"; } \
   && ok "a failing find in the scan is survived, not fatal" || no "failing find survived (got exit $rc)"
 grep -qE '^# WARN: [0-9]+ scan error' <<<"$out" && ok "a failing find is still reported as a scan error" || no "failing find reported"
 
@@ -191,8 +268,8 @@ RSP_NODE_DOWN=1 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" --apply >/dev/null 2>
 # non-interactive --apply (no controlling tty): applies directly, no prompt.
 build_fixture; assert_isolated                    # fresh fixture before the tests that delete
 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null >/dev/null 2>&1
-gone=1; for r in zjunk1 zbig2 ztwoyr3 zbar8;                do [ -e "$STORAGE/$r" ] && gone=0; done
-kept=1; for r in zfresh4 zpin6 zpriv7 zown22 zbwid9 zfews5; do [ -e "$STORAGE/$r" ] || kept=0; done
+gone=1; for r in zjunk1 zbig2 ztwoyr3 zbar8 zspam1 zspam9;             do [ -e "$STORAGE/$r" ] && gone=0; done
+kept=1; for r in zfresh4 zpin6 zpriv7 zown22 zbwid9 zfews5 zdecoy1 zenum1; do [ -e "$STORAGE/$r" ] || kept=0; done
 { [ "$gone" = 1 ] && [ "$kept" = 1 ]; } && ok "non-interactive --apply prunes exactly the plan" || no "non-interactive --apply prunes the plan"
 { [ -s "$RSP_HOME/.stub_block" ] && [ -s "$RSP_HOME/.stub_unseed" ]; } && ok "apply calls rad unseed + block" || no "apply calls unseed+block"
 
