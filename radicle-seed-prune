@@ -1020,7 +1020,14 @@ trap 'rm -f "$t"' EXIT
 for d; do
   GIT_DIR="$d" git for-each-ref --sort=creatordate \
     --format='%(creatordate:unix) %(objectname) %(refname)' 2>/dev/null > "$t" || true
-  bl=$(awk 'NR==1{b=$1} {l=$1} END{ if (NR) printf "%s\t%s", b, l; else printf "0\t0" }' "$t")
+  # Only a numeric creatordate counts. refs/rad/sigrefs points at a blob, which has no
+  # creatordate at all, so its line starts with the separator and awk reads the OBJECT ID as
+  # field 1. Left unfiltered that 40-hex string becomes the repo's birth date and reaches an
+  # arithmetic comparison, which errors and leaves every age rule unable to judge the repo.
+  # A ref without a date carries no age information, so skipping it loses nothing. --sort
+  # keeps what is left in date order, so the first is still the oldest and the last the newest.
+  bl=$(awk '$1 ~ /^[0-9]+$/ { if (b == "") b = $1; l = $1 }
+            END { if (b == "") printf "0\t0"; else printf "%s\t%s", b, l }' "$t")
   refhash=$(sha1sum < "$t" | cut -c1-40)
   printf '%s\t%s\t%s\n' "${d##*/}" "${bl:-0	0}" "$refhash"
 done
@@ -1724,7 +1731,15 @@ declare -A SIZE MTIME LIFE BIRTH NAME SEEDS EXCL SCANFAIL SPAM LINKSCORE MEDIA S
            FIRSTSEEN MEDIABYTES
 while IFS=$'\t' read -r sz path; do SIZE[${path##*/}]=$sz; done < "$tmp/du"
 while IFS=$'\t' read -r rid mt;   do MTIME[$rid]=${mt%.*}; done < "$tmp/mtimes"
-while IFS=$'\t' read -r rid bt lf _; do BIRTH[$rid]=$bt; LIFE[$rid]=$lf; done < "$tmp/lives"
+# Anything that is not a plain number becomes 0, which the classify loop reads as "age
+# unknown" and leaves the repo alone. The worker above already filters, so this is the second
+# lock on the one door through which a non-number could reach an arithmetic comparison and
+# leave a repo either unjudgeable or judged on nonsense.
+while IFS=$'\t' read -r rid bt lf _; do
+  case $bt in ''|*[!0-9]*) bt=0 ;; esac
+  case $lf in ''|*[!0-9]*) lf=0 ;; esac
+  BIRTH[$rid]=$bt; LIFE[$rid]=$lf
+done < "$tmp/lives"
 while IFS=$'\t' read -r rid nm _; do NAME[$rid]=$nm; done < "$tmp/meta"
 while IFS=$'\t' read -r rid s;    do SEEDS[$rid]=$s; done < "$tmp/seeds"
 while read -r r; do [ -n "$r" ] && EXCL[$r]=1; done < "$tmp/excluded"

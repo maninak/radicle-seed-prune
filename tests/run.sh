@@ -992,6 +992,20 @@ grep -q "^zjunk1"$'\t' "$AUDIT_DIR/first-seen.tsv" \
   && ok "a torn ledger line is skipped, not fed to an arithmetic comparison" \
   || no "a torn ledger line is skipped"
 
+# The other way a non-number reaches an age comparison, and this one is in every heartwood
+# repo: refs/rad/sigrefs points at a blob, a blob has no creatordate, so `for-each-ref
+# --sort=creatordate` prints that ref first with an empty date field and the object id lands
+# where the date should be. Rules D, E and F then compare a 40-hex string and spare the repo.
+build_fixture; assert_isolated
+blob=$(printf 'sigrefs\n' | GIT_DIR="$STORAGE/zmediaone" git hash-object -w --stdin)
+GIT_DIR="$STORAGE/zmediaone" git update-ref refs/rad/sigrefs "$blob"
+touch -d "10 days ago" "$STORAGE/zmediaone"        # update-ref just made the repo look fresh
+out=$(DISK_AWARE=0 run)
+{ grep -qE "^zmediaone .*media-dump" <<<"$out" \
+  && ! grep -q 'integer expression' <<<"$out"; } \
+  && ok "a ref with no date does not put an object id where the repo's age belongs" \
+  || no "a dateless ref blinded the age rules, and the repo went unjudged"
+
 # --- what the run left alone is counted in the report, not silently absent ---
 skipped_re='^# skipped: [0-9]+ unreadable, 1 written in the last 2d,'
 skipped_re="$skipped_re"' [0-9]+ with no readable refs'
