@@ -632,9 +632,9 @@ keep_add() {
 # to name one: "quarantine delete ../.." would otherwise be a working command.
 is_rid() { [[ $1 =~ ^z[1-9A-HJ-NP-Za-km-z]+$ ]]; }
 
-# The instant a quarantined repo becomes deletable, and the one number every purge and the
-# countdown printed by `quarantine list` all read. `find -mtime +N` was what stood here, and
-# it means "older than N+1 whole days", so a repo shown as due survived its purge for a day.
+# The instant a quarantined repo becomes deletable. `find -mtime +N` was what stood here, and
+# it means "older than N+1 whole days", so a repo the countdown showed as due survived the
+# next purge by a day.
 quar_cut=$(( now - QUARANTINE_DAYS*86400 ))
 quar_expired() {                  # prints every quarantined repo past its window
   local d born
@@ -644,6 +644,21 @@ quar_expired() {                  # prints every quarantined repo past its windo
     [ -n "$born" ] || continue
     [ "$born" -le "$quar_cut" ] && printf '%s\n' "$d"
   done
+}
+# The window is ignored outright once the disk is at the critical watermark: a recovery copy is
+# a luxury a full disk cannot buy. Kept as a function because the two moments that can afford
+# to do this sit far apart in the apply path below.
+quar_purge_all_if_critical() {
+  [ "$QUARANTINE" = 1 ] && [ "$DISK_AWARE" = 1 ] \
+    && awk -v a="$disk_avail" -v c="$crit_free" 'BEGIN{exit !(a <= c)}' || return 0
+  local d purged=0
+  for d in "$quar"/z*; do
+    [ -e "$d" ] || continue
+    rm -rf -- "$d" && purged=$((purged+1))
+  done
+  [ "$purged" = 0 ] \
+    || echo "# disk is at the critical watermark: emptied the whole quarantine ($purged)."
+  return 0
 }
 
 if [ "$CMD" = quarantine ]; then
@@ -982,8 +997,15 @@ find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -printf '%f\t%T@\n' 2>>"$scanerr
 # seed it cost 56s of a 538s run, since the giants then contend for IO all at once and the
 # smaller chunks buy more process spawns than they save in tail latency.
 repos_to_read() {                 # $1 = file listing rids the cache already answers for
+  # The storage prefix is glued on by a shell loop rather than a sed expression, because
+  # $STORAGE is an operator-supplied path: a '#' in it would end sed's own delimiter and a '&'
+  # would expand to the match, and either one yields a list that excludes nothing, so every
+  # repo is walked again AND its cached rows are appended beside the fresh ones.
+  local rid
+  while IFS= read -r rid; do printf '%s/%s\n' "$STORAGE" "$rid"; done \
+    < "$1" > "$tmp/cached-paths"
   find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -print0 2>>"$scanerr" \
-    | grep -zvxFf <(sed "s#^#$STORAGE/#" "$1")
+    | grep -zvxFf "$tmp/cached-paths"
 }
 cat > "$tmp/life.sh" <<'LIFE'
 #!/usr/bin/env bash
@@ -1020,26 +1042,44 @@ awk -F'\t' -v du="$tmp/du" \
      { print $1 "\t" $4 "-" (size[$1] + 0) }' "$tmp/du" "$tmp/lives" \
   | sort > "$tmp/keys"
 
-# The whole cache is dropped when the script or the environment it reads changes, rather than
+# The whole cache is dropped when the script or the settings it reads change, rather than
 # folding that into every key: a threshold the operator tuned must not leave last week's
-# verdicts standing, and one comparison is easier to be sure of than 11,000. The environment
-# is taken whole, minus the names that change between two identical runs, so a knob added
-# later is covered without anyone remembering to list it here.
-# INVOCATION_ID and JOURNAL_STREAM are here because systemd stamps both afresh on every
-# service and timer start, which made a systemd-launched run cold every single time.
-noise='^(_|PWD|OLDPWD|SHLVL|TERM|COLUMNS|LINES|SSH_[A-Z_]*|SUDO_[A-Z_]*|JOBS|CACHE'
-noise="$noise"'|INVOCATION_ID|JOURNAL_STREAM)='
+# verdicts standing, and one comparison is easier to be sure of than 11,000.
+#
+# The settings are the knobs this script itself reads, found by grepping the file for the
+# environment variables it takes a default for, so a knob added later is covered without
+# anyone remembering to list it here. Hashing the whole environment instead was tried and went
+# cold on any variable the CALLER happened to differ on: systemd stamps a fresh INVOCATION_ID
+# on every start, so a hand run and a cron run invalidated each other's cache in both
+# directions, which on an 11k-repo seed is a full uncached run every time. The names below are
+# left out because none of them can change a verdict: two are about how the work is done and
+# three about how it is printed or which service gets restarted.
+skip='JOBS|CACHE|PLAN_FULL|PLAN_COLLAPSE_ROWS|SERVICE'
+knobs=$(grep -oE '\$\{[A-Z_][A-Z0-9_]*[:-]' "$SELF" 2>/dev/null \
+        | tr -d '${:-' | grep -vxE "$skip" | sort -u)
 fingerprint=$( { sha1sum < "$SELF"
-                 env | grep -vE "$noise" | LC_ALL=C sort; } | sha1sum | cut -c1-40 )
+                 for k in $knobs; do printf '%s=%s\n' "$k" "${!k-}"; done; } \
+               | sha1sum | cut -c1-40 )
 
 cache_ok=0
 if [ "$CACHE" = 1 ]; then
   [ "$(cat "$CACHE_DIR/fingerprint" 2>/dev/null)" = "$fingerprint" ] && cache_ok=1
-  # An unreadable script leaves the fingerprint resting on the environment alone, which would
+  # An unreadable script leaves the fingerprint resting on the knob values alone, which would
   # let an edited script reuse the verdicts it was edited to change.
   [ -r "$SELF" ] || { cache_ok=0; echo "# cache: cannot read $SELF; not reusing" >&2; }
   [ "$cache_ok" = 1 ] \
-    || echo "# cache: cold (the script or its environment changed); reading every repo" >&2
+    || echo "# cache: cold (the script or its settings changed); reading every repo" >&2
+fi
+
+# The stamp goes down HERE, before any rule runs, and the stale key files go with it. Stamping
+# it per rule instead let a run that died between two rules leave a cache that reads as fully
+# warm while the rules that had not finished still carried the previous settings' keys, so the
+# next run reused verdicts the operator had just retracted. A rule that never finishes now
+# simply has no key file, which is what the per-rule key design already handles.
+if [ "$CACHE" = 1 ] && [ "$cache_ok" = 0 ] && mkdir -p "$CACHE_DIR" 2>/dev/null; then
+  rm -f "$CACHE_DIR"/keys-* 2>/dev/null || true
+  printf '%s\n' "$fingerprint" > "$CACHE_DIR/fingerprint" 2>/dev/null \
+    || echo "# WARN: could not write $CACHE_DIR/fingerprint; the cache stays cold" >&2
 fi
 
 # Each rule keeps its own key file, listing the repos IT answered for. A worker that died
@@ -1070,6 +1110,7 @@ cache_save() {                      # $1 = stream name, $2 = file holding this r
   mkdir -p "$CACHE_DIR" 2>/dev/null || { cache_failed="$cache_failed $1"; return 0; }
   cat "$2" > "$CACHE_DIR/$1.new" 2>/dev/null && mv "$CACHE_DIR/$1.new" "$CACHE_DIR/$1" \
     || { cache_failed="$cache_failed $1"
+         rm -f "$CACHE_DIR/$1.new" 2>/dev/null      # the trigger for this is a filling disk
          echo "# WARN: could not write the run cache at $CACHE_DIR" >&2; }
 }
 cache_save_keys() {                 # $1 = rule's cache name, $2 = rids it answered for
@@ -1087,9 +1128,8 @@ cache_save_keys() {                 # $1 = rule's cache name, $2 = rids it answe
       "$2" "$tmp/keys" \
     > "$CACHE_DIR/keys-$1.new" 2>/dev/null \
     && mv "$CACHE_DIR/keys-$1.new" "$CACHE_DIR/keys-$1" \
-    || { echo "# WARN: could not write the run cache at $CACHE_DIR" >&2; return 0; }
-  printf '%s\n' "$fingerprint" > "$CACHE_DIR/fingerprint" 2>/dev/null \
-    || echo "# WARN: could not write $CACHE_DIR/fingerprint; the cache stays cold" >&2
+    || { rm -f "$CACHE_DIR/keys-$1.new" 2>/dev/null
+         echo "# WARN: could not write the run cache at $CACHE_DIR" >&2; return 0; }
 }
 
 # ----------------------------------------------------------------------- rule F: measure trees
@@ -1337,6 +1377,11 @@ only_in() {
         --batch-check='%(objectname) %(objecttype) %(objectsize) %(rest)' 2>/dev/null \
     | awk '$2 == "blob" { path = $0; sub(/^[^ ]+ [^ ]+ [^ ]+ /, "", path)
                           printf "%s %.0f %s\n", $1, $3, path }'
+  # A listing that died halfway still prints a plausible number of blobs. Reported as if it
+  # were the whole set, it lowers this peer's non-media byte total, and a low non-media total
+  # is the last bar an accusation has to clear, so a torn listing accuses. Say it failed.
+  case "${PIPESTATUS[*]}" in (*[1-9]*) return 1 ;; esac
+  return 0
 }
 # Splits a blob listing into the media bytes and the other bytes it holds. Extension only: rule
 # G accuses a person, so it leans on the same file appearing again and again rather than on a
@@ -1351,8 +1396,12 @@ split_bytes() {
       else                                                              other += size }
     END { printf "= %.0f %.0f\n", media, other }'
 }
-for d; do
-  rid=${d##*/}
+# Judges one repo. Returns 0 once it has said everything it has to say about that repo,
+# whether that is a stack of rows or nothing at all, and non-zero when a git listing came back
+# torn, so the caller can leave the repo unanswered rather than bank a partial total.
+walk_repo() {
+  local d=$1 rid=$2 dids nid allrefs ref own strangers combined media_here mine
+  local refs=()
   # refs/rad/id is written by the local node only after it verifies the identity document's
   # signatures, so a stranger's push cannot make itself a delegate.
   # This runs before any skip below, because a delegate is never blocked and that protection
@@ -1362,15 +1411,15 @@ for d; do
          | sed 's/^did:key://' | sort -u | tr '\n' ' ')
   # Every row this worker prints carries the rid in field 2, whatever its kind, because the
   # run cache reuses rows by repo and can only look in one field.
-  if [ -z "$dids" ]; then printf 'u\t%s\n' "$rid"; continue; fi
+  if [ -z "$dids" ]; then printf 'u\t%s\n' "$rid"; return 0; fi
   for nid in $dids; do printf 'd\t%s\t%s\n' "$rid" "$nid"; done
   # --count stops the listing one past the cap, so a repo with 152k refs never reaches a shell
   # variable. The cap is rule F's MEDIA_MAX_REFS: both rules pay the same cost, walking every
   # peer's refs, and a second knob for one number nobody would set differently is noise.
   allrefs=$(GIT_DIR="$d" git for-each-ref --count=$(( max_refs + 1 )) \
-              --format='%(refname)' 2>/dev/null) || continue
+              --format='%(refname)' 2>/dev/null) || return 1
   mapfile -t refs <<<"$allrefs"
-  [ "${#refs[@]}" -le "$max_refs" ] || continue
+  [ "${#refs[@]}" -le "$max_refs" ] || return 0
   # OWN is everything the delegates control, and it is the exclusion set. Whole histories go in
   # here rather than tips, because a wider exclusion can only ever spare a peer.
   own=""; strangers=""
@@ -1385,20 +1434,34 @@ for d; do
       (*)          strangers="$strangers"$'\n'"$nid"$'\t'"$ref" ;;
     esac
   done
-  [ -n "$strangers" ] || continue
-  # The cheap tier: one listing for every stranger at once. Most repos stop here.
+  [ -n "$strangers" ] || return 0
+  # The cheap tier: one listing for every stranger at once. Most repos stop here. Each listing
+  # lands in a file rather than a pipe, so its exit status is still there to be read.
   combined=$(cut -f2 <<<"${strangers#$'\n'}")
-  media_here=$(only_in "$d" "$combined" "$own" | split_bytes | awk '$1 == "=" { print $2 }')
-  [ "${media_here:-0}" -gt 0 ] || continue
+  only_in "$d" "$combined" "$own" > "$blobs" || return 1
+  media_here=$(split_bytes < "$blobs" | awk '$1 == "=" { print $2 }')
+  [ "${media_here:-0}" -gt 0 ] || return 0
   # Something is there, so pay to learn whose. One listing per peer, and the peers with
   # nothing of their own drop out having cost one walk that ends at the first shared commit.
   for nid in $(cut -f1 <<<"${strangers#$'\n'}" | sort -u); do
     mine=$(awk -F'\t' -v n="$nid" '$1 == n { print $2 }' <<<"${strangers#$'\n'}")
-    only_in "$d" "$mine" "$own" | split_bytes \
+    only_in "$d" "$mine" "$own" > "$blobs" || return 1
+    split_bytes < "$blobs" \
       | awk -v nid="$nid" -v rid="$rid" '
           $1 == "b" { printf "b\t%s\t%s\t%s\t%s\n", rid, nid, $2, $3 }
           $1 == "=" { printf "=\t%s\t%s\t%s\t%s\n", rid, nid, $2, $3 }'
   done
+  return 0
+}
+blobs=$(mktemp) || exit 1
+trap 'rm -f "$blobs"' EXIT
+for d; do
+  # The marker below says this repo was judged to the end. A worker killed part-way through
+  # one, or a git listing that came back torn, leaves the marker out, and the run cache then
+  # reads the repo again next week instead of banking totals that stopped short of some of
+  # its bytes. Rows this repo already printed are harmless: the next run reprints them, and
+  # nothing reuses the rows of a repo that has no key.
+  walk_repo "$d" "${d##*/}" && printf 'x\t%s\n' "${d##*/}"
 done
 PEER
   cache_hits peer
@@ -1409,10 +1472,10 @@ PEER
   # keeps that peer from ever being accused.
   cache_reuse "peer" 2 peer >> "$tmp/peer"
   cache_save  "peer" "$tmp/peer"
-  # A repo yields either its delegate rows or the "unattributable" row before any skip below
-  # them, so a repo missing from this list is one the worker never finished, and the next run
-  # reads it again rather than treating its silence as a verdict.
-  cut -f2 "$tmp/peer" | sort -u > "$tmp/answered-peer"
+  # Only the end-of-repo marker counts as an answer. Taking every rid that appears in any row
+  # would have counted a repo the worker died in the middle of, since its delegate rows are
+  # printed before the walk that produces the byte totals.
+  awk -F'\t' '$1 == "x" { print $2 }' "$tmp/peer" | sort -u > "$tmp/answered-peer"
   cache_save_keys peer "$tmp/answered-peer"
 fi
 
@@ -1745,8 +1808,12 @@ if rule_on G && [ -s "$tmp/peer" ]; then
       $1 == "b" { if (!((($3 SUBSEP $4) SUBSEP $2) in pair)) {
                     pair[($3 SUBSEP $4) SUBSEP $2] = 1; spread[$3 SUBSEP $4]++ }
                   next }
-      $1 == "=" { media[$3] += $4; other[$3] += $5
-                  if ($4 > 0 && !(($3 SUBSEP $2) in hit)) { hit[$3 SUBSEP $2]=1; repos[$3]++ }
+      # One peer, one repo, one row. Two rows for the same pair would double the byte totals
+      # of that peer, and bytes are two of the three bars an accusation has to clear.
+      $1 == "=" { if (($3 SUBSEP $2) in seen) next
+                  seen[$3 SUBSEP $2] = 1
+                  media[$3] += $4; other[$3] += $5
+                  if ($4 > 0) repos[$3]++
                   next }
       END {
         for (key in spread) {
@@ -1935,15 +2002,15 @@ awk -F'\t' -v now="$now" -v collapse="$PLAN_COLLAPSE_ROWS" -v full="$PLAN_FULL" 
              for (i = 1; i in c; i++) corpus[c[i]] = 1 }
      NR == FNR { n[$5]++; b[$5] += $2; if ($8 != "") near[$5]++; next }
      FNR == 1 { for (r in n) if (corpus[r] && !full && n[r] >= collapse) fold[r] = 1
-                printf "\n%-34s %9s %6s %8s %-13s %-11s %s\n",
+                printf "\n%-34s %9s %6s %8s %-13s %-15s %s\n",
                        "RID", "SIZE", "SEEDS", "AGE(d)", "REASON", "NEAR", "NAME" }
      { if ($5 in fold) next
-       printf "%-34s %9s %6s %8s %-13s %-11s %s\n",
+       printf "%-34s %9s %6s %8s %-13s %-15s %s\n",
               $1, size($2), $3, int((now - $7) / 86400), $5, ($8 == "" ? "-" : $8), $6 }
      # In the order c was split, not `for (r in fold)`: awk leaves that order unspecified, and
      # a plan that prints its rows differently from one run to the next cannot be diffed.
      END { for (i = 1; i in c; i++) if (c[i] in fold)
-             printf "%-34s %9s %6s %8s %-13s %-11s %s\n",
+             printf "%-34s %9s %6s %8s %-13s %-15s %s\n",
                     sprintf("(%d repos)", n[c[i]]), size(b[c[i]]), "", "", c[i],
                     sprintf("%d near", near[c[i]] + 0),
                     "same pattern across many repos; PLAN_FULL=1 lists them"
@@ -2084,8 +2151,7 @@ if [ "$APPLY" = 0 ]; then
 fi
 
 # Empty the quarantine of anything past its window before pruning, so the disk this run
-# reports as reclaimed is disk that actually came back. Under real pressure the window is
-# ignored and the whole quarantine goes: a recovery copy is a luxury a full disk cannot buy.
+# reports as reclaimed is disk that actually came back.
 #
 # Above the "nothing to do" exit below, because a seed that has caught up has an empty plan
 # every week, and quarantined disk that only comes back on a week with something to prune is
@@ -2093,19 +2159,9 @@ fi
 if [ "$QUARANTINE" = 1 ]; then
   mkdir -p "$quar" 2>/dev/null || true
   purged=0
-  if [ "$DISK_AWARE" = 1 ] \
-     && awk -v a="$disk_avail" -v c="$crit_free" 'BEGIN{exit !(a <= c)}'; then
-    for d in "$quar"/z*; do
-      [ -e "$d" ] || continue
-      rm -rf -- "$d" && purged=$((purged+1))
-    done
-    [ "$purged" = 0 ] \
-      || echo "# disk is at the critical watermark: emptied the whole quarantine ($purged)."
-  else
-    while IFS= read -r d; do
-      rm -rf -- "$d" && purged=$((purged+1))
-    done < <(quar_expired)
-  fi
+  while IFS= read -r d; do
+    rm -rf -- "$d" && purged=$((purged+1))
+  done < <(quar_expired)
   [ "$purged" = 0 ] || echo "# purged $purged repo(s) out of quarantine after" \
                             "${QUARANTINE_DAYS}d; they are gone for good now."
 fi
@@ -2113,7 +2169,10 @@ fi
 # --apply: the (slow) scan above ran ONCE. In a terminal, ask before deleting;
 # non-interactively (cron, a pipe) just apply. --yes skips the prompt. A yes here is the human
 # sign-off that lets a run bypass the runaway caps below.
-[ "$nplan" = 0 ] && { echo "# nothing to do"; exit 0; }
+# An empty plan asks nothing, so the critical-watermark wipe is free to run on the way out;
+# below the prompt it is not, because an operator who answers no is owed a run that changed
+# nothing, and no phrasing of a prompt about pruning N repos asks about that wipe as well.
+[ "$nplan" = 0 ] && { quar_purge_all_if_critical; echo "# nothing to do"; exit 0; }
 CONFIRMED=0
 if [ "$YES" = 0 ]; then
   # The line a human actually answers, so it says what the run will really do. Under
@@ -2171,6 +2230,11 @@ if [ "$FORCE" = 0 ] && [ "$CONFIRMED" = 0 ]; then
   fi
 fi
 
+# Every way out of this run without pruning is behind us, so the quarantine can now be emptied
+# outright if the disk is critical. Before this run puts its own copies there, so what it
+# quarantines today keeps its full window.
+quar_purge_all_if_critical
+
 open_audit
 { printf '# plan=%s repos / %s GiB\n' "$nplan" "$gib"
   printf '# rid\tsize_bytes\tother_seeds\tlast_activity_unix\treason\tname\tage_from_unix'
@@ -2194,8 +2258,8 @@ while IFS=$'\t' read -r rid _; do
         # A repo pruned twice (re-fetched, pruned again) would otherwise fail to move onto
         # its own older copy, so the older copy goes first.
         rm -rf -- "$quar/$rid" 2>/dev/null
-        # touch, because the purge below measures the window by directory mtime and mv keeps
-        # the old one. Rules B and C select repos nothing has touched for 90 to 730 days, so
+        # touch, because the purge measures the window by directory mtime and mv keeps the
+        # old one. Rules B and C select repos nothing has touched for 90 to 730 days, so
         # without this their recovery copy would be past its window the moment it arrived.
         mv -- "$d" "$quar/$rid" 2>/dev/null && touch "$quar/$rid" && deleted=$((deleted+1)) \
           || echo "#   WARN quarantine failed: $d" >&2

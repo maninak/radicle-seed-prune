@@ -43,7 +43,7 @@ Rules E, F and G are new and on by default, so read one dry run before you apply
 
 - **A creation-date ledger, `$RAD_HOME/prune-audit/first-seen.tsv`.** The tool records when it first saw each repo, on every run including dry ones, and rules D, E and F age a repo by the older of that and its oldest ref date, so pushed dates alone cannot keep a repo forever young. Without the ledger it runs on ref dates alone, and says so.
 
-- **Repeat runs reuse what they read last time.** Rules E, F and G keep what they read out of each repo in `$AUDIT_DIR/cache` and reuse it for any repo whose refs and size are both unchanged, which is nearly all of them week to week. On an 11,200-repo seed that took a run from about 10 minutes to about 3. The cache is dropped whole when the script or its environment changes; `CACHE=0` turns it off.
+- **Repeat runs reuse what they read last time.** Rules E, F and G keep what they read out of each repo in `$AUDIT_DIR/cache` and reuse it for any repo whose refs and size are both unchanged, which is nearly all of them week to week. On an 11,200-repo seed that took a run from about 10 minutes to about 3. The cache is dropped whole when the script changes, or when any setting it reads changes value; `CACHE=0` turns it off.
 
 - **The plan reports what the run left alone**: a `# skipped:` line counting the repos that were unreadable, written too recently, or had no readable refs.
 

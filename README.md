@@ -223,7 +223,7 @@ mv <storage>/<rid> <audit>/quarantine/<rid>   # out of storage, still on disk
 
 ### Quarantine
 
-A pruned repo moves to `$AUDIT_DIR/quarantine/<rid>` rather than being deleted. It is deleted for real `QUARANTINE_DAYS` (7) days after it arrived there, by whichever `--apply` run comes next, including a run whose own plan is empty. At the critical disk watermark an `--apply` run empties the whole quarantine whether or not each entry has served its window. `QUARANTINE=0` deletes outright and keeps nothing.
+A pruned repo moves to `$AUDIT_DIR/quarantine/<rid>` rather than being deleted. It is deleted for real `QUARANTINE_DAYS` (7) days after it arrived there, by whichever `--apply` run comes next, including a run whose own plan is empty. At the critical disk watermark an `--apply` run empties the whole quarantine whether or not each entry has served its window, and it does that only after you have confirmed the prune, so answering `n` at the prompt leaves the quarantine standing. `QUARANTINE=0` deletes outright and keeps nothing.
 
 Every repo was unseeded and blocked before it was moved there, so nothing on the node points at the quarantine: deleting the directory by hand (`rm -rf`) is safe at any time and only costs the ability to restore.
 
@@ -264,11 +264,11 @@ The node keeps running during a prune. After a large first run, `sudo systemctl 
 
 ## Speed
 
-Rules E and F read the contents of every repo, which is most of a run. Almost nothing changes from one weekly run to the next, so what those two rules read is kept in `$AUDIT_DIR/cache`. A repo is reused from the cache when both its refs and its size on disk are identical to what the run that wrote that entry saw; if either has moved, the repo is read again.
+Rules E, F and G read the contents of every repo, which is most of a run. Almost nothing changes from one weekly run to the next, so what those three rules read is kept in `$AUDIT_DIR/cache`. A repo is reused from the cache when both its refs and its size on disk are identical to what the run that wrote that entry saw; if either has moved, the repo is read again.
 
 On a seed of 11,221 repos and 270 GB on six cores, a first run takes about 10 minutes and the next one about 3, reusing 11,218 repos and producing the same plan.
 
-The whole cache is dropped whenever the script file or the environment it reads changes, so a threshold you have just tuned never leaves last week's verdicts standing. `CACHE=0` reads every repo on every run; deleting the cache directory forces one full re-read, after which caching resumes.
+The whole cache is dropped whenever the script file changes, or any of the settings below changes value, so a threshold you have just tuned never leaves last week's verdicts standing. `CACHE=0` reads every repo on every run; deleting the cache directory forces one full re-read, after which caching resumes.
 
 ## Configuration
 
@@ -351,7 +351,7 @@ Every knob is an environment variable. Defaults shown.
 | `QUARANTINE`         | `1`     | Quarantine pruned repos instead of deleting (`0` deletes, with no way back) |
 | `QUARANTINE_DAYS`    | `7`     | Days a quarantined repo stays recoverable before a later run purges it     |
 | `KEEP_FILE`          | `$AUDIT_DIR/keep.txt` | Repos excluded from every rule, one id per line; `quarantine restore` appends to it |
-| `CACHE`              | `1`     | Reuse rules E and F's reading of repos that have not changed (`0` reads everything, every run) |
+| `CACHE`              | `1`     | Reuse what rules E, F and G read out of repos that have not changed (`0` reads everything, every run) |
 | `CACHE_DIR`          | `$AUDIT_DIR/cache` | Where that reading is kept                                      |
 | `PLAN_COLLAPSE_ROWS` | `20`    | Group size at which a corpus verdict folds to one summary line             |
 | `PLAN_FULL`          | `0`     | `1` lists every plan row, however large the group                          |
@@ -394,7 +394,7 @@ Anything this tool does is written to `$RAD_HOME/prune-audit/` (default `~/.radi
 - **`prune-<UTC-timestamp>.log`**: one file per acting run: every repo removed, tab-separated (rid, size, other-seed count, last activity, reason, name, the date the matching rule measured, any threshold that repo only just cleared), plus peer blocks made under `--block-peers` with the evidence behind each.
 - **`quarantine/<rid>`**: every pruned repo, held for `QUARANTINE_DAYS` ([more](#quarantine)).
 - **`keep.txt`**: repos excluded from every rule, one id per line, editable by hand; `quarantine restore` appends to it.
-- **`cache/`**: what rules E and F last read out of each repo. Safe to delete at any time; the next run reads everything again.
+- **`cache/`**: what rules E, F and G last read out of each repo. Safe to delete at any time; the next run reads everything again.
 - **`history.log`**: append-only, one line per applied run: timestamp, repos pruned, GiB moved out of storage, whether the quarantine was on, disk pressure. The history ratchet reads this file.
 - **`cron.log`**: with the cron recipe above, the full console output of every run.
 - **`first-seen.tsv`**: the creation-date ledger rules D, E and F read. Written on every run, dry or not.

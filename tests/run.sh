@@ -1522,6 +1522,56 @@ DISK_AWARE=0 run 2>&1 | grep -q 'cache: hosts reuses' \
   && ok "the harvest reuses repos it read, including the ones that linked to nothing" \
   || no "the harvest cache never took effect"
 
+# A cold start throws the key files of EVERY cached rule away, not only those of the rules it
+# is about to rewrite. Stamping the new fingerprint once per rule instead left a run that died
+# between two rules looking fully warm while half its keys still belonged to the old settings.
+build_fixture; assert_isolated
+CACHEDIR="$RSP_HOME/prune-audit/cache"
+DISK_AWARE=0 run >/dev/null
+[ -f "$CACHEDIR/keys-media" ] \
+  || no "the first run wrote no media keys, so the next check is moot"
+DISK_AWARE=0 RULES=E MEDIA_MIN_BYTES=999999999 "${NOTTY[@]}" "$SCRIPT" \
+  </dev/null >/dev/null 2>&1
+[ ! -f "$CACHEDIR/keys-media" ] \
+  && ok "a cold start drops the keys of the rules it does not run, not just its own" \
+  || no "a rule that sat out a cold run kept keys measured under the settings that changed"
+
+# The fingerprint covers the settings this script reads, not whatever the caller happens to
+# have in its environment. Hashing the whole environment made a systemd run and a hand run
+# invalidate each other every time, since systemd stamps a fresh INVOCATION_ID on each start.
+build_fixture; assert_isolated
+DISK_AWARE=0 run >/dev/null
+out=$(DISK_AWARE=0 INVOCATION_ID=deadbeef WHATEVER=1 "${NOTTY[@]}" "$SCRIPT" </dev/null 2>&1)
+grep -q 'cache: media reuses' <<<"$out" \
+  && ok "a variable this script never reads leaves the cache warm" \
+  || no "an unrelated environment variable dropped the whole cache"
+
+# STORAGE is an operator-supplied path, and the list of already-answered repos is built from
+# it. A '#' in it used to end sed's own delimiter, which both re-walked every repo and pasted
+# its cached rows in beside the fresh ones.
+build_fixture; assert_isolated
+odd="$RSP_HOME/st#or&age"
+cp -r "$STORAGE" "$odd"
+DISK_AWARE=0 STORAGE="$odd" "${NOTTY[@]}" "$SCRIPT" </dev/null >/dev/null 2>&1
+out=$(DISK_AWARE=0 STORAGE="$odd" "${NOTTY[@]}" "$SCRIPT" </dev/null 2>&1)
+{ ! grep -q 'unknown option' <<<"$out" && grep -q 'cache: media reuses' <<<"$out"; } \
+  && ok "a storage path holding shell and sed metacharacters still caches correctly" \
+  || no "a '#' in STORAGE broke the already-read list"
+
+# Rule G judges a peer across the whole of storage, so its cached rows and its freshly walked
+# ones are added together. A repo counted twice, or one banked from a walk that never
+# finished, moves the byte totals the accusation rests on.
+build_fixture; assert_isolated
+export PARASITE_MIN_REPOS=3 PARASITE_MIN_BYTES=65536 PARASITE_TEXT_MAX_BYTES=4096
+cold=$(DISK_AWARE=0 run)
+warm=$(DISK_AWARE=0 run 2>&1)
+{ grep -q 'cache: peer reuses' <<<"$warm" \
+  && grep -q "PARASITE PEERS: 1" <<<"$cold" \
+  && [ "$(grep -c 'PARASITE PEERS: 1' <<<"$warm")" = 1 ]; } \
+  && ok "a warm run reaches rule G's verdict from cached rows unchanged" \
+  || no "reusing rule G's reading changed which peers it accused"
+unset PARASITE_MIN_REPOS PARASITE_MIN_BYTES PARASITE_TEXT_MAX_BYTES
+
 # A repo already past the window is gone for good on the next run, which is what makes the
 # quarantine bounded rather than a second copy of storage growing forever.
 build_fixture; assert_isolated
@@ -1657,6 +1707,25 @@ if command -v script >/dev/null 2>&1; then
   grep -q 'DELETE.*reclaiming' "$ROOT/nq0.out" \
     && ok "QUARANTINE=0 puts the reclaim promise back in the prompt" \
     || no "the prompt hid the outright deletion QUARANTINE=0 was about to do"
+
+  # A quarantine is a recovery copy, and at the critical watermark the run empties it whole
+  # rather than wait out the window. That emptying used to happen before the human was asked
+  # anything, so answering no destroyed every recovery copy in a run that pruned nothing.
+  CRIT="env DISK_AWARE=1 PRESSURE_CRIT_PCT=100 PRESSURE_CRIT_GB=999999 ABS_SIZE_FLOOR_MB=1"
+  build_fixture; assert_isolated
+  Q="$RSP_HOME/prune-audit/quarantine"; mkdir -p "$Q/zkeepme"
+  printf 'n\n' | script -qec "$CRIT '$SCRIPT' --apply" /dev/null >"$ROOT/ncrit.out" 2>&1
+  { grep -q aborted "$ROOT/ncrit.out" && [ -d "$Q/zkeepme" ]; } \
+    && ok "answering no leaves the quarantine standing, critical watermark or not" \
+    || no "an aborted run had already emptied the whole quarantine before asking"
+
+  # And the other direction, so the check above cannot pass by the wipe never happening.
+  build_fixture; assert_isolated
+  Q="$RSP_HOME/prune-audit/quarantine"; mkdir -p "$Q/zkeepme"
+  printf 'y\n' | script -qec "$CRIT '$SCRIPT' --apply" /dev/null >"$ROOT/ycrit.out" 2>&1
+  { grep -q 'critical watermark' "$ROOT/ycrit.out" && [ ! -e "$Q/zkeepme" ]; } \
+    && ok "answering yes at the critical watermark still empties the whole quarantine" \
+    || no "the critical watermark left the quarantine holding disk the run needed"
 
   build_fixture; assert_isolated
   printf 'y\n' | script -qec "env DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 '$SCRIPT' --apply" \
