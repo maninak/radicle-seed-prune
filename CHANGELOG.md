@@ -59,7 +59,7 @@ Rules E, F and G are new and on by default, so read one dry run before you apply
 
 - **The plan's `AGE(d)` column shows the age the matching rule measured**: days since last activity for rules A to C, days since creation for D, E and F. Each per-run audit log gains a final `age_from_unix` column; the existing columns keep their positions.
 
-- **Repetitive plan rows fold into summary lines.** Corpus verdicts (`spam-batch`, `link-farm`, `media-batch`) fold to one line per group once the group reaches `PLAN_COLLAPSE_ROWS` (20), while verdicts on a single repo are always listed in full; `PLAN_FULL=1` lists everything.
+- **Repetitive plan rows fold into summary lines.** Corpus verdicts (`spam-batch`, `link-farm`, `media-batch`) fold to one line per group once the group reaches `PLAN_COLLAPSE_ROWS` (20), while verdicts on a single repo are always listed in full; `PLAN_FULL=1` lists everything, including the evidence tables above the plan, which otherwise show only their top few entries.
 
 - **`RULES=ABCDEFG`, one switch for every rule.** A letter absent from `RULES` disables that rule, and a repo it would have claimed falls through to the next rule; `RULES=`, set but empty, means no rules at all. This replaces the per-rule switches `LINK_SCAN`, `MEDIA_SCAN` and `PARASITE_SCAN`, which are gone.
 

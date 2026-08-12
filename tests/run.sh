@@ -1179,6 +1179,32 @@ grep -qE '^# WARN: [0-9]+ scan error' <<<"$out" \
   && ok "unreadable repo excluded from plan, others still planned" \
   || no "unreadable repo excluded from plan"
 
+# The tables under the plan header are the evidence a corpus verdict rests on, and each shows
+# only its top few. Truncated with no way to reach the rest, a reviewer cannot check the other
+# 153 spam domains that condemned a repo, so PLAN_FULL lifts these caps as well as the row
+# folding it already controls, and every truncated list says so.
+build_fixture; assert_isolated
+victims=(zjunk1 zbig2 ztwoyr3 zfresh4); stamps=()
+for r in "${victims[@]}"; do
+  stamps+=("$(stat -c %y "$STORAGE/$r")")
+  mkdir -p "$STORAGE/$r/unreadable" && chmod 000 "$STORAGE/$r/unreadable"
+  touch -d "10 days ago" "$STORAGE/$r"     # a repo written moments ago is skipped as fresh
+done
+short=$(DISK_AWARE=0 MAX_SCAN_FAIL_PCT=90 PLAN_FULL=0 "$SCRIPT" 2>&1)
+long=$( DISK_AWARE=0 MAX_SCAN_FAIL_PCT=90 PLAN_FULL=1 "$SCRIPT" 2>&1)
+# Taking the directory back out writes the repo again, so the mtimes go back to what the
+# fixture set. Left at now, all four read as fresh and the tests below lose their subjects.
+for i in "${!victims[@]}"; do
+  d="$STORAGE/${victims[$i]}"
+  chmod 755 "$d/unreadable"; rmdir "$d/unreadable"; touch -d "${stamps[$i]}" "$d"
+done
+{ grep -q 'more (PLAN_FULL=1 lists them)' <<<"$short" \
+  && ! grep -q 'more (PLAN_FULL=1 lists them)' <<<"$long" \
+  && [ "$(grep -c 'Permission denied' <<<"$long")" \
+       -gt "$(grep -c 'Permission denied' <<<"$short")" ]; } \
+  && ok "PLAN_FULL prints the evidence tables whole, and the short form names the way there" \
+  || no "a truncated evidence table gave a reviewer no way to see the rest of it"
+
 # --- a scan that missed too much of storage refuses to report a plan at all --- Three
 # unreadable repos against a 1% limit, so the assertion does not ride on the fixture size.
 # Without this the run would report a plausible-looking small plan built from a partial scan.

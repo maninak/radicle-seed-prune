@@ -495,6 +495,12 @@ CACHE_DIR="${CACHE_DIR:-$AUDIT_DIR/cache}"
 # listed in full, however many there are: those are the ones that want human eyes.
 PLAN_COLLAPSE_ROWS="${PLAN_COLLAPSE_ROWS:-20}"   # group size at which a corpus verdict folds
 PLAN_FULL="${PLAN_FULL:-0}"                      # 1 lists every row whatever the verdict
+# The tables the header prints are the evidence a corpus verdict rests on, so a reviewer who
+# only ever sees the top five cannot check the other 153 spam domains that condemned a repo.
+# PLAN_FULL already means "list everything", so it lifts these caps too rather than earning a
+# knob of its own. Every truncated list below names it, so the way to the rest is on screen.
+top_evidence=5; top_scanerr=3
+if [ "$PLAN_FULL" = 1 ]; then top_evidence=1000000; top_scanerr=1000000; fi
 
 # Anchor the cwd somewhere any user can read. Launched from a directory the running
 # user cannot read (`sudo -u seed` started from /root, say), every `find` below emits
@@ -958,8 +964,10 @@ nspam=$(wc -l < "$tmp/spam"); nspambatch=$(wc -l < "$tmp/spambatch")
 if [ "$nspam" -gt 0 ]; then
   echo "# spam batches: $nspambatch template(s) matching $nspam repos," \
        "before the age and seed checks:"
-  sort -k1,1nr "$tmp/spambatch" | awk -F'\t' 'NR<=5 {printf "#   %5d  %s\n", $1, $2}'
-  [ "$nspambatch" -gt 5 ] && echo "#   ...and $((nspambatch - 5)) more"
+  sort -k1,1nr "$tmp/spambatch" \
+    | awk -F'\t' -v n="$top_evidence" 'NR<=n {printf "#   %5d  %s\n", $1, $2}'
+  [ "$nspambatch" -gt "$top_evidence" ] \
+    && echo "#   ...and $((nspambatch - top_evidence)) more (PLAN_FULL=1 lists them)"
 fi
 
 # --------------------------------------------------------------------- rid -> other-seed count
@@ -1589,8 +1597,9 @@ done < "$scanerr" | cat - "$tmp/hosts-fail" | sort -u > "$tmp/scanfail"
 nscanerr=$(wc -l < "$scanerr"); nscanfail=$(wc -l < "$tmp/scanfail")
 if [ "$nscanerr" -gt 0 ]; then
   echo "# WARN: $nscanerr scan error(s); $nscanfail repo(s) unreadable, excluded:" >&2
-  head -3 "$scanerr" | sed 's/^/#   /' >&2
-  [ "$nscanerr" -gt 3 ] && echo "#   ...and $((nscanerr - 3)) more" >&2
+  head -n "$top_scanerr" "$scanerr" | sed 's/^/#   /' >&2
+  [ "$nscanerr" -gt "$top_scanerr" ] \
+    && echo "#   ...and $((nscanerr - top_scanerr)) more (PLAN_FULL=1 lists them)" >&2
 fi
 
 # ------------------------------------------------------------------- rule E: find spam domains
@@ -1649,8 +1658,10 @@ if [ -s "$tmp/hosts" ]; then
          "<$LINK_CODE_MAX_PCT% from code;"
     echo "#   $nfarm repo(s) link to >=$LINK_MIN_SCORE of them," \
          "before the age and seed checks:"
-    sort -k1,1nr "$tmp/linktop" | awk -F'\t' 'NR<=5 {printf "#   %5d repos  %s\n", $1, $2}'
-    [ "$nspamdom" -gt 5 ] && echo "#   ...and $((nspamdom - 5)) more"
+    sort -k1,1nr "$tmp/linktop" \
+      | awk -F'\t' -v n="$top_evidence" 'NR<=n {printf "#   %5d repos  %s\n", $1, $2}'
+    [ "$nspamdom" -gt "$top_evidence" ] \
+      && echo "#   ...and $((nspamdom - top_evidence)) more (PLAN_FULL=1 lists them)"
   fi
 fi
 
@@ -2039,8 +2050,10 @@ nreview=$(wc -l < "$tmp/media-review")
 if [ "$nreview" -gt 0 ]; then
   echo
   echo "# review: $nreview media dump(s) no other node seeds, kept:"
-  head -5 "$tmp/media-review" | awk -F'\t' '{printf "#   %-34s %-12s %s\n", $1, $2, $3}'
-  [ "$nreview" -gt 5 ] && echo "#   ...and $((nreview - 5)) more"
+  head -n "$top_evidence" "$tmp/media-review" \
+    | awk -F'\t' '{printf "#   %-34s %-12s %s\n", $1, $2, $3}'
+  [ "$nreview" -gt "$top_evidence" ] \
+    && echo "#   ...and $((nreview - top_evidence)) more (PLAN_FULL=1 lists them)"
 fi
 
 echo

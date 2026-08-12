@@ -111,7 +111,7 @@ zEXAMPLEREPOkkkkkkkkkkkkkkk           73.9KB     12       30 junk-name     age  
 # DRY-RUN: nothing changed. Re-run with --apply to execute.
 ```
 
-Corpus verdicts (`spam-batch`, `link-farm`, `media-batch`) fold to one summary line per group at `PLAN_COLLAPSE_ROWS` (20) rows; single-repo verdicts are always listed in full, and `PLAN_FULL=1` lists everything.
+Corpus verdicts (`spam-batch`, `link-farm`, `media-batch`) fold to one summary line per group at `PLAN_COLLAPSE_ROWS` (20) rows; single-repo verdicts are always listed in full, and `PLAN_FULL=1` lists everything. The evidence tables above the plan (spam templates, spam domains, scan errors, kept media dumps) show their top few entries and say how many they left out; `PLAN_FULL=1` prints those whole too.
 
 `AGE(d)` is the age the matching rule measured: days since last activity for A, B and C, days since creation for D, E and F.
 
@@ -352,7 +352,7 @@ Every knob is an environment variable. Defaults shown.
 | `CACHE`              | `1`     | Reuse what rules E, F and G read out of repos that have not changed (`0` reads everything, every run) |
 | `CACHE_DIR`          | `$AUDIT_DIR/cache` | Where that reading is kept                                      |
 | `PLAN_COLLAPSE_ROWS` | `20`    | Group size at which a corpus verdict folds to one summary line             |
-| `PLAN_FULL`          | `0`     | `1` lists every plan row, however large the group                          |
+| `PLAN_FULL`          | `0`     | `1` lists every plan row and every evidence table entry, untruncated       |
 | `NEAR_PCT`           | `20`    | A row's `NEAR` column names any threshold it cleared by less than this share of the threshold; `0` marks nothing |
 
 **Disk pressure** ([what it does](#disk-pressure))
