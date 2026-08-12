@@ -53,5 +53,7 @@ case "$sub" in
     ;;
   block)  echo "${1:-}" >> "$RSP_HOME/.stub_block" ;;
   unseed) echo "${1:-}" >> "$RSP_HOME/.stub_unseed" ;;
+  seed)   echo "${1:-}" >> "$RSP_HOME/.stub_seed" ;;
+  unblock) echo "${1:-}" >> "$RSP_HOME/.stub_unblock" ;;
   *) : ;;
 esac

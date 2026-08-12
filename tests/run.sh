@@ -644,9 +644,9 @@ plan_ed=$(LINK_MIN_REPOS=3 LINK_MIN_SCORE=2 SPAM_MIN_BATCH=99 run)
   && ok "with no rule D batch, that member's vouch counts again" \
   || no "the rule D leg is vacuous"
 # Non-vacuity: the same repos must survive when the rule cannot see them.
-plan_e0=$(LINK_SCAN=0 LINK_MIN_REPOS=3 LINK_MIN_SCORE=2 run)
+plan_e0=$(RULES=ABCDFG LINK_MIN_REPOS=3 LINK_MIN_SCORE=2 run)
 [ "$(grep -cE "^zfarm[1-3] " <<<"$plan_e0" || true)" = 0 ] \
-  && ok "LINK_SCAN=0 spares them, so the hits above came from rule E" \
+  && ok "a RULES without E spares them, so the hits above came from rule E" \
   || no "rule E hits are vacuous"
 # ...and when they are too few to look like a pattern.
 plan_e1=$(LINK_MIN_REPOS=99 LINK_MIN_SCORE=2 run)
@@ -948,13 +948,13 @@ grep -qE "^zmediawide .*media-dump" <<<"$plan_ft" \
 plan_fx=$(MEDIA_EXTS='bin' run)
 { grep -qE "^zmediabin .*media-dump" <<<"$plan_fx" && ! has "$plan_fx" "zmediaone"; } \
   && ok "MEDIA_EXTS decides what counts as media, both ways" || no "MEDIA_EXTS is vacuous"
-plan_fo=$(MEDIA_SCAN=0 run)
+plan_fo=$(RULES=ABCDEG run)
 # The "# PLAN:" line is the last thing a run prints, so it separates "rule F found nothing"
 # from "the run died before it could".
-{ ! has "$plan_fo" "zmediaone" && grep -q 'MEDIA_SCAN=0' <<<"$plan_fo" \
+{ ! has "$plan_fo" "zmediaone" && grep -q 'F media-dump.*DISABLED' <<<"$plan_fo" \
   && grep -q '^# PLAN:' <<<"$plan_fo"; } \
-  && ok "MEDIA_SCAN=0 turns rule F off, says so, and still finishes" \
-  || no "MEDIA_SCAN=0 disables rule F"
+  && ok "a RULES without F turns rule F off, says so, and still finishes" \
+  || no "a RULES without F disables rule F"
 
 # Rule F defaults to keeping the last copy we know of, unlike rules D and E.
 ! has "$plan" "zmediazero" \
@@ -1013,6 +1013,23 @@ grep -qE "^zinfetch .*stale" <<<"$plan_fg" \
 [ "$(awk '$1=="zjunk1"{print $4}' <<<"$plan")" = 400 ] \
   && ok "a junk-name row still shows last activity" \
   || no "AGE column still shows activity for rules A to C"
+
+# The NEAR column is what tells a reviewer which verdicts rest on a hair, so a row that
+# cleared every threshold comfortably must stay unmarked, or the marking says nothing.
+near_far=$(JUNK_STALE_DAYS=100 run)
+near_close=$(JUNK_STALE_DAYS=350 run)
+near_off=$(NEAR_PCT=0 JUNK_STALE_DAYS=350 run)
+{ [ "$(awk '$1=="zjunk1"{print $6}' <<<"$near_far")" = "-" ] \
+  && [ "$(awk '$1=="zjunk1"{print $6}' <<<"$near_close")" = "age" ] \
+  && [ "$(awk '$1=="zjunk1"{print $6}' <<<"$near_off")" = "-" ]; } \
+  && ok "NEAR marks a row that only just cleared its age threshold, and NEAR_PCT=0 marks none" \
+  || no "the NEAR column did not follow the margin between the repo and its threshold"
+
+# Counted under the plan too, because on a plan of hundreds of rows nobody scrolls the table
+# to discover that a column has something in it.
+grep -qE '^#   [0-9]+ of them cleared a threshold by under 20%' <<<"$near_close" \
+  && ok "the plan summary counts the rows that were near a threshold" \
+  || no "the plan never said how many of its rows were near a threshold"
 
 # --- a repo larger than the read budget is judged, not excluded --- Reaching LINK_REPO_BUDGET
 # closes the harvest pipe early and kills the object lister with SIGPIPE. Read as a failure,
@@ -1224,9 +1241,41 @@ build_fixture; assert_isolated
 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply --block-peers \
   </dev/null >"$ROOT/nb.out" 2>&1
 { ! grep -q "$PARA" "$RSP_HOME/.stub_block" 2>/dev/null \
-  && grep -q "needs a terminal" "$ROOT/nb.out"; } \
+  && grep -q "nobody to ask" "$ROOT/nb.out"; } \
   && ok "--block-peers refuses with no terminal rather than blocking unattended" \
   || no "--block-peers blocked a peer with nobody there to approve it"
+
+# The unattended form an operator asks for explicitly. Two opt-ins, because this blocks a peer
+# across every repo at once with nobody reviewing it.
+build_fixture; assert_isolated
+DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --block-peers --yes \
+  </dev/null >"$ROOT/by.out" 2>&1
+{ grep -q "$PARA" "$RSP_HOME/.stub_block" 2>/dev/null \
+  && grep -q "Blocking $PARA (--yes)" "$ROOT/by.out"; } \
+  && ok "--block-peers --yes blocks without a terminal, and says it did" \
+  || no "--block-peers --yes did not block the peer rule G named"
+
+# "Exclusions (never touched)" has to mean the same thing whichever action is running: a kept
+# repo keeps the parasite's refs too, and the block alone stops anything new landing in it.
+build_fixture; assert_isolated
+echo zpara3 > "$RSP_HOME/keep.txt"
+DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 KEEP_FILE="$RSP_HOME/keep.txt" "${NOTTY[@]}" \
+  "$SCRIPT" --block-peers --yes </dev/null >"$ROOT/bk.out" 2>&1
+{ GIT_DIR="$STORAGE/zpara3" git for-each-ref "refs/namespaces/$PARA/" --format=x 2>/dev/null \
+    | grep -q x \
+  && ! GIT_DIR="$STORAGE/zpara1" git for-each-ref "refs/namespaces/$PARA/" --format=x \
+       2>/dev/null | grep -q x; } \
+  && ok "an excluded repo keeps the blocked peer's refs, its neighbours do not" \
+  || no "the ref drop ignored the exclusions, or stopped dropping refs anywhere"
+rm -f "$RSP_HOME/keep.txt"
+
+# --yes alone must not start blocking peers: the finding is not the act.
+build_fixture; assert_isolated
+DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply --yes \
+  </dev/null >/dev/null 2>&1
+grep -q "$PARA" "$RSP_HOME/.stub_block" 2>/dev/null \
+  && no "--yes blocked a peer without --block-peers" \
+  || ok "--yes on its own blocks nobody"
 
 plan_g=$(run)
 grep -q "rad block $PARA" <<<"$plan_g" \
@@ -1334,10 +1383,10 @@ after=$(ls "$STORAGE" | wc -l)
 # "reclaim" while the quarantine is on, and must say it when it is off.
 build_fixture; assert_isolated
 qplan=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 run)
-{ grep -q "quarantined 30d, so the disk comes back then" <<<"$qplan" \
+{ grep -q "quarantined 7d, so the disk comes back then" <<<"$qplan" \
   && ! grep -q 'PLAN:.*reclaim' <<<"$qplan"; } \
   && ok "the plan does not promise disk the quarantine is still holding" \
-  || no "the plan claimed to reclaim disk that quarantine keeps for 30 days"
+  || no "the plan claimed to reclaim disk that quarantine keeps for a week"
 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 QUARANTINE=0 run | grep -q 'PLAN:.*reclaim' \
   && ok "QUARANTINE=0 puts the reclaim promise back in the plan" \
   || no "QUARANTINE=0 still hedged the plan's disk figure"
@@ -1357,6 +1406,117 @@ DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 QUARANTINE=0 "${NOTTY[@]}" "$SCRIPT" --apply \
 { [ ! -e "$STORAGE/zjunk1" ] && [ ! -e "$Q/zjunk1" ]; } \
   && ok "QUARANTINE=0 deletes outright, keeping nothing" \
   || no "QUARANTINE=0 still parked a copy"
+
+# The quarantine subcommands. An operator who has just read a wrong verdict needs to act on
+# one repo, and the run that produced it is over: these are the only way to do that without
+# hand-moving directories under a live node's storage.
+build_fixture; assert_isolated
+Q="$RSP_HOME/prune-audit/quarantine"
+DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null >/dev/null 2>&1
+out=$("$SCRIPT" quarantine list 2>&1)
+{ grep -q 'zjunk1' <<<"$out" && grep -q 'HELD' <<<"$out"; } \
+  && ok "quarantine list names what a past run pruned" \
+  || no "quarantine list did not show the repo the run had just quarantined"
+
+# Restoring has to do three things: the directory, the node's block policy, and the verdict
+# itself, or the very next run plans the same repo again. rad seed alone only ever rewrites an
+# existing policy row's scope, so on a blocked repo it reports success and changes nothing.
+out=$("$SCRIPT" quarantine restore zjunk1 2>&1)
+{ [ -d "$STORAGE/zjunk1" ] && [ ! -e "$Q/zjunk1" ] \
+  && GIT_DIR="$STORAGE/zjunk1" git rev-parse --verify -q master >/dev/null 2>&1 \
+  && grep -qx 'rad:zjunk1' "$RSP_HOME/.stub_unblock" \
+  && grep -qx 'rad:zjunk1' "$RSP_HOME/.stub_seed" \
+  && grep -qx 'zjunk1' "$RSP_HOME/prune-audit/keep.txt"; } \
+  && ok "quarantine restore puts the repo back, unblocks it and keeps it" \
+  || no "quarantine restore left the repo blocked, gone, or still condemned"
+
+DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 run | grep -q 'zjunk1' \
+  && no "a restored repo was planned for pruning all over again" \
+  || ok "a repo on the keep list is left out of the next plan"
+
+# Deleting one on demand, rather than waiting out the window.
+build_fixture; assert_isolated
+Q="$RSP_HOME/prune-audit/quarantine"
+mkdir -p "$Q/zdead1" "$Q/zdead2"
+"$SCRIPT" quarantine delete zdead1 >/dev/null 2>&1
+{ [ ! -e "$Q/zdead1" ] && [ -d "$Q/zdead2" ]; } \
+  && ok "quarantine delete removes exactly the repo it was given" \
+  || no "quarantine delete took the wrong repo, or none"
+
+"$SCRIPT" quarantine delete --all >/dev/null 2>&1
+[ ! -e "$Q/zdead2" ] \
+  && ok "quarantine delete --all empties it" \
+  || no "quarantine delete --all left repos behind"
+
+# Every verb builds a path from its argument, so an argument that is not a repo id must never
+# reach rm or mv.
+build_fixture; assert_isolated
+Q="$RSP_HOME/prune-audit/quarantine"
+canary="$ROOT/canary"; mkdir -p "$canary"
+out=$("$SCRIPT" quarantine delete "../../../../../..${canary}" 2>&1 || true)
+{ [ -d "$canary" ] && grep -q 'not a repo id' <<<"$out"; } \
+  && ok "a quarantine verb refuses an argument that is not a repo id" \
+  || no "a path argument reached rm through a quarantine verb"
+
+# The same window a run applies, on demand, so an operator can free the disk without waiting.
+build_fixture; assert_isolated
+Q="$RSP_HOME/prune-audit/quarantine"
+mkdir -p "$Q/zexpq1" "$Q/zfreshq1"; touch -d "40 days ago" "$Q/zexpq1"
+out=$("$SCRIPT" quarantine purge 2>&1)
+{ [ ! -e "$Q/zexpq1" ] && [ -d "$Q/zfreshq1" ] && grep -q 'purged 1 repo' <<<"$out"; } \
+  && ok "quarantine purge takes what is past its window and nothing else" \
+  || no "quarantine purge took the wrong repos"
+
+# --- the run cache --- Rules E and F read every repo's contents, and almost nothing changes
+# between weekly runs, so their per-repo output is kept and reused. The danger is not a slow
+# run, it is a verdict resting on evidence that has since stopped being true.
+build_fixture; assert_isolated
+first=$(DISK_AWARE=0 run)
+second=$(DISK_AWARE=0 run 2>&1)
+{ grep -q 'cache: media reuses' <<<"$second" \
+  && [ "$(grep -c 'media-dump' <<<"$first")" = "$(grep -c 'media-dump' <<<"$second")" ]; } \
+  && ok "a second run reuses the first run's reading and plans the same repos" \
+  || no "the warm cache changed the plan, or was never used"
+
+# The direction that matters on a deleter: a repo that has stopped looking like a dump must
+# not be pruned on last week's reading of it.
+e_tree zmediaone 60 master "clip.mp4:40000:mp4" "README.md:9000"
+DISK_AWARE=0 run | grep -qE "^zmediaone .*media-dump" \
+  && no "a repo was condemned on cached evidence it no longer matches" \
+  || ok "a repo that changed is read again, not judged on the cached reading"
+
+# And the other direction, so the test above cannot pass by the cache simply never being used.
+build_fixture; assert_isolated
+DISK_AWARE=0 run >/dev/null
+e_tree zcode4 60 master "clip.mp4:40000:mp4"
+DISK_AWARE=0 run | grep -qE "^zcode4 .*media-dump" \
+  && ok "a repo that has become a dump is caught on the next run" \
+  || no "the cache hid a repo that turned into a media dump"
+
+# A threshold the operator has just tuned must not leave last week's verdicts standing.
+build_fixture; assert_isolated
+DISK_AWARE=0 run >/dev/null
+out=$(DISK_AWARE=0 MEDIA_MIN_BYTES=999999999 "${NOTTY[@]}" "$SCRIPT" </dev/null 2>&1)
+{ grep -q 'cache: cold' <<<"$out" && ! has "$out" "zmediaone"; } \
+  && ok "changing a threshold drops the whole cache" \
+  || no "a tuned threshold reused verdicts measured under the old one"
+
+build_fixture; assert_isolated
+DISK_AWARE=0 run >/dev/null
+out=$(DISK_AWARE=0 CACHE=0 "${NOTTY[@]}" "$SCRIPT" </dev/null 2>&1)
+{ ! grep -q 'cache: media reuses' <<<"$out" \
+  && grep -qE "^zmediaone .*media-dump" <<<"$out"; } \
+  && ok "CACHE=0 reads every repo and still finds them" \
+  || no "CACHE=0 still reused a cached reading"
+
+# A repo that links to nothing produces no line of its own, so the harvest marks each repo
+# it finished. Without that marker the cache cannot tell "read it, found nothing" from
+# "never read it", and the repo would be read again every week.
+build_fixture; assert_isolated
+DISK_AWARE=0 run >/dev/null
+DISK_AWARE=0 run 2>&1 | grep -q 'cache: hosts reuses' \
+  && ok "the harvest reuses repos it read, including the ones that linked to nothing" \
+  || no "the harvest cache never took effect"
 
 # A repo already past the window is gone for good on the next run, which is what makes the
 # quarantine bounded rather than a second copy of storage growing forever.
@@ -1400,6 +1560,33 @@ out=$(DISK_AWARE=0 RULES= "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1)
 { ! grep -qE '^z' <<<"$(RULES= run)" && has "$(run)" "zjunk1"; } \
   && ok "RULES= means no rules, not the default set" \
   || no "an empty RULES fell back to running every rule"
+
+# --help is the one command a stranger runs first, and it used to read the script through a
+# relative $0 after the script had already cd'd to /, so it died on whoever ran ./the-script.
+h=$(cd "$ROOT" && "$SCRIPT" --help 2>&1); rc=$?
+{ [ "$rc" = 0 ] && grep -q '^USAGE' <<<"$h" && grep -q -- '--block-peers' <<<"$h" \
+  && grep -q 'quarantine <verb>' <<<"$h" && grep -q 'restore <rid>' <<<"$h" \
+  && grep -qE '^ +RULES=' <<<"$h" && grep -qE '^ +RAD_HOME=' <<<"$h"; } \
+  && ok "--help lists the options, the quarantine verbs and the resolved config" \
+  || no "--help did not print a usable help (rc=$rc)"
+
+# The subcommand has to answer --help too, and an unknown verb has to say so and fail.
+hq=$(cd "$ROOT" && "$SCRIPT" quarantine --help 2>&1); rcq=$?
+bq=$(cd "$ROOT" && "$SCRIPT" quarantine nosuchverb 2>&1); rcb=$?
+{ [ "$rcq" = 0 ] && grep -q 'QUARANTINE VERBS' <<<"$hq" \
+  && [ "$rcb" = 2 ] && grep -q 'unknown quarantine verb: nosuchverb' <<<"$bq"; } \
+  && ok "quarantine --help helps, and an unknown verb exits 2 naming itself" \
+  || no "quarantine --help or the unknown-verb path is wrong (rc=$rcq/$rcb)"
+
+# The verbs that only read the quarantine must work when storage is unmounted, which is when
+# an operator most wants to see what is still recoverable.
+build_fixture; assert_isolated
+mv "$STORAGE" "$ROOT/storage-away"
+qout=$(QUARANTINE_DAYS=7 "$SCRIPT" quarantine list 2>&1); rc=$?
+mv "$ROOT/storage-away" "$STORAGE"
+{ [ "$rc" = 0 ] && ! grep -q 'no storage dir' <<<"$qout"; } \
+  && ok "quarantine list works with storage unmounted" \
+  || no "quarantine list refused to run without storage (rc=$rc)"
 
 # At the critical watermark a recovery copy is a luxury the disk cannot buy.
 build_fixture; assert_isolated
@@ -1452,6 +1639,20 @@ if command -v script >/dev/null 2>&1; then
   { grep -q aborted "$ROOT/n.out" && [ "$b" = "$a" ]; } \
     && ok "interactive --apply + n aborts, nothing deleted" \
     || no "interactive + n aborts"
+
+  # The line a human answers has to say what the run really does. Under quarantine the disk
+  # does not come back today, so a prompt promising to reclaim it is asking for a wrong yes.
+  { grep -q 'quarantine' "$ROOT/n.out" && ! grep -q 'reclaiming' "$ROOT/n.out"; } \
+    && ok "the confirmation prompt says quarantine, not reclaim, while quarantine is on" \
+    || no "the apply prompt promised disk the quarantine is still holding"
+
+  build_fixture; assert_isolated
+  printf 'n\n' | script -qec \
+    "env DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 QUARANTINE=0 '$SCRIPT' --apply" \
+    /dev/null >"$ROOT/nq0.out" 2>&1
+  grep -q 'DELETE.*reclaiming' "$ROOT/nq0.out" \
+    && ok "QUARANTINE=0 puts the reclaim promise back in the prompt" \
+    || no "the prompt hid the outright deletion QUARANTINE=0 was about to do"
 
   build_fixture; assert_isolated
   printf 'y\n' | script -qec "env DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 '$SCRIPT' --apply" \
