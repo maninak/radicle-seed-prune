@@ -2044,12 +2044,13 @@ if [ "$nreview" -gt 0 ]; then
 fi
 
 echo
-# The plan promises only what the run will actually deliver. Under quarantine the disk does
-# not come back until the window passes, and a forecast that says "reclaim" would be the same
-# overclaim the DONE line below is careful not to make.
+# The plan promises only what the run will actually deliver, and says it the same way the DONE
+# line below does. Under quarantine no disk is freed today, so a forecast saying "reclaim"
+# would be an overclaim, and one saying "the disk comes back then" leaves a reader working out
+# both when and from where.
 if [ "$QUARANTINE" = 1 ]; then
-  echo "# PLAN: prune $nplan repos, ${gib} GiB" \
-       "(quarantined ${QUARANTINE_DAYS}d, so the disk comes back then)"
+  echo "# PLAN: prune $nplan repos, ${gib} GiB out of storage but still on disk" \
+       "for ${QUARANTINE_DAYS}d, until a later run deletes them"
 else
   echo "# PLAN: prune $nplan repos, reclaim ${gib} GiB"
 fi

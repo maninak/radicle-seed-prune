@@ -37,7 +37,7 @@ Rules E, F and G are new and on by default, so read one dry run before you apply
 
   The keep list is `$AUDIT_DIR/keep.txt`, one repo id per line and editable by hand, and a repo on it is excluded from every rule.
 
-- **The plan says when the disk actually comes back.** With the quarantine on, the plan says `prune N repos, X GiB (quarantined 7d, so the disk comes back then)` rather than `reclaim X GiB`, matching the completion line. `QUARANTINE=0` puts the reclaim wording back.
+- **The plan says when the disk actually comes back.** With the quarantine on, the plan says `prune N repos, X GiB out of storage but still on disk for 7d, until a later run deletes them` rather than `reclaim X GiB`, matching the completion line. `QUARANTINE=0` puts the reclaim wording back.
 
 - **An unattended run refuses a plan far bigger than its own past runs.** It aborts when the plan is more than `RATCHET_FACTOR` (3) times the median of the last `RATCHET_RUNS` (8) applied runs, read from the history log; fewer than three past runs is not treated as a baseline. `--force` or an interactive confirmation gets past it.
 

@@ -1397,7 +1397,7 @@ after=$(ls "$STORAGE" | wc -l)
 # "reclaim" while the quarantine is on, and must say it when it is off.
 build_fixture; assert_isolated
 qplan=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 run)
-{ grep -q "quarantined 7d, so the disk comes back then" <<<"$qplan" \
+{ grep -q "still on disk for 7d, until a later run deletes them" <<<"$qplan" \
   && ! grep -q 'PLAN:.*reclaim' <<<"$qplan"; } \
   && ok "the plan does not promise disk the quarantine is still holding" \
   || no "the plan claimed to reclaim disk that quarantine keeps for a week"

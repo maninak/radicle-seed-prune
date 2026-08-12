@@ -100,7 +100,7 @@ zEXAMPLEREPOkkkkkkkkkkkkkkk           73.9KB     12       30 junk-name     age  
 (35 repos)                           413.7MB                 link-farm     2 near      same pattern across many repos; PLAN_FULL=1 lists them
 (23 repos)                             1.3GB                 media-batch   0 near      same pattern across many repos; PLAN_FULL=1 lists them
 
-# PLAN: prune 523 repos, 2.52 GiB (quarantined 7d, so the disk comes back then)
+# PLAN: prune 523 repos, 2.52 GiB out of storage but still on disk for 7d, until a later run deletes them
 #   junk-name         3 repos      0.00 GiB
 #   link-farm        35 repos      0.40 GiB
 #   media-batch      23 repos      1.29 GiB
