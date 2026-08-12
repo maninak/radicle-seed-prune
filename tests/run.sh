@@ -505,7 +505,9 @@ build_fixture
 assert_isolated                                   # STORAGE must be inside the temp fixture
 
 # --- classification & exclusions (relaxed thresholds, disk-awareness off) ---
-export DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 MEDIA_MIN_BYTES=20000
+# PLAN_FULL because nearly every assertion below looks for one repo's row. The folding that
+# hides those rows on a real 519-row plan gets its own test rather than silencing the rest.
+export DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 MEDIA_MIN_BYTES=20000 PLAN_FULL=1
 plan=$(run)
 has "$plan" "zjunk1"  && grep -qE "^zjunk1 .*junk-name"     <<<"$plan" \
   && ok "junk-named stale repo pruned (junk-name)"     \
@@ -772,6 +774,22 @@ grep -qE "^zmediaspc .*media-dump" <<<"$plan" \
 ! has "$plan" "zmediacobm" \
   && ok "a peer replicating a repo does not subtract the repo's own COB text from itself" \
   || no "replication erased zmediacobm's issue thread and left it looking like a dump"
+
+# --- a plan nobody reads is not a review --- A verdict decided by a pattern across many repos
+# folds to one line once the group is big; a verdict decided by one repo's own metadata never
+# folds, however many there are, because those are the rows that want eyes.
+folded=$(PLAN_FULL=0 PLAN_COLLAPSE_ROWS=2 run)
+{ grep -qE '^\([0-9]+ repos\) .* spam-batch' <<<"$folded" \
+  && ! has "$folded" "zspam1"; } \
+  && ok "a big corpus verdict folds to one line in the plan" \
+  || no "spam-batch did not fold, so a 434-row group would print in full"
+has "$folded" "zjunk1" \
+  && ok "a verdict resting on one repo is always listed, never folded" \
+  || no "a judgment-tier row was folded away where a human could not see it"
+grep -q "PLAN_FULL=1" <<<"$folded" \
+  && ok "the folded line says how to see what it hid" \
+  || no "the plan folded rows without saying how to expand them"
+
 
 # --- rule G: parasite peers --- Three peers put the identical clip in the same three repos.
 # Only one of them is accused, so each exemption is what separates it from the other two, not
@@ -1301,6 +1319,37 @@ out=$(DISK_AWARE=1 PRESSURE_CRIT_PCT=100 PRESSURE_CRIT_GB=999999 ABS_SIZE_FLOOR_
 { [ ! -e "$Q/zfreshquar" ] && grep -q 'emptied the whole quarantine' <<<"$out"; } \
   && ok "a critical disk empties the whole quarantine, window or not" \
   || no "quarantine held disk hostage at the critical watermark"
+
+# --- the caps must catch a plan that CREEPS, not only one that jumps --- A weekly cron whose
+# plan doubles every month never touches a fixed cap. The baseline is the history the tool
+# already writes, so this fixture writes a history and checks the run stops against it.
+build_fixture; assert_isolated
+mkdir -p "$RSP_HOME/prune-audit"
+for i in 1 2 3 4; do
+  printf '2026-0%s-01T00:00:00Z\tdeleted=2\treclaimed_gib=0.01\tpressure=0%%\taudit=x.log\n' \
+    "$i" >> "$RSP_HOME/prune-audit/history.log"
+done
+out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
+{ [ "$rc" = 3 ] && grep -q 'is not a routine week' <<<"$out" \
+  && [ -e "$STORAGE/zjunk1" ]; } \
+  && ok "a plan far above what this seed usually prunes stops an unattended run" \
+  || no "a creeping plan ran unattended (rc=$rc)"
+
+out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply --force \
+        </dev/null 2>&1); rc=$?
+{ [ "$rc" != 3 ] && [ ! -e "$STORAGE/zjunk1" ]; } \
+  && ok "--force still gets past the history ratchet" \
+  || no "--force could not override the ratchet (rc=$rc)"
+
+# Too little history is no baseline: two runs must not be treated as a norm to measure against.
+build_fixture; assert_isolated
+mkdir -p "$RSP_HOME/prune-audit"
+printf '2026-01-01T00:00:00Z\tdeleted=1\taudit=x.log\n' >> "$RSP_HOME/prune-audit/history.log"
+printf '2026-02-01T00:00:00Z\tdeleted=1\taudit=x.log\n' >> "$RSP_HOME/prune-audit/history.log"
+out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
+{ [ "$rc" != 3 ] && [ ! -e "$STORAGE/zjunk1" ]; } \
+  && ok "two past runs are not enough history to ratchet against" \
+  || no "the ratchet fired on a baseline too thin to mean anything (rc=$rc)"
 
 # interactive prompt via a pty (needs util-linux `script`): n aborts, y applies.
 if command -v script >/dev/null 2>&1; then

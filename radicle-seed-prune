@@ -413,6 +413,12 @@ PARASITE_TEXT_MAX_BYTES="${PARASITE_TEXT_MAX_BYTES:-16384}"
 
 MAX_PRUNE_COUNT="${MAX_PRUNE_COUNT:-1000}"       # runaway guards (abort unless --force)
 MAX_PRUNE_GB="${MAX_PRUNE_GB:-80}"
+# The fixed caps above only catch a plan that jumps. They cannot catch one that CREEPS: at a
+# steady 2.5 GiB a week, a plan could grow for a year without ever touching MAX_PRUNE_GB, and
+# under sustained disk pressure the thresholds loosen on their own. So a plan is also measured
+# against what this seed normally prunes, taken from the run history it already writes.
+RATCHET_FACTOR="${RATCHET_FACTOR:-3}"            # times the usual plan before a run stops
+RATCHET_RUNS="${RATCHET_RUNS:-8}"                # past runs the usual is taken from (median)
 MAX_SCAN_FAIL_PCT="${MAX_SCAN_FAIL_PCT:-10}"     # abort if this share of storage is unreadable
 
 # --- disk-pressure adaptivity ---
@@ -441,6 +447,12 @@ AUDIT_DIR="${AUDIT_DIR:-$RAD_HOME/prune-audit}"
 # The holding cost is small: at the observed 2.5 GiB a week, 30 days is about 10 GiB parked.
 QUARANTINE="${QUARANTINE:-1}"                    # 0 deletes outright, with no way back
 QUARANTINE_DAYS="${QUARANTINE_DAYS:-30}"         # how long a pruned repo stays recoverable
+# A verdict that rests on a corpus (the same template, domain or file across many repos) is
+# evidence one repo cannot manufacture, so those rows are summarised once a group gets big
+# enough that nobody would read them. Rows resting on a single repo's own metadata are always
+# listed in full, however many there are: those are the ones that want human eyes.
+PLAN_COLLAPSE_ROWS="${PLAN_COLLAPSE_ROWS:-20}"   # group size at which a corpus verdict folds
+PLAN_FULL="${PLAN_FULL:-0}"                      # 1 lists every row whatever the verdict
 
 # Anchor the cwd somewhere any user can read. Launched from a directory the running
 # user cannot read (`sudo -u seed` started from /root, say), every `find` below emits
@@ -1462,14 +1474,30 @@ nplan=$(wc -l < "$tmp/plan.sorted")
 bytes=$(awk -F'\t' '{s+=$2} END{printf "%.0f", s}' "$tmp/plan.sorted")
 gib=$(awk -v b="$bytes" 'BEGIN{printf "%.2f", b/1073741824}')
 
-printf '\n%-34s %9s %6s %8s %-13s %s\n' "RID" "SIZE" "SEEDS" "AGE(d)" "REASON" "NAME"
 # One awk for the whole table rather than one per row: a plan can run to hundreds of lines.
-awk -F'\t' -v now="$now" '{
-       age = int((now - $7) / 86400)           # days since whichever date the rule measured
-       s = $2; u = "B"; split("KB MB GB", a, " ")
+# It makes two passes: the first counts each verdict so the second knows what to fold.
+awk -F'\t' -v now="$now" -v collapse="$PLAN_COLLAPSE_ROWS" -v full="$PLAN_FULL" '
+     function size(b,   s, u, a, i) {
+       s = b; u = "B"; split("KB MB GB", a, " ")
        for (i = 1; i <= 3 && s >= 1024; i++) { s /= 1024; u = a[i] }
-       printf "%-34s %9s %6s %8s %-13s %s\n", $1, sprintf("%.1f%s", s, u), $3, age, $5, $6
-     }' "$tmp/plan.sorted"
+       return sprintf("%.1f%s", s, u)
+     }
+     # The corpus verdicts. Each one is decided by a pattern across MANY repos, so reading its
+     # rows one by one tells a reader nothing the group line does not already say.
+     BEGIN { split("spam-batch link-farm media-batch", c, " ")
+             for (i in c) corpus[c[i]] = 1 }
+     NR == FNR { n[$5]++; b[$5] += $2; next }
+     FNR == 1 { for (r in n) if (corpus[r] && !full && n[r] >= collapse) fold[r] = 1
+                printf "\n%-34s %9s %6s %8s %-13s %s\n",
+                       "RID", "SIZE", "SEEDS", "AGE(d)", "REASON", "NAME" }
+     { if ($5 in fold) next
+       printf "%-34s %9s %6s %8s %-13s %s\n",
+              $1, size($2), $3, int((now - $7) / 86400), $5, $6 }
+     END { for (r in fold)
+             printf "%-34s %9s %6s %8s %-13s %s\n",
+                    sprintf("(%d repos)", n[r]), size(b[r]), "", "", r,
+                    "same pattern across many repos; PLAN_FULL=1 lists them"
+     }' "$tmp/plan.sorted" "$tmp/plan.sorted"
 
 # Not a plan line: rule F saw the evidence and the seed floor held it back. A human decides.
 nreview=$(wc -l < "$tmp/media-review")
@@ -1547,6 +1575,29 @@ if [ "$FORCE" = 0 ] && [ "$CONFIRMED" = 0 ]; then
   if [ "$nplan" -gt "$MAX_PRUNE_COUNT" ] || [ "$over_gb" = 1 ]; then
     echo "# ABORT: plan ($nplan repos, ${gib} GiB) trips runaway caps" \
          "(count=$MAX_PRUNE_COUNT gb=$MAX_PRUNE_GB)." >&2
+    echo "# Review it, then re-run with --force (unattended), or confirm interactively." >&2
+    exit 3
+  fi
+  # The median of past runs, not the mean: one big first run would otherwise raise the bar
+  # permanently and defeat the whole check. Fewer than three past runs is no baseline at all.
+  # `|| true` because a seed that has never pruned has no history file at all, and under
+  # `set -e` an assignment from a command that failed would end the run right here.
+  usual=$(awk -F'\t' -v keep="$RATCHET_RUNS" '
+            { for (i = 1; i <= NF; i++) if ($i ~ /^deleted=[0-9]+$/) { sub(/^deleted=/, "", $i)
+                                                                      v[++n] = $i + 0 } }
+            END { if (n < 3) { print ""; exit }
+                  start = (n > keep) ? n - keep + 1 : 1; m = 0
+                  for (i = start; i <= n; i++) w[++m] = v[i]
+                  # insertion sort: m is at most RATCHET_RUNS, so this stays trivial
+                  for (i = 2; i <= m; i++) { x = w[i]; j = i - 1
+                    while (j > 0 && w[j] > x) { w[j+1] = w[j]; j-- }
+                    w[j+1] = x }
+                  print (m % 2) ? w[(m+1)/2] : int((w[m/2] + w[m/2+1]) / 2) }' \
+            "$AUDIT_DIR/history.log" 2>/dev/null || true)
+  if [ -n "$usual" ] && [ "$usual" -gt 0 ] \
+     && [ "$nplan" -gt $(( usual * RATCHET_FACTOR )) ]; then
+    echo "# ABORT: plan is $nplan repos where the last $RATCHET_RUNS runs pruned about" \
+         "$usual. Something changed; a ${RATCHET_FACTOR}x jump is not a routine week." >&2
     echo "# Review it, then re-run with --force (unattended), or confirm interactively." >&2
     exit 3
   fi
