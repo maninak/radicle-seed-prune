@@ -435,6 +435,12 @@ STALE_YEARS_DAYS_AGG="${STALE_YEARS_DAYS_AGG:-60}"
 MIN_OTHER_SEEDS_AGG="${MIN_OTHER_SEEDS_AGG:-1}"  # hard floor 1: B and C keep the last copy
 
 AUDIT_DIR="${AUDIT_DIR:-$RAD_HOME/prune-audit}"
+# A pruned repo is moved here first and deleted for real one run later. Three verdicts may
+# take the last copy the network is known to hold, and for exactly those the documented undo
+# ("re-fetch it") is the thing that cannot work, so the only real undo is a copy on this disk.
+# The holding cost is small: at the observed 2.5 GiB a week, 30 days is about 10 GiB parked.
+QUARANTINE="${QUARANTINE:-1}"                    # 0 deletes outright, with no way back
+QUARANTINE_DAYS="${QUARANTINE_DAYS:-30}"         # how long a pruned repo stays recoverable
 
 # Anchor the cwd somewhere any user can read. Launched from a directory the running
 # user cannot read (`sudo -u seed` started from /root, say), every `find` below emits
@@ -1556,7 +1562,36 @@ press_pct=$(awk -v p="$p" 'BEGIN{printf "%.0f",p*100}')
   cat "$tmp/plan.sorted"; } > "$audit"
 echo "# audit log: $audit"
 
-echo "# unseed + block + delete $nplan repos..."
+# Empty the quarantine of anything past its window before pruning, so the disk this run
+# reports as reclaimed is disk that actually came back. Under real pressure the window is
+# ignored and the whole quarantine goes: a recovery copy is a luxury a full disk cannot buy.
+quar="$AUDIT_DIR/quarantine"
+if [ "$QUARANTINE" = 1 ]; then
+  mkdir -p "$quar" 2>/dev/null || true
+  purged=0
+  if [ "$DISK_AWARE" = 1 ] \
+     && awk -v a="$disk_avail" -v c="$crit_free" 'BEGIN{exit !(a <= c)}'; then
+    for d in "$quar"/z*; do
+      [ -e "$d" ] || continue
+      rm -rf -- "$d" && purged=$((purged+1))
+    done
+    [ "$purged" = 0 ] \
+      || echo "# disk is at the critical watermark: emptied the whole quarantine ($purged)."
+  else
+    while IFS= read -r d; do
+      rm -rf -- "$d" && purged=$((purged+1))
+    done < <(find "$quar" -mindepth 1 -maxdepth 1 -type d -name 'z*' \
+                  -mtime "+$QUARANTINE_DAYS" 2>/dev/null)
+  fi
+  [ "$purged" = 0 ] || echo "# purged $purged repo(s) out of quarantine after" \
+                            "${QUARANTINE_DAYS}d; they are gone for good now."
+fi
+
+if [ "$QUARANTINE" = 1 ]; then
+  echo "# unseed + block + quarantine $nplan repos (recoverable for ${QUARANTINE_DAYS}d)..."
+else
+  echo "# unseed + block + delete $nplan repos..."
+fi
 deleted=0
 while IFS=$'\t' read -r rid sz seeds life reason name; do
   "$RAD" unseed "rad:$rid" >/dev/null 2>&1 || true     # clear any policy FIRST
@@ -1564,8 +1599,17 @@ while IFS=$'\t' read -r rid sz seeds life reason name; do
     || { echo "#   WARN block failed, skipping delete: $rid" >&2; continue; }
   d="$STORAGE/$rid"
   case "$d" in
-    "$STORAGE"/z*) rm -rf -- "$d" && deleted=$((deleted+1)) \
-                     || echo "#   WARN delete failed: $d" >&2 ;;
+    "$STORAGE"/z*)
+      if [ "$QUARANTINE" = 1 ]; then
+        # A repo pruned twice (re-fetched, pruned again) would otherwise fail to move onto
+        # its own older copy, so the older copy goes first.
+        rm -rf -- "$quar/$rid" 2>/dev/null
+        mv -- "$d" "$quar/$rid" 2>/dev/null && deleted=$((deleted+1)) \
+          || echo "#   WARN quarantine failed: $d" >&2
+      else
+        rm -rf -- "$d" && deleted=$((deleted+1)) \
+          || echo "#   WARN delete failed: $d" >&2
+      fi ;;
     *) echo "#   SKIP unsafe path: $d" >&2 ;;
   esac
 done < "$tmp/plan.sorted"
@@ -1632,11 +1676,19 @@ if [ "$RESTART" = 1 ]; then
 fi
 
 # one appended line per run: the index into the per-run audit logs
-printf '%s\tdeleted=%s\treclaimed_gib=%s\tpressure=%s%%\taudit=%s\n' \
-  "$run_ts" "$deleted" "$gib" "$press_pct" "$(basename "$audit")" \
+printf '%s\tdeleted=%s\treclaimed_gib=%s\tquarantined=%s\tpressure=%s%%\taudit=%s\n' \
+  "$run_ts" "$deleted" "$gib" "$QUARANTINE" "$press_pct" "$(basename "$audit")" \
   >> "$AUDIT_DIR/history.log"
 
-echo "# DONE: deleted $deleted repos, reclaimed ~${gib} GiB. Audit: $audit"
+# The GiB figure is what LEAVES storage. With quarantine on it is not free space yet, and
+# saying "reclaimed" of disk still occupied is the kind of report that gets believed.
+if [ "$QUARANTINE" = 1 ]; then
+  echo "# DONE: quarantined $deleted repos, ~${gib} GiB out of storage but still on disk" \
+       "for ${QUARANTINE_DAYS}d. Restore one with: mv $quar/<rid> $STORAGE/"
+  echo "# Audit: $audit"
+else
+  echo "# DONE: deleted $deleted repos, reclaimed ~${gib} GiB. Audit: $audit"
+fi
 [ "$RESTART" = 1 ] \
   || echo "# tip: run 'sudo systemctl restart $SERVICE' once to clear the stale" \
           "inventory-announce log warning."

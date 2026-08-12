@@ -1245,11 +1245,62 @@ chmod 555 "$STORAGE"
 out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
 chmod 755 "$STORAGE"
 after=$(ls "$STORAGE" | wc -l)
-{ [ "$before" = "$after" ] && grep -q 'WARN delete failed' <<<"$out" \
+{ [ "$before" = "$after" ] && grep -q 'WARN quarantine failed' <<<"$out" \
     && grep -qE 'WARN: [0-9]+ of [0-9]+ deletions failed' <<<"$out" \
+    && grep -q 'DONE: quarantined 0 repos' <<<"$out"; } \
+  && ok "a failed quarantine move is reported, not counted as reclaimed" \
+  || no "failed quarantine reported (rc=$rc)"
+
+# The same claim on the outright-delete path, which is what a full disk falls back to.
+build_fixture; assert_isolated
+before=$(ls "$STORAGE" | wc -l)
+chmod 555 "$STORAGE"
+out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 QUARANTINE=0 "${NOTTY[@]}" "$SCRIPT" --apply \
+        </dev/null 2>&1); rc=$?
+chmod 755 "$STORAGE"
+after=$(ls "$STORAGE" | wc -l)
+{ [ "$before" = "$after" ] && grep -q 'WARN delete failed' <<<"$out" \
     && grep -q 'DONE: deleted 0 repos' <<<"$out"; } \
   && ok "failed deletions are reported, not counted as reclaimed" \
   || no "failed deletions reported (rc=$rc)"
+
+# --- quarantine --- The three floor-0 verdicts may take the last copy the network is known to
+# hold, so "re-fetch it" is not an undo for exactly the repos that most need one.
+build_fixture; assert_isolated
+DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null >/dev/null 2>&1
+Q="$RSP_HOME/prune-audit/quarantine"
+{ [ ! -e "$STORAGE/zjunk1" ] && [ -d "$Q/zjunk1" ] \
+  && GIT_DIR="$Q/zjunk1" git rev-parse --verify -q master >/dev/null 2>&1; } \
+  && ok "a pruned repo is moved to quarantine intact, not destroyed" \
+  || no "a pruned repo was not recoverable from quarantine"
+
+build_fixture; assert_isolated
+Q="$RSP_HOME/prune-audit/quarantine"
+DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 QUARANTINE=0 "${NOTTY[@]}" "$SCRIPT" --apply \
+  </dev/null >/dev/null 2>&1
+{ [ ! -e "$STORAGE/zjunk1" ] && [ ! -e "$Q/zjunk1" ]; } \
+  && ok "QUARANTINE=0 deletes outright, keeping nothing" \
+  || no "QUARANTINE=0 still parked a copy"
+
+# A repo already past the window is gone for good on the next run, which is what makes the
+# quarantine bounded rather than a second copy of storage growing forever.
+build_fixture; assert_isolated
+Q="$RSP_HOME/prune-audit/quarantine"
+mkdir -p "$Q/zoldquar"; touch -d "40 days ago" "$Q/zoldquar"
+out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1)
+{ [ ! -e "$Q/zoldquar" ] && grep -q 'purged 1 repo' <<<"$out"; } \
+  && ok "quarantine is purged once the window passes" \
+  || no "a quarantined repo outlived QUARANTINE_DAYS"
+
+# At the critical watermark a recovery copy is a luxury the disk cannot buy.
+build_fixture; assert_isolated
+Q="$RSP_HOME/prune-audit/quarantine"
+mkdir -p "$Q/zfreshquar"
+out=$(DISK_AWARE=1 PRESSURE_CRIT_PCT=100 PRESSURE_CRIT_GB=999999 ABS_SIZE_FLOOR_MB=1 \
+        "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1)
+{ [ ! -e "$Q/zfreshquar" ] && grep -q 'emptied the whole quarantine' <<<"$out"; } \
+  && ok "a critical disk empties the whole quarantine, window or not" \
+  || no "quarantine held disk hostage at the critical watermark"
 
 # interactive prompt via a pty (needs util-linux `script`): n aborts, y applies.
 if command -v script >/dev/null 2>&1; then
