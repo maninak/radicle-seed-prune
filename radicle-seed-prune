@@ -21,7 +21,8 @@
 #   every size/age rule has a minimum other-seed count: we never delete the last
 #   known copy by accident. Every prune is recorded in an audit log.
 #
-# SELECTION  (a repo is pruned if it is NOT excluded AND matches a rule)
+# SELECTION  (a repo is pruned if it is NOT excluded AND matches a rule; rule G is about
+# peers instead, and prunes nothing)
 #
 #   Exclusions (never touched):
 #     - pinned repos        (config web.pinned.repositories)
@@ -137,6 +138,13 @@
 #       AND everything that is NOT media adds up to < MEDIA_TEXT_CEIL_BYTES
 #       AND the same age and seed checks
 #
+#   Rule G - parasite peers. Judges a PEER, prunes nothing, and blocks only with a human
+#     answering for each one (--block-peers, which needs a terminal):
+#       one file of theirs, byte for byte, in >= PARASITE_MIN_REPOS repos they do not delegate
+#       AND >= PARASITE_MIN_BYTES of media across those repos
+#       AND < PARASITE_TEXT_MAX_BYTES of anything else, anywhere
+#       AND they are not a delegate of ANY repo in storage, and are not us
+#
 #   THE TEXT BUDGET is what tells a dump from a real repo that happens to carry media: a game
 #   or a documented photo archive has a README, a licence or a build file and clears
 #   MEDIA_TEXT_MAX_BYTES many times over. Bytes rather than file count, or one 40-byte
@@ -180,6 +188,29 @@
 #   A DUMP NO OTHER NODE SEEDS is listed for a human rather than pruned, because rule F's
 #   evidence is about one repo and the last copy is not ours to take on it. Listing rather than
 #   silently sparing is what keeps that floor from becoming a standing exemption.
+#
+# RULE G JUDGES A PEER, NOT A REPO, and nothing it finds is ever deleted or pruned. A peer
+#   who pushes into repos it does not own is normally a contributor, so the only evidence that
+#   counts here is ONE FILE, byte for byte, appearing in PARASITE_MIN_REPOS repos where that
+#   peer is not a delegate and where the repo's own refs do not hold it. A person attaching a
+#   screenshot to an issue posts a different file each time; the same object id turning up in
+#   unrelated repos is a campaign. Totals alone are deliberately not enough: someone active
+#   across many repos accumulates megabytes honestly.
+#
+#   A DELEGATE IS NEVER ACCUSED, wherever in storage they are one. The node runs delegate refs
+#   through the same block list before it checks the signature threshold, so blocking a
+#   delegate stops the repos they own from replicating properly.
+#
+#   THE ACT IS SEPARATE FROM THE FINDING, and it is the one act here that is never automated.
+#   A block is permanent, applies to every repo at once, and the person blocked is never told,
+#   so --block-peers refuses outright when there is no terminal to ask at, and asks again for
+#   each peer when there is. The plan prints the exact `rad block` line for every peer it names
+#   whether or not that flag was given, so an operator can act on one peer without handing the
+#   tool a standing licence over the whole list, and each block is written to the audit log
+#   with the evidence behind it. Blocking is what makes it stick: the node filters every
+#   namespaced ref it receives through the block list whatever its seeding scope is, so refs
+#   dropped here do not come back. Dropping them frees no disk until git gc runs, which this
+#   tool does not do.
 #
 #   HOW OLD A REPO IS, for rules D, E and F, is the older of two dates: the oldest date on any
 #   of its refs, and the day this seed first saw it (FIRST_SEEN). Ref dates are set by
@@ -236,6 +267,11 @@
 # a separate license from the author: info@radicle.tools
 
 set -euo pipefail
+# Numbers must not depend on the operator's locale. mawk, which is what a Debian seed runs,
+# honours LC_NUMERIC: under a comma locale it prints 2.52e+10 as "2,52e+10", and the next awk
+# that reads that value back parses it as 2. That silently zeroes the disk-pressure maths. C
+# also fixes sort to byte order, so a plan does not reorder itself between machines.
+export LC_ALL=C
 
 VERSION="0.4.0"
 
@@ -359,6 +395,22 @@ MEDIA_SNIFF_MAX_FILES=200                        # most files read in any one re
 # and the next one down has 2942 refs, so it sits in a wide gap rather than near real repos.
 MEDIA_MAX_REFS="${MEDIA_MAX_REFS:-10000}"
 
+# --- rule G: parasite peers ---
+# Rule G judges a PEER, not a repo, and blocking a peer is a heavier act than deleting one
+# repo: it is a standing judgement about a person, it applies to every repo at once, and they
+# are never told. So this rule is built to be nearly impossible to trip by accident, and every
+# threshold below buys confidence rather than reach. It reports by default and blocks only
+# under --block-peers, so the operator reads the evidence before anyone is blocked.
+PARASITE_SCAN="${PARASITE_SCAN:-1}"              # 0 skips the pass: rule G off
+# The evidence is one file, byte for byte, pushed into repos the peer does not own. A person
+# attaching a screenshot to an issue posts a DIFFERENT file each time; the same oid landing in
+# unrelated repos is a campaign, and it is the one thing a single repo cannot manufacture.
+PARASITE_MIN_REPOS="${PARASITE_MIN_REPOS:-10}"   # repos one blob must reach to accuse a peer
+PARASITE_MIN_BYTES="${PARASITE_MIN_BYTES:-1048576}"
+# A peer who writes is a contributor, whatever else they push. This is generous on purpose: it
+# is cheap for a real person to clear and costly for a bot to fake, so it errs toward mercy.
+PARASITE_TEXT_MAX_BYTES="${PARASITE_TEXT_MAX_BYTES:-16384}"
+
 MAX_PRUNE_COUNT="${MAX_PRUNE_COUNT:-1000}"       # runaway guards (abort unless --force)
 MAX_PRUNE_GB="${MAX_PRUNE_GB:-80}"
 MAX_SCAN_FAIL_PCT="${MAX_SCAN_FAIL_PCT:-10}"     # abort if this share of storage is unreadable
@@ -420,13 +472,16 @@ JUNK_EXACT_REGEX='^(foo|bar|baz)$'
 JUNK_ID_MIN_LEN="${JUNK_ID_MIN_LEN:-8}"
 
 # ---------------------------------------------------------------------------------------- args
-APPLY=0; FORCE=0; RESTART=0; YES=0
+APPLY=0; FORCE=0; RESTART=0; YES=0; BLOCK_PEERS=0
 for a in "$@"; do
   case "$a" in
     --apply)        APPLY=1 ;;
     --yes|-y)       YES=1 ;;
     --force)        FORCE=1 ;;
     --restart-node) RESTART=1 ;;
+    # Rule G only ever reports without this. Blocking a peer is a standing judgement
+    # about a person that applies to every repo at once, so it takes its own opt-in.
+    --block-peers)  BLOCK_PEERS=1 ;;
     --version)      echo "radicle-seed-prune $VERSION"; exit 0 ;;
     --help|-h)      awk 'NR==1{next} /^#/{print; next} {exit}' "$0"; exit 0 ;;
     *) echo "unknown arg: $a (try --help)" >&2; exit 2 ;;
@@ -509,6 +564,12 @@ rule_f="$rule_f  media-batch(that media held by >=${MEDIA_MIN_BATCH} repos,"
 rule_f="$rule_f <${MEDIA_TEXT_CEIL_BYTES}B of anything else)"
 [ "$MEDIA_SCAN" = 1 ] || rule_f="$rule_f [DISABLED: MEDIA_SCAN=0]"
 echo "# rule $rule_f"
+rule_g="G parasite-peer(one file of theirs in >=${PARASITE_MIN_REPOS} repos they do not own,"
+rule_g="$rule_g >=$((PARASITE_MIN_BYTES/1048576))MB media,"
+rule_g="$rule_g <${PARASITE_TEXT_MAX_BYTES}B of anything else)"
+[ "$PARASITE_SCAN" = 1 ] || rule_g="$rule_g [DISABLED: PARASITE_SCAN=0]"
+[ "$BLOCK_PEERS" = 1 ] || rule_g="$rule_g [reports only; --block-peers asks per peer]"
+echo "# rule $rule_g"
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -871,6 +932,99 @@ MEDIA
 
 fi
 
+# --------------------------------------------------------------- rule G: parasite peers, scan
+# Records, per repo, what each NON-delegate peer has put there that the repo's own refs do not
+# hold. `--not` hands the exclusion to git, which stops walking at the first shared commit, so
+# a peer who merely replicates the repo produces no output at all and costs almost nothing.
+# One combined listing runs first and most repos end there, because most have no stranger
+# media; only where that finds some is the work repeated per peer to learn whose it is.
+: > "$tmp/peer"
+if [ "$PARASITE_SCAN" = 1 ]; then
+  echo "# looking for parasite peers for rule G ($JOBS workers)..." >&2
+  cat > "$tmp/peer.sh" <<PEER
+#!/usr/bin/env bash
+media_exts='$MEDIA_EXTS'
+max_refs=$MEDIA_MAX_REFS
+PEER
+  cat >> "$tmp/peer.sh" <<'PEER'
+shopt -s nullglob
+# Prints "<oid> <bytes> <path>" for every blob reachable from the refs in $1 but not from any
+# ref in $2. Both arrive as newline-separated lists on the named variables, never as arguments,
+# because a widely replicated repo has thousands of refs and argv has a size limit.
+only_in() {
+  printf '%s\n' $1 > "$TMPDIR_PEER/want"
+  printf '%s\n' $2 | sed 's/^/^/' >> "$TMPDIR_PEER/want"
+  GIT_DIR="$d" git rev-list --objects --ignore-missing --stdin \
+      --filter=object:type=blob < "$TMPDIR_PEER/want" 2>/dev/null \
+    | GIT_DIR="$d" git cat-file \
+        --batch-check='%(objectname) %(objecttype) %(objectsize) %(rest)' 2>/dev/null \
+    | awk '$2 == "blob" { path = $0; sub(/^[^ ]+ [^ ]+ [^ ]+ /, "", path)
+                          printf "%s %.0f %s\n", $1, $3, path }'
+}
+# Splits a blob listing into the media bytes and the other bytes it holds. Extension only: rule
+# G accuses a person, so it leans on the same file appearing again and again rather than on a
+# guess about one file's type, and a sniffer here would cost a read per blob across the seed.
+split_bytes() {
+  awk -v m="$media_exts" '
+    function known(list, key) { return index("|" list "|", "|" key "|") > 0 }
+    { oid = $1; size = $2 + 0
+      base = $0; sub(/^[^ ]+ [^ ]+ /, "", base); sub(/^.*\//, "", base); base = tolower(base)
+      ext = ""; if (match(base, /\.[a-z0-9]+$/)) ext = substr(base, RSTART + 1)
+      if (ext != "" && known(m, ext)) { printf "b %s %.0f\n", oid, size; media += size }
+      else                                                              other += size }
+    END { printf "= %.0f %.0f\n", media, other }'
+}
+TMPDIR_PEER=$(mktemp -d) || exit 0
+trap 'rm -rf "$TMPDIR_PEER"' EXIT
+for d; do
+  rid=${d##*/}
+  # Same trust root as rule F: refs/rad/id is written by the local node only after it verifies
+  # the identity document's signatures, so a stranger's push cannot make itself a delegate.
+  # This runs before any skip below, because a delegate is never blocked and that protection
+  # must not depend on whether the rest of this repo turned out to be worth walking.
+  dids=$(GIT_DIR="$d" git grep -h -oE 'did:key:z[1-9A-HJ-NP-Za-km-z]+' refs/rad/id \
+           2>/dev/null \
+         | sed 's/^did:key://' | sort -u | tr '\n' ' ')
+  if [ -z "$dids" ]; then printf 'u\t%s\n' "$rid"; continue; fi
+  for nid in $dids; do printf 'd\t%s\n' "$nid"; done
+  allrefs=$(GIT_DIR="$d" git for-each-ref --format='%(refname)' 2>/dev/null) || continue
+  mapfile -t refs <<<"$allrefs"
+  [ "${#refs[@]}" -le "$max_refs" ] || continue
+  # OWN is everything the delegates control, and it is the exclusion set. Whole histories go in
+  # here rather than tips, because a wider exclusion can only ever spare a peer.
+  own=""; strangers=""
+  for ref in "${refs[@]}"; do
+    case $ref in
+      refs/heads/*|refs/tags/*|refs/cobs/*|refs/rad/*) own="$own"$'\n'"$ref"; continue ;;
+      refs/namespaces/*) nid=${ref#refs/namespaces/}; nid=${nid%%/*} ;;
+      *) continue ;;
+    esac
+    case " $dids " in
+      (*" $nid "*) own="$own"$'\n'"$ref" ;;
+      (*)          strangers="$strangers"$'\n'"$nid"$'\t'"$ref" ;;
+    esac
+  done
+  [ -n "$strangers" ] || continue
+  # The cheap tier: one listing for every stranger at once. Most repos stop here.
+  combined=$(cut -f2 <<<"${strangers#$'\n'}")
+  any=$(only_in "$combined" "$own" | split_bytes | awk '$1 == "="{ print ($2 > 0) }')
+  [ "$any" = 1 ] || continue
+  # Something is there, so pay to learn whose. One listing per peer, and the peers with
+  # nothing of their own drop out having cost one walk that ends at the first shared commit.
+  for nid in $(cut -f1 <<<"${strangers#$'\n'}" | sort -u); do
+    mine=$(awk -F'\t' -v n="$nid" '$1 == n { print $2 }' <<<"${strangers#$'\n'}")
+    only_in "$mine" "$own" | split_bytes \
+      | awk -v nid="$nid" -v rid="$rid" '
+          $1 == "b" { printf "b\t%s\t%s\t%s\t%s\n", nid, rid, $2, $3 }
+          $1 == "=" { printf "=\t%s\t%s\t%s\t%s\n", nid, rid, $2, $3 }'
+  done
+done
+PEER
+  find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -print0 2>>"$scanerr" \
+    | xargs -0r -P "$JOBS" -n 32 bash "$tmp/peer.sh" > "$tmp/peer" || true
+fi
+
+
 # ----------------------------------------------------------------------- rule E: collect hosts
 # Collects the hostnames each repo mentions, folded to domains later. Reading file content is
 # slow, so LINK_SCAN=0 turns it off, and each repo is walked in two steps: list blob ids and
@@ -1146,6 +1300,42 @@ while IFS=$'\t' read -r rid mb ob; do
 done < "$tmp/media"
 while read -r r; do [ -n "$r" ] && unset 'MEDIA[$r]'; done < "$tmp/media-fail"
 
+# ------------------------------------------------------------------- rule G: judge the peers
+# Folds the per-repo evidence into one verdict per peer. The accusation is a single file, byte
+# for byte, that this peer put into PARASITE_MIN_REPOS repos it does not own. Totals across
+# different files are deliberately NOT enough on their own: someone active on many repos
+# accumulates those honestly, while the same oid landing in unrelated repos does not happen by
+# accident. A peer who is a delegate anywhere in storage is never accused, because blocking a
+# delegate stops the repos they own from replicating (the node filters delegate refs through
+# the same block list before it checks the signature threshold).
+: > "$tmp/parasites"; nunknown=0
+if [ "$PARASITE_SCAN" = 1 ] && [ -s "$tmp/peer" ]; then
+  nunknown=$(awk -F'\t' '$1 == "u"' "$tmp/peer" | sort -u | wc -l)
+  awk -F'\t' -v k="$PARASITE_MIN_REPOS" -v minb="$PARASITE_MIN_BYTES" \
+             -v maxt="$PARASITE_TEXT_MAX_BYTES" -v us="$OUR_NID" '
+      $1 == "d" { delegate[$2] = 1; next }
+      # One repo can list the same oid twice (two refs, one blob), so count each repo once.
+      $1 == "b" { if (!((($2 SUBSEP $4) SUBSEP $3) in pair)) {
+                    pair[($2 SUBSEP $4) SUBSEP $3] = 1; spread[$2 SUBSEP $4]++ }
+                  next }
+      $1 == "=" { media[$2] += $4; other[$2] += $5
+                  if ($4 > 0 && !(($2 SUBSEP $3) in hit)) { hit[$2 SUBSEP $3]=1; repos[$2]++ }
+                  next }
+      END {
+        for (key in spread) {
+          split(key, f, SUBSEP)
+          if (spread[key] > widest[f[1]]) { widest[f[1]] = spread[key]; worst[f[1]] = f[2] }
+        }
+        for (nid in widest) {
+          if (nid == us || nid in delegate) continue
+          if (widest[nid] < k || media[nid] < minb || other[nid] >= maxt) continue
+          printf "%s\t%d\t%d\t%.0f\t%.0f\t%s\n",
+                 nid, widest[nid], repos[nid], media[nid], other[nid], worst[nid]
+        }
+      }' "$tmp/peer" | sort -k2,2nr > "$tmp/parasites"
+fi
+nparasite=$(wc -l < "$tmp/parasites")
+
 : > "$tmp/repos"   # rid \t size \t mtime \t life \t birth
 for rid in "${!SIZE[@]}"; do
   printf '%s\t%s\t%s\t%s\t%s\n' \
@@ -1290,6 +1480,28 @@ awk -F'\t' '{ c[$5]++; b[$5]+=$2 }
      END { for (r in c) printf "#   %-13s %5d repos  %8.2f GiB\n",
                                r, c[r], b[r]/1073741824 }' "$tmp/plan.sorted" | sort
 
+# Rule G's verdicts are about peers, so they get their own section rather than a row in the
+# plan: nothing here deletes a repo, and blocking one peer touches every repo at once.
+if [ "$nparasite" -gt 0 ]; then
+  echo
+  echo "# PARASITE PEERS: $nparasite (rule G)"
+  echo "#   the count is repos reached by ONE file of theirs, not repos they touched"
+  while IFS=$'\t' read -r nid widest nrepos mb ob oid; do
+    printf '#   %s  %3d repos  %6.1f MB media  %6d B text  blob %s\n' \
+           "$nid" "$widest" "$(awk -v b="$mb" 'BEGIN{printf "%.1f", b/1048576}')" \
+           "$ob" "${oid:0:12}"
+  done < "$tmp/parasites"
+  [ "$nunknown" = 0 ] \
+    || echo "#   NB: $nunknown repo(s) had an unreadable identity, so a peer who delegates" \
+            "one of those was not spared by the delegate check."
+  # Printed whether or not --block-peers was passed, so the operator can act on one peer
+  # without handing the tool a standing licence over the whole list.
+  echo "#   Blocking is permanent, invisible to the peer, and applies to every repo at once."
+  echo "#   Check the evidence first, then run whichever of these you agree with:"
+  cut -f1 "$tmp/parasites" | sed 's/^/#     rad block /'
+  echo "#   Or --apply --block-peers, which asks again for each peer and needs a terminal."
+fi
+
 if [ "$APPLY" = 0 ]; then
   echo "# DRY-RUN: nothing changed. Re-run with --apply to execute."
   exit 0
@@ -1301,7 +1513,10 @@ fi
 [ "$nplan" = 0 ] && { echo "# nothing to do"; exit 0; }
 CONFIRMED=0
 if [ "$YES" = 0 ]; then
-  prompt="# Apply now? unseed + block + DELETE $nplan repos, reclaiming ${gib} GiB [y/N] "
+  prompt="# Apply now? unseed + block + DELETE $nplan repos, reclaiming ${gib} GiB"
+  [ "$BLOCK_PEERS" = 1 ] && [ "$nparasite" -gt 0 ] \
+    && prompt="$prompt, and BLOCK $nparasite peer(s)"
+  prompt="$prompt [y/N] "
   reply=""; asked=1
   if [ -t 0 ]; then                                   # stdin is a terminal
     printf '%s' "$prompt"; IFS= read -r reply || reply=""
@@ -1362,6 +1577,53 @@ done < "$tmp/plan.sorted"
        "less than ${gib} GiB was reclaimed." >&2
   echo "# The audit log lists the plan, not what actually got deleted." >&2
 }
+
+# Rule G's action. A block is permanent, it is invisible to the person blocked, and it applies
+# to every repo at once, so it is the one thing here that never happens without a human in the
+# room: --block-peers refuses outright when nothing can be asked, and asks again per peer.
+# Blocking is what makes it stick, since the node filters every namespaced ref it receives
+# through the block list whatever the seeding scope is, so refs dropped here do not come back.
+# Dropping them frees no disk until git gc runs, which this tool does not do, so none of it is
+# counted as reclaimed.
+if [ "$BLOCK_PEERS" = 1 ] && [ "$nparasite" -gt 0 ]; then
+  # The answers come in on fd 9, opened once here. Reading them from /dev/stdin instead would
+  # find the loop's own input file below, since that loop redirects stdin to read the verdicts.
+  asked=1
+  if [ -t 0 ]; then exec 9<&0
+  elif { : >/dev/tty; } 2>/dev/null; then exec 9</dev/tty
+  else asked=0; fi
+  if [ "$asked" = 0 ]; then
+    echo "# --block-peers needs a terminal: blocking a peer is not a decision to automate." >&2
+    echo "# Nobody was blocked. The commands are listed above; run them yourself." >&2
+  else
+    blocked=0
+    while IFS=$'\t' read -r nid widest nrepos mb ob oid; do
+      printf '# Block %s? it put %s in %s repos it does not own [y/N] ' \
+             "$nid" "${oid:0:12}" "$widest"
+      reply=""; IFS= read -r reply <&9 || reply=""
+      case "$reply" in [yY]) ;; *) echo "#   skipped $nid"; continue ;; esac
+      "$RAD" block "$nid" >/dev/null 2>&1 \
+        || { echo "#   WARN block failed, leaving refs alone: $nid" >&2; continue; }
+      blocked=$((blocked+1))
+      # The evidence goes in the audit log beside the block, because a standing judgement
+      # about a person that nobody can later explain is one nobody can later undo either.
+      printf 'blocked-peer\t%s\tblob=%s\trepos=%s\tmedia_bytes=%s\tother_bytes=%s\n' \
+             "$nid" "$oid" "$widest" "$mb" "$ob" >> "$audit"
+      # Only the repos where this peer put content of its own. Where it merely mirrors a repo,
+      # its refs hold that repo's own blobs, so removing them would free nothing and the block
+      # already stops anything new arriving.
+      while IFS=$'\t' read -r _ _ rid _ _; do
+        d="$STORAGE/$rid"
+        [ -d "$d" ] || continue
+        GIT_DIR="$d" git for-each-ref --format='delete %(refname)' \
+            "refs/namespaces/$nid/" 2>/dev/null \
+          | GIT_DIR="$d" git update-ref --stdin 2>/dev/null \
+          || echo "#   WARN could not drop $nid refs from $rid" >&2
+      done < <(awk -F'\t' -v n="$nid" '$1 == "=" && $2 == n && $4 > 0' "$tmp/peer")
+    done < "$tmp/parasites"
+    echo "# blocked $blocked of $nparasite peer(s); run git gc to reclaim their objects."
+  fi
+fi
 
 if [ "$RESTART" = 1 ]; then
   echo "# restarting $SERVICE (clears the stale inventory-announce warning)..."

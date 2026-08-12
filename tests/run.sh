@@ -12,6 +12,9 @@ SCRIPT="$HERE/../radicle-seed-prune"
 PASS=0; FAIL=0
 ok(){ PASS=$((PASS+1)); printf 'ok   - %s\n' "$1"; }
 no(){ FAIL=$((FAIL+1)); printf 'FAIL - %s\n' "$1"; }
+# Neither pass nor fail: the machine cannot run this one. It still prints, so a
+# permanently skipped check is visible rather than quietly absent.
+skip(){ printf 'skip - %s\n' "$1"; }
 # assert that "$2" (a plan text) contains / omits a repo line for rid $3 with optional reason
 # $4
 has(){ grep -qE "^$2 " <<<"$1"; }
@@ -75,7 +78,11 @@ zmediarefs\tmanyrefs\t2\tpublic\t0\t60\t100\ta clip under more refs than the cap
 zmediawide\tlongreadme\t2\tpublic\t0\t60\t100\ta clip under a very long readme
 zmediacut\tcutshort\t2\tpublic\t0\t60\t100\ta long readme over a broken listing
 zmediamirr\tmirrored\t2\tpublic\t0\t60\t100\ta project a peer replicates
-zmediacobm\tcobmirror\t2\tpublic\t0\t60\t100\tan issue thread a peer replicates'
+zmediacobm\tcobmirror\t2\tpublic\t0\t60\t100\tan issue thread a peer replicates
+zpara1\tparahost1\t2\tpublic\t0\t60\t100\ta repo one peer keeps posting a clip into
+zpara2\tparahost2\t2\tpublic\t0\t60\t100\tanother repo that peer posts into
+zpara3\tparahost3\t2\tpublic\t0\t60\t100\ta third repo that peer posts into
+zparaown\tcontribown\t2\tpublic\t0\t60\t100\ta repo the contributor delegates'
 
 # Rule D is decided by the CORPUS, so it needs whole batches, and the batches below are a
 # controlled experiment: all five are 9 repos, the same age, the same size, and a name skeleton
@@ -122,7 +129,7 @@ build_batches(){
   printf '%b' "$rows"
 }
 MANIFEST_ROWS="$MANIFEST_ROWS"$'\n'"$(build_batches)"
-NREPOS=107
+NREPOS=111
 
 # Rule E fixture helpers. Each writes one file holding the given lines, commits it 80 days
 # back, pushes it to $rid, and puts the directory mtime back where the manifest loop left it so
@@ -457,6 +464,26 @@ build_fixture(){
     "refs/namespaces/$stranger/refs/cobs/xyz.radicle.issue/aaa" \
     "$(GIT_DIR="$STORAGE/zmediacobm" git rev-parse \
         "refs/namespaces/$(dlg zmediacobm)/refs/cobs/xyz.radicle.issue/aaa")"
+
+  # Rule G fixture. Three peers push the very same clip ("same" pads with zeros, so all three
+  # push one blob) into three repos none of them owns. Only the first is a parasite: the
+  # second delegates zparaown, and the third also wrote something. Each repo keeps a README on
+  # its own branch, so none of them is a media dump in its own right.
+  local para=zPARASITExxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+  local writer=zWRITERxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+  local contrib; contrib=$(dlg zparaown)
+  local r
+  for r in zpara1 zpara2 zpara3; do
+    e_tree "$r" 60 master "README.md:8192"
+    e_tree "$r" 60 "refs/namespaces/$para/refs/cobs/xyz.radicle.issue/aaa" \
+                   "clip.mp4:40000:same"
+    e_tree "$r" 60 "refs/namespaces/$contrib/refs/cobs/xyz.radicle.issue/bbb" \
+                   "clip.mp4:40000:same"
+    e_tree "$r" 60 "refs/namespaces/$writer/refs/cobs/xyz.radicle.issue/ccc" \
+                   "clip.mp4:40000:same"
+  done
+  e_tree zpara1   60 "refs/namespaces/$writer/refs/cobs/xyz.radicle.issue/ddd" "notes.md:8192"
+  e_tree zparaown 60 master "README.md:4096"
 }
 
 # Defense in depth: refuse to run anything if STORAGE is not confined to the temp fixture.
@@ -745,11 +772,62 @@ grep -qE "^zmediaspc .*media-dump" <<<"$plan" \
 ! has "$plan" "zmediacobm" \
   && ok "a peer replicating a repo does not subtract the repo's own COB text from itself" \
   || no "replication erased zmediacobm's issue thread and left it looking like a dump"
+
+# --- rule G: parasite peers --- Three peers put the identical clip in the same three repos.
+# Only one of them is accused, so each exemption is what separates it from the other two, not
+# a shortage of evidence.
+PARA=zPARASITExxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+WRITER=zWRITERxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+CONTRIB=$(dlg zparaown)
+# Exported, not prefixed: run is a shell function, and an assignment in front of one does not
+# reach the script it launches.
+export PARASITE_MIN_REPOS=3 PARASITE_MIN_BYTES=65536 PARASITE_TEXT_MAX_BYTES=4096
+gplan=$(run)
+grep -q "PARASITE PEERS: 1" <<<"$gplan" && grep -q "$PARA" <<<"$gplan" \
+  && ok "a peer posting one file into repos it does not own is reported (rule G)" \
+  || no "rule G missed a peer republishing one file across repos it does not own"
+! grep -q "$CONTRIB" <<<"$gplan" \
+  && ok "a peer who delegates a repo somewhere in storage is never accused" \
+  || no "rule G accused a delegate, whose block would stop their own repo replicating"
+! grep -q "$WRITER" <<<"$gplan" \
+  && ok "a peer who also wrote something is not a parasite" \
+  || no "rule G accused a peer that contributed text"
+{ ! has "$gplan" "zpara1" && ! has "$gplan" "zpara2" && ! has "$gplan" "zpara3"; } \
+  && ok "rule G puts no repo in the plan; the peer is the finding" \
+  || no "rule G pruned a repo somebody else pushed into"
+grep -q -- "--block-peers" <<<"$gplan" \
+  && ok "rule G reports without blocking until --block-peers is given" \
+  || no "rule G did not say that blocking needs its own opt-in"
+unset PARASITE_MIN_REPOS PARASITE_MIN_BYTES PARASITE_TEXT_MAX_BYTES
+
+# --- numbers must not follow the operator's locale --- mawk honours LC_NUMERIC, so under a
+# comma locale it hands back "2,52e+10" and the awk that reads it gets 2. The script pins
+# LC_ALL=C; this checks the plan is byte-identical either way rather than eyeballing output.
+if locale -a 2>/dev/null | grep -qix 'de_AT.utf8'; then
+  # Plan rows only: the banner carries a timestamp, so two runs never match on it.
+  # Both sides are pinned, because the machine running the suite may itself be on a comma
+  # locale, in which case an unpinned baseline would match the comma run and prove nothing.
+  # Exported rather than prefixed for the same reason as the rule G knobs above: run is a
+  # shell function, and an assignment in front of one never reaches the script it launches.
+  unset LC_ALL
+  export LC_NUMERIC=C;             base=$(run | grep -v '^#')
+  export LC_NUMERIC=de_AT.UTF-8;   comma=$(run | grep -v '^#')
+  unset LC_NUMERIC
+  [ -n "$base" ] && [ "$comma" = "$base" ] \
+    && ok "a comma-decimal locale does not change the plan" \
+    || no "the plan changes under LC_NUMERIC=de_AT.UTF-8; a number went through the locale"
+else
+  skip "no comma-decimal locale installed to test LC_ALL=C against"
+fi
 # Each worker is written to a file and run later, so a stray apostrophe inside one of their
 # single-quoted awk programs is invisible to `bash -n` on the script itself. It closes the
 # quote, and only the generated worker then fails to parse. Parse each one on its own.
 badbody=""
-for tag in LIFE MEDIA HOSTS OWNED; do
+# Discovered from the script, not listed here: a hand-kept list would silently stop covering
+# whichever worker was added last, which is the exact moment this gate is worth having.
+tags=$(grep -oE "<<'[A-Z]+'\$" "$SCRIPT" | tr -d "<'" | sort -u)
+[ -n "$tags" ] || no "found no generated workers to parse; the gate has stopped working"
+for tag in $tags; do
   awk -v tag="$tag" '$0 ~ ("<<" "\047" tag "\047$") { f=1; next }
                      f && $0 == tag { exit }
                      f' "$SCRIPT" > "$HERE/.body.$tag.sh"
@@ -763,9 +841,15 @@ done
 # mawk prints any integral value over 2^31 with "%.6g", so an unformatted 3 GB size arrives as
 # "2.81904e+09" and the shell reading it stops dead. This machine's awk prints it in full, so
 # no fixture can reach the bug from here: pin the formats that avoid it instead.
-[ "$(grep -c 'printf "\(m\|?\|=\|%s\) .*%\.0f' "$SCRIPT")" = 4 ] \
-  && ok "rule F formats every byte count it hands back to the shell" \
-  || no "an unformatted byte count reaches the shell as 2.81904e+09 on mawk"
+# Both counts come from the script, so a new printf that emits a byte count without %.0f
+# raises the first and not the second. A fixed number here would instead go red for any new
+# printf at all, formatted or not, which is a gate that cries wolf until someone edits it.
+emitre='printf "[^"]*", *[^;]*\b(size|media|text|unk|other)\b'
+fmtre='printf "[^"]*%\.0f[^"]*", *[^;]*\b(size|media|text|unk|other)\b'
+nemit=$(grep -cE "$emitre" "$SCRIPT"); nfmt=$(grep -cE "$fmtre" "$SCRIPT")
+{ [ "$nemit" -gt 0 ] && [ "$nemit" = "$nfmt" ]; } \
+  && ok "every byte count handed back to the shell is formatted ($nfmt sites)" \
+  || no "$((nemit - nfmt)) unformatted byte count(s) reach the shell as 2.81904e+09 on mawk"
 
 # The batch path. A README clears the single-repo budget, so these five can only be reached by
 # what no one repo can fake: other repos holding the very same file.
@@ -1080,6 +1164,77 @@ done
 { [ -s "$RSP_HOME/.stub_block" ] && [ -s "$RSP_HOME/.stub_unseed" ]; } \
   && ok "apply calls rad unseed + block" \
   || no "apply calls unseed+block"
+
+# --- rule G's act, the only thing in the tool that judges a PERSON --- Blocking is permanent
+# and the peer never hears about it, so it needs a human in the room every time: --apply alone
+# must not reach it, and --block-peers must refuse when there is nobody to ask.
+export PARASITE_MIN_REPOS=3 PARASITE_MIN_BYTES=65536 PARASITE_TEXT_MAX_BYTES=4096
+build_fixture; assert_isolated
+DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null >/dev/null 2>&1
+{ ! grep -q "$PARA" "$RSP_HOME/.stub_block" 2>/dev/null \
+  && GIT_DIR="$STORAGE/zpara1" git for-each-ref "refs/namespaces/$PARA/" \
+       --format=x 2>/dev/null | grep -q x; } \
+  && ok "--apply on its own blocks no peer and drops no peer refs" \
+  || no "--apply acted on a peer without --block-peers"
+
+build_fixture; assert_isolated
+DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply --block-peers \
+  </dev/null >"$ROOT/nb.out" 2>&1
+{ ! grep -q "$PARA" "$RSP_HOME/.stub_block" 2>/dev/null \
+  && grep -q "needs a terminal" "$ROOT/nb.out"; } \
+  && ok "--block-peers refuses with no terminal rather than blocking unattended" \
+  || no "--block-peers blocked a peer with nobody there to approve it"
+
+plan_g=$(run)
+grep -q "rad block $PARA" <<<"$plan_g" \
+  && ok "the plan prints the exact rad block command for each peer it names" \
+  || no "rule G named a peer without printing how to act on it"
+
+if command -v script >/dev/null 2>&1; then
+  # Two prompts: the plan, then this one peer. "y" then "n" leaves the peer alone, which is
+  # what separates the per-peer question from a blanket licence given by the flag.
+  build_fixture; assert_isolated
+  printf 'y\nn\n' | script -qec \
+    "env DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 PARASITE_MIN_REPOS=3 PARASITE_MIN_BYTES=65536 \
+         PARASITE_TEXT_MAX_BYTES=4096 '$SCRIPT' --apply --block-peers" /dev/null \
+    >"$ROOT/gn.out" 2>&1
+  { ! grep -q "$PARA" "$RSP_HOME/.stub_block" 2>/dev/null \
+    && GIT_DIR="$STORAGE/zpara1" git for-each-ref "refs/namespaces/$PARA/" \
+         --format=x 2>/dev/null | grep -q x; } \
+    && ok "--block-peers + n leaves that peer alone" \
+    || no "--block-peers blocked a peer the operator declined"
+
+  build_fixture; assert_isolated
+  printf 'y\ny\n' | script -qec \
+    "env DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 PARASITE_MIN_REPOS=3 PARASITE_MIN_BYTES=65536 \
+         PARASITE_TEXT_MAX_BYTES=4096 '$SCRIPT' --apply --block-peers" /dev/null \
+    >"$ROOT/gy.out" 2>&1
+  grep -q "$PARA" "$RSP_HOME/.stub_block" 2>/dev/null \
+    && ok "--block-peers + y blocks the peer rule G named" \
+    || no "--block-peers + y did not block the peer"
+  { ! grep -q "$CONTRIB" "$RSP_HOME/.stub_block" 2>/dev/null \
+    && ! grep -q "$WRITER" "$RSP_HOME/.stub_block" 2>/dev/null; } \
+    && ok "--block-peers blocks nobody rule G cleared" \
+    || no "--block-peers blocked a delegate or a peer who wrote something"
+  gonerefs=1
+  for r in zpara1 zpara2 zpara3; do
+    GIT_DIR="$STORAGE/$r" git for-each-ref "refs/namespaces/$PARA/" --format=x 2>/dev/null \
+      | grep -q x && gonerefs=0
+  done
+  kept=1
+  GIT_DIR="$STORAGE/zpara1" git rev-parse --verify -q master >/dev/null 2>&1 || kept=0
+  GIT_DIR="$STORAGE/zpara1" git for-each-ref "refs/namespaces/$WRITER/" --format=x 2>/dev/null \
+    | grep -q x || kept=0
+  { [ "$gonerefs" = 1 ] && [ "$kept" = 1 ]; } \
+    && ok "a blocked peer's refs are dropped and nothing else is touched" \
+    || no "blocking left the peer's refs behind or removed somebody else's"
+  grep -q "blocked-peer.*$PARA.*repos=" "$RSP_HOME/prune-audit/"prune-*.log 2>/dev/null \
+    && ok "a block is recorded in the audit log with the evidence behind it" \
+    || no "a peer was blocked without the evidence being written down"
+else
+  skip "no util-linux script(1); cannot drive the per-peer block prompt through a pty"
+fi
+unset PARASITE_MIN_REPOS PARASITE_MIN_BYTES PARASITE_TEXT_MAX_BYTES
 
 # --- a failed deletion is never reported as reclaimed disk --- A read-only storage dir lets
 # the whole plan compute, then makes every rm fail. The audit log and the GiB total are both
