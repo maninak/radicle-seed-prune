@@ -750,7 +750,7 @@ nrepos=$(find "$STORAGE" -mindepth 1 -maxdepth 1 -type d 2>>"$scanerr" | wc -l) 
 echo "# scanning $nrepos repos (size + activity), $JOBS parallel workers..." >&2
 
 find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -print0 2>>"$scanerr" \
-  | xargs -0r du -sb --apparent-size 2>>"$scanerr" > "$tmp/du" || true
+  | xargs -0r -P "$JOBS" -n 64 du -sb --apparent-size 2>>"$scanerr" > "$tmp/du" || true
 find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -printf '%f\t%T@\n' 2>>"$scanerr" \
   > "$tmp/mtimes" || true
 cat > "$tmp/life.sh" <<'LIFE'
@@ -1085,7 +1085,7 @@ for d; do
   # Every file in the repo, wherever it lives. A repo we cannot list is reported on fd 4 rather
   # than returning an empty host list, which would be indistinguishable from a repo with no
   # links.
-  GIT_DIR="$d" git cat-file --batch-all-objects \
+  GIT_DIR="$d" git cat-file --batch-all-objects --unordered \
        --batch-check='%(objectname) %(objecttype) %(objectsize)' 2>/dev/null \
     | awk -v c="$ceiling" '$2=="blob" && $3+0<=c {print $1}' \
     | hosts_of "$d" | sed "s#^#$rid\t#"
@@ -1097,8 +1097,15 @@ for d; do
   # refs only a delegate can move, so a stranger cannot make a host look like this repo's
   # dependency. A host enough repos link to from their own code is a dependency, and stops
   # counting as spam.
-  GIT_DIR="$d" git rev-list --objects --branches --tags 2>/dev/null \
+  # Filtered and capped exactly like pass 1 above. Without that this pass spent the repo's
+  # read budget on commit and tree bytes, and counted links in commit MESSAGES that pass 1
+  # never sees, so the two streams disagreed about what this repo's own code links to.
+  GIT_DIR="$d" git rev-list --objects --branches --tags \
+       --filter=object:type=blob 2>/dev/null \
     | cut -d' ' -f1 \
+    | GIT_DIR="$d" git cat-file \
+        --batch-check='%(objectname) %(objecttype) %(objectsize)' 2>/dev/null \
+    | awk -v c="$ceiling" '$2=="blob" && $3+0<=c {print $1}' \
     | hosts_of "$d" | sed "s#^#$rid\t#" >&3
 done
 HOSTS
