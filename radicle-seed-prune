@@ -411,6 +411,13 @@ PARASITE_MIN_BYTES="${PARASITE_MIN_BYTES:-1048576}"
 # is cheap for a real person to clear and costly for a bot to fake, so it errs toward mercy.
 PARASITE_TEXT_MAX_BYTES="${PARASITE_TEXT_MAX_BYTES:-16384}"
 
+# Which rules may run at all. One spelling for every rule, because enable/disable is the knob
+# an operator reaches for first and it used to be spelled four different ways (a sentinel here,
+# a *_SCAN=0 there, and nothing at all for B and C). A letter absent from this string means
+# that rule neither scans nor puts anything in the plan.
+RULES="${RULES:-ABCDEFG}"
+rule_on(){ case "$RULES" in (*"$1"*) return 0 ;; (*) return 1 ;; esac; }
+
 MAX_PRUNE_COUNT="${MAX_PRUNE_COUNT:-1000}"       # runaway guards (abort unless --force)
 MAX_PRUNE_GB="${MAX_PRUNE_GB:-80}"
 # The fixed caps above only catch a plan that jumps. They cannot catch one that CREEPS: at a
@@ -566,6 +573,9 @@ rule_b="B size(>${eff_abs_mb}MB & >=P${eff_pctl}, >${eff_outlier_days}d, seeds>=
 rule_c="C stale(>${eff_stale_days}d, seeds>=${eff_seeds})"
 rule_d="D spam(batch>=${SPAM_MIN_BATCH} & desc>=${SPAM_DESC_AGREE_PCT}%,"
 rule_d="$rule_d >${eff_spam_days}d, seeds>=${SPAM_MIN_SEEDS})"
+for _r in A B C D; do
+  rule_on "$_r" || eval "rule_${_r,}=\"\${rule_${_r,}} [DISABLED: not in RULES]\""
+done
 echo "# rules: $rule_a  $rule_b  $rule_c  $rule_d"
 
 rule_e="E link-farm(>=${LINK_MIN_SCORE} spam domains, each linked from"
@@ -573,6 +583,7 @@ rule_e="$rule_e >=${LINK_MIN_REPOS_PCT}% of repos and from the code of"
 rule_e="$rule_e <${LINK_CODE_MAX_PCT}% of them, >${LINK_STALE_DAYS}d,"
 rule_e="$rule_e seeds>=${LINK_MIN_SEEDS})"
 [ "$LINK_SCAN" = 1 ] || rule_e="$rule_e [DISABLED: LINK_SCAN=0]"
+rule_on E     || rule_e="$rule_e [DISABLED: not in RULES]"
 echo "# rule $rule_e"
 
 rule_f="F media-dump(>=$((MEDIA_MIN_BYTES/1024))KB of media and"
@@ -581,11 +592,13 @@ rule_f="$rule_f seeds>=${MEDIA_MIN_SEEDS})"
 rule_f="$rule_f  media-batch(that media held by >=${MEDIA_MIN_BATCH} repos,"
 rule_f="$rule_f <${MEDIA_TEXT_CEIL_BYTES}B of anything else)"
 [ "$MEDIA_SCAN" = 1 ] || rule_f="$rule_f [DISABLED: MEDIA_SCAN=0]"
+rule_on F      || rule_f="$rule_f [DISABLED: not in RULES]"
 echo "# rule $rule_f"
 rule_g="G parasite-peer(one file of theirs in >=${PARASITE_MIN_REPOS} repos they do not own,"
 rule_g="$rule_g >=$((PARASITE_MIN_BYTES/1048576))MB media,"
 rule_g="$rule_g <${PARASITE_TEXT_MAX_BYTES}B of anything else)"
 [ "$PARASITE_SCAN" = 1 ] || rule_g="$rule_g [DISABLED: PARASITE_SCAN=0]"
+rule_on G         || rule_g="$rule_g [DISABLED: not in RULES]"
 [ "$BLOCK_PEERS" = 1 ] || rule_g="$rule_g [reports only; --block-peers asks per peer]"
 echo "# rule $rule_g"
 
@@ -760,7 +773,7 @@ find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -print0 2>>"$scanerr" \
 # is reported on fd 4 and dropped, never judged on a partial listing.
 : > "$tmp/media"; : > "$tmp/media-fail"
 mkdir -p "$tmp/blobs"
-if [ "$MEDIA_SCAN" = 1 ]; then
+if [ "$MEDIA_SCAN" = 1 ] && rule_on F; then
   echo "# measuring repo trees for rule F ($JOBS workers)..." >&2
   cat > "$tmp/media.sh" <<MEDIA
 #!/usr/bin/env bash
@@ -957,7 +970,7 @@ fi
 # One combined listing runs first and most repos end there, because most have no stranger
 # media; only where that finds some is the work repeated per peer to learn whose it is.
 : > "$tmp/peer"
-if [ "$PARASITE_SCAN" = 1 ]; then
+if [ "$PARASITE_SCAN" = 1 ] && rule_on G; then
   echo "# looking for parasite peers for rule G ($JOBS workers)..." >&2
   cat > "$tmp/peer.sh" <<PEER
 #!/usr/bin/env bash
@@ -1049,7 +1062,7 @@ fi
 # sizes without reading them, then read only the ones under the size cap. Where a link sits
 # does not matter here: issues, patches, comments and committed files all count.
 : > "$tmp/hosts"
-if [ "$LINK_SCAN" = 1 ]; then
+if [ "$LINK_SCAN" = 1 ] && rule_on E; then
   echo "# harvesting referenced hosts from repo contents ($JOBS workers)..." >&2
   cat > "$tmp/hosts.sh" <<HOSTS
 #!/usr/bin/env bash
@@ -1327,7 +1340,7 @@ while read -r r; do [ -n "$r" ] && unset 'MEDIA[$r]'; done < "$tmp/media-fail"
 # delegate stops the repos they own from replicating (the node filters delegate refs through
 # the same block list before it checks the signature threshold).
 : > "$tmp/parasites"; nunknown=0
-if [ "$PARASITE_SCAN" = 1 ] && [ -s "$tmp/peer" ]; then
+if [ "$PARASITE_SCAN" = 1 ] && rule_on G && [ -s "$tmp/peer" ]; then
   nunknown=$(awk -F'\t' '$1 == "u"' "$tmp/peer" | sort -u | wc -l)
   awk -F'\t' -v k="$PARASITE_MIN_REPOS" -v minb="$PARASITE_MIN_BYTES" \
              -v maxt="$PARASITE_TEXT_MAX_BYTES" -v us="$OUR_NID" '
@@ -1469,7 +1482,14 @@ blind=$(( nrepos - total_repos + nblind ))
 }
 
 # -------------------------------------------------------------------------------------- report
-sort -t$'\t' -k2,2nr "$tmp/plan" > "$tmp/plan.sorted"
+# A disabled rule is filtered out here as well as skipped above, because rules A, B and C cost
+# nothing to evaluate and are decided inline: this is the one place every verdict passes.
+awk -F'\t' -v rules="$RULES" '
+      BEGIN { split("junk-name A junk-id A size-outlier B stale C spam-batch D " \
+                    "link-farm E media-dump F media-batch F", m, " ")
+              for (i = 1; i < length(m); i += 2) letter[m[i]] = m[i+1] }
+      { if (!($5 in letter) || index(rules, letter[$5])) print }' "$tmp/plan" \
+  | sort -t$'\t' -k2,2nr > "$tmp/plan.sorted"
 nplan=$(wc -l < "$tmp/plan.sorted")
 bytes=$(awk -F'\t' '{s+=$2} END{printf "%.0f", s}' "$tmp/plan.sorted")
 gib=$(awk -v b="$bytes" 'BEGIN{printf "%.2f", b/1073741824}')

@@ -790,6 +790,20 @@ grep -q "PLAN_FULL=1" <<<"$folded" \
   && ok "the folded line says how to see what it hid" \
   || no "the plan folded rows without saying how to expand them"
 
+# --- one spelling for turning a rule off --- Every rule answers to the same switch, including
+# B and C, which used to have no off switch at all.
+noa=$(RULES=BCDEFG run)
+{ ! has "$noa" "zjunk1" && has "$noa" "zbig2"; } \
+  && ok "a rule left out of RULES puts nothing in the plan" \
+  || no "RULES=BCDEFG still pruned a rule A repo, or took rule B down with it"
+grep -q 'A junk.*DISABLED: not in RULES' <<<"$noa" \
+  && ok "the banner says which rules are switched off" \
+  || no "a disabled rule was not marked in the banner"
+nof=$(RULES=ABCDE run)
+{ ! has "$nof" "zmediamd" && ! grep -q 'measuring repo trees' <<<"$nof"; } \
+  && ok "a rule left out of RULES does not even run its scan" \
+  || no "RULES=ABCDE still ran or planned rule F"
+
 
 # --- rule G: parasite peers --- Three peers put the identical clip in the same three repos.
 # Only one of them is accused, so each exemption is what separates it from the other two, not
