@@ -154,13 +154,15 @@
 #   identity document's signatures. The delegates' own issues and comments therefore count,
 #   because a dump hides as well in an attachment as in a commit. A COB is read across its
 #   whole history, since it gains one commit per op and each tree holds only that op's own
-#   files, so an attachment from an older comment is still on disk. Any blob a NON-delegate's
-#   refs also hold is subtracted, whichever ref we reached it by, since a peer's merged issue
-#   thread can carry the blobs of everyone who wrote in it. Without that subtraction, pushing a
-#   video onto a stranger's near-empty repo would put THEIR repo in the plan. A repo we cannot
-#   read is left out of rule F, as is one over MEDIA_MAX_REFS refs: walking them all costs
-#   minutes to learn that a widely replicated repo is not a dump. So is one whose listing dies
-#   part-way, since the fragment reads as a repo holding less text, and less text is what
+#   files, so an attachment from an older comment is still on disk. Every OTHER peer's
+#   namespace is skipped, so pushing a video onto a stranger's near-empty repo cannot put THEIR
+#   repo in the plan. Skipping beats subtracting what those namespaces hold: replication
+#   mirrors a repo's own branches and COBs into every peer that seeds it, so subtracting on
+#   that erased the repo's own README and issue payloads and left a real project looking like a
+#   dump. What the delegates hold is this repo's content whoever else has a copy. A repo we
+#   cannot read is left out of rule F, as is one over MEDIA_MAX_REFS refs: walking them all
+#   costs minutes to learn that a widely replicated repo is not a dump. So is one whose listing
+#   dies part-way, since the fragment reads as a repo holding less text, and less text is what
 #   condemns. A branch or tag is read at its TIP, so media committed and then deleted is
 #   missed; walking every branch's history would cost far more and would count against a repo
 #   that legitimately dropped a big asset years ago. The walk stops as soon as the repo has
@@ -767,54 +769,41 @@ for d; do
   dids=$(GIT_DIR="$d" git grep -h -oE 'did:key:z[1-9A-HJ-NP-Za-km-z]+' refs/rad/id \
            2>/dev/null \
          | sed 's/^did:key://' | sort -u | tr '\n' ' ')
-  # Sort every ref into three. CANON is the canonical branches and tags: only a delegate can
-  # move one, so what they hold is this repo's own content whoever else has a copy. OURS is
-  # the rest of what the delegates hold, their namespaces and COBs. THEIRS is every other
-  # peer's. A branch or tag gets the "^{tree}" suffix here, so that files_in lists what it
-  # holds now rather than walking its whole history; a COB ref goes in bare, because for a COB
-  # the history IS the content.
-  canon=""; ours=""; theirs=""
+  # Collect the refs this repo's own delegates control, and only those. That is the canonical
+  # branches and tags, which only a delegate can move, plus the delegates' own namespaces and
+  # COBs. Any other peer's namespace is left out of the walk entirely: what a stranger pushed
+  # is not evidence about this repo, so it must not condemn the repo, and it cannot be used to
+  # spare one either. A branch or tag gets the "^{tree}" suffix here, so that files_in lists
+  # what it holds now rather than walking its whole history; a COB ref goes in bare, because
+  # for a COB the history IS the content.
+  ours=""
   for ref in "${refs[@]}"; do
     case $ref in
-      refs/heads/*|refs/tags/*) canon="$canon $ref^{tree}"; continue ;;
+      refs/heads/*|refs/tags/*) ours="$ours $ref^{tree}"; continue ;;
       refs/cobs/*)              ours="$ours $ref"; continue ;;
       refs/namespaces/*)
         nid=${ref#refs/namespaces/}; nid=${nid%%/*}
-        case " $dids " in (*" $nid "*) mine=1 ;; (*) mine=0 ;; esac ;;
+        case " $dids " in (*" $nid "*) ;; (*) continue ;; esac ;;
       *) continue ;;
     esac
     case $ref in
-      */refs/cobs/*) rev=$ref ;;
-      *)             rev="$ref^{tree}" ;;
+      */refs/cobs/*) ours="$ours $ref" ;;
+      *)             ours="$ours $ref^{tree}" ;;
     esac
-    if [ "$mine" = 1 ]; then ours="$ours $rev"
-    else                     theirs="$theirs $rev"; fi
   done
-  [ -n "$canon$ours" ] || { printf '%s\t0\t0\n' "$rid"; continue; }
+  [ -n "$ours" ] || { printf '%s\t0\t0\n' "$rid"; continue; }
   # Sort into three: known media, known text, and everything else, which gets looked at. A
   # recognised text file bigger than sniff_big is looked at too, or naming a video README.md
   # would both hide it and blow the text budget that spares the repo.
-  #
-  # The three ref sets are fed in order, and the order is the rule. CANON goes first, so what
-  # the branches hold is counted before anything can subtract it: a peer replicating this repo
-  # mirrors every one of those blobs into their own namespace, and subtracting on that would
-  # erase a real project's README and lockfile and leave only whatever the peers had not
-  # fetched yet. THEIRS goes next, tagged, building the set to subtract. OURS goes last and
-  # respects it, because a delegate's COB history carries the attachments of everyone who
-  # wrote in the thread, and a stranger's video is not evidence about this repo.
-  sums=$( { files_in "$d" $canon
-            files_in "$d" $theirs \
-              | awk '$1 == "torn" { print; next } { print "skip", $1 }'
-            files_in "$d" $ours; } \
+  sums=$(files_in "$d" $ours \
     | awk -v m="$media_exts" -v t="$text_exts" -v tn="$text_names" -v big="$sniff_big" \
           -v ceil="$text_ceil" '
         # index, not a regex: a file literally called "[" would not compile as one.
         function known(list, key) { return index("|" list "|", "|" key "|") > 0 }
         $1 == "torn" { torn = 1; next }
-        $1 == "skip" { foreign[$2] = 1; next }
         {
           oid = $1; size = $2 + 0
-          if (oid in foreign || oid in seen) next
+          if (oid in seen) next
           seen[oid] = 1
           # A path may hold spaces, so take everything past the first two fields rather
           # than the last one: a file called "clip.mp4 0" must not read as the digit name

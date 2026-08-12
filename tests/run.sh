@@ -74,7 +74,8 @@ zmediatorn\ttornlist\t2\tpublic\t0\t60\t100\ta clip whose listing cannot finish
 zmediarefs\tmanyrefs\t2\tpublic\t0\t60\t100\ta clip under more refs than the cap
 zmediawide\tlongreadme\t2\tpublic\t0\t60\t100\ta clip under a very long readme
 zmediacut\tcutshort\t2\tpublic\t0\t60\t100\ta long readme over a broken listing
-zmediamirr\tmirrored\t2\tpublic\t0\t60\t100\ta project a peer replicates'
+zmediamirr\tmirrored\t2\tpublic\t0\t60\t100\ta project a peer replicates
+zmediacobm\tcobmirror\t2\tpublic\t0\t60\t100\tan issue thread a peer replicates'
 
 # Rule D is decided by the CORPUS, so it needs whole batches, and the batches below are a
 # controlled experiment: all five are 9 repos, the same age, the same size, and a name skeleton
@@ -121,7 +122,7 @@ build_batches(){
   printf '%b' "$rows"
 }
 MANIFEST_ROWS="$MANIFEST_ROWS"$'\n'"$(build_batches)"
-NREPOS=106
+NREPOS=107
 
 # Rule E fixture helpers. Each writes one file holding the given lines, commits it 80 days
 # back, pushes it to $rid, and puts the directory mtime back where the manifest loop left it so
@@ -445,6 +446,17 @@ build_fixture(){
     "$(GIT_DIR="$STORAGE/zmediamirr" git rev-parse master)"
   e_tree zmediapeer  60 "refs/namespaces/$stranger/refs/cobs/xyz.radicle.issue/aaa" \
                         "clip.mp4:40000"
+  # The same trap one layer in. This repo's text is not on its branch but in its owner's own
+  # issue thread, and replicating mirrors COB refs as well as branches, so those op payloads
+  # are blobs a stranger's refs hold too. Subtract on that and the repo's own writing is gone
+  # while the clip on its branch stays, which is the dump shape exactly.
+  e_tree zmediacobm  60 master "clip.mp4:70000:mp4" "README.md:64"
+  e_tree zmediacobm  60 "refs/namespaces/$(dlg zmediacobm)/refs/cobs/xyz.radicle.issue/aaa" \
+                        "0:60000"
+  GIT_DIR="$STORAGE/zmediacobm" git update-ref \
+    "refs/namespaces/$stranger/refs/cobs/xyz.radicle.issue/aaa" \
+    "$(GIT_DIR="$STORAGE/zmediacobm" git rev-parse \
+        "refs/namespaces/$(dlg zmediacobm)/refs/cobs/xyz.radicle.issue/aaa")"
 }
 
 # Defense in depth: refuse to run anything if STORAGE is not confined to the temp fixture.
@@ -730,6 +742,9 @@ grep -qE "^zmediaspc .*media-dump" <<<"$plan" \
 ! has "$plan" "zmediamirr" \
   && ok "a peer replicating a repo does not subtract the repo's own branch from itself" \
   || no "replication erased zmediamirr's README and left it looking like a dump"
+! has "$plan" "zmediacobm" \
+  && ok "a peer replicating a repo does not subtract the repo's own COB text from itself" \
+  || no "replication erased zmediacobm's issue thread and left it looking like a dump"
 # Each worker is written to a file and run later, so a stray apostrophe inside one of their
 # single-quoted awk programs is invisible to `bash -n` on the script itself. It closes the
 # quote, and only the generated worker then fails to parse. Parse each one on its own.
