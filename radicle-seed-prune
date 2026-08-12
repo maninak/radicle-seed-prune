@@ -1084,7 +1084,11 @@ for d; do
   # Every file in the repo, wherever it lives. A repo we cannot list is reported on fd 4 rather
   # than returning an empty host list, which would be indistinguishable from a repo with no
   # links.
-  GIT_DIR="$d" git cat-file --batch-all-objects --unordered \
+  # NOT --unordered, though it would skip a sort: the per-repo budget below stops the read
+  # part-way, so the emission order decides WHICH files get scanned. Sorted by object id, that
+  # choice is the same on every run; in pack order it changes whenever git repacks, and a repo
+  # would be judged on different evidence for no reason anyone could see.
+  GIT_DIR="$d" git cat-file --batch-all-objects \
        --batch-check='%(objectname) %(objecttype) %(objectsize)' 2>/dev/null \
     | awk -v c="$ceiling" '$2=="blob" && $3+0<=c {print $1}' \
     | hosts_of "$d" | sed "s#^#$rid\t#"
