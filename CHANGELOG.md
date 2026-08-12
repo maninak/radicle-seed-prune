@@ -31,7 +31,7 @@ Rules E, F and G are new and on by default, so read one dry run before you apply
 - **Quarantine subcommands and a keep list.** Four verbs manage what past runs pruned:
 
   - `quarantine list` shows what is held, how long it has been held, and when each entry goes;
-  - `quarantine restore <rid>...` puts the repo back in storage, unblocks and re-seeds it, and adds it to the keep list;
+  - `quarantine restore <rid>...` puts the repo back in storage, clears the block, re-seeds it, and adds it to the keep list;
   - `quarantine delete <rid>...` (or `--all`) removes one entry now, without waiting for the window;
   - `quarantine purge` removes everything already past its window.
 
@@ -68,6 +68,8 @@ Rules E, F and G are new and on by default, so read one dry run before you apply
 - **`history.log` spells the quarantine column `quarantine=on|off`** rather than `quarantined=0|1`.
 
 ### Fixed
+
+- **Restoring a repo now clears its block on every rad version.** `quarantine restore` and the documented manual undo used `rad unblock`, which older heartwood does not have, so on those nodes the repo came back on disk and stayed blocked. Both now use `rad unseed`, which deletes the policy row whatever it holds.
 
 - **A seed with thousands of spam batches or spam domains no longer dies while printing its own summary.** The `sort | head -5` pipelines that print the top five tripped the error trap via `SIGPIPE` under `pipefail`; the truncation now happens in the `awk` that formats the line.
 
@@ -161,9 +163,3 @@ A dry run can now exit `5`, where it previously only exited `0` or `1`. It means
 - Runaway caps, an apply-time preflight, and a per-run audit trail (`prune-<ts>.log` + `history.log`) under `$RAD_HOME/prune-audit/`.
 - `--restart` to flush the node inventory after a large run; a weekly `cron.d` recipe.
 - PolyForm Noncommercial 1.0.0 license.
-
-[Unreleased]: https://github.com/maninak/radicle-seed-prune/compare/v0.4.0...HEAD
-[0.4.0]: https://github.com/maninak/radicle-seed-prune/compare/v0.3.0...v0.4.0
-[0.3.0]: https://github.com/maninak/radicle-seed-prune/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/maninak/radicle-seed-prune/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/maninak/radicle-seed-prune/releases/tag/v0.1.0

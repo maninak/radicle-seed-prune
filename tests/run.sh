@@ -1420,14 +1420,18 @@ out=$("$SCRIPT" quarantine list 2>&1)
 
 # Restoring has to do three things: the directory, the node's block policy, and the verdict
 # itself, or the very next run plans the same repo again. rad seed alone only ever rewrites an
-# existing policy row's scope, so on a blocked repo it reports success and changes nothing.
+# existing policy row's scope, so on a blocked repo it reports success and changes nothing;
+# rad unseed deletes the row whatever policy it holds, which is what drops the block, and it
+# is the spelling that exists on every rad version. The prune above already called unseed, so
+# both stubs are emptied first: otherwise this would pass on the prune's own calls.
+: > "$RSP_HOME/.stub_unseed"; : > "$RSP_HOME/.stub_seed"
 out=$("$SCRIPT" quarantine restore zjunk1 2>&1)
 { [ -d "$STORAGE/zjunk1" ] && [ ! -e "$Q/zjunk1" ] \
   && GIT_DIR="$STORAGE/zjunk1" git rev-parse --verify -q master >/dev/null 2>&1 \
-  && grep -qx 'rad:zjunk1' "$RSP_HOME/.stub_unblock" \
+  && grep -qx 'rad:zjunk1' "$RSP_HOME/.stub_unseed" \
   && grep -qx 'rad:zjunk1' "$RSP_HOME/.stub_seed" \
   && grep -qx 'zjunk1' "$RSP_HOME/prune-audit/keep.txt"; } \
-  && ok "quarantine restore puts the repo back, unblocks it and keeps it" \
+  && ok "quarantine restore puts the repo back, clears its block and keeps it" \
   || no "quarantine restore left the repo blocked, gone, or still condemned"
 
 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 run | grep -q 'zjunk1' \

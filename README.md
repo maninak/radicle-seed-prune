@@ -234,7 +234,7 @@ radicle-seed-prune quarantine delete <rid>     # or --all: delete now, for good
 radicle-seed-prune quarantine purge            # delete whatever is past its window
 ```
 
-`restore` moves the repo back into storage, unblocks and re-seeds it, and adds it to the keep list, `$AUDIT_DIR/keep.txt`, so the next run leaves it alone. The keep list is one repo id per line, editable by hand; repos listed there are excluded from every rule.
+`restore` moves the repo back into storage, clears the block, re-seeds it, and adds it to the keep list, `$AUDIT_DIR/keep.txt`, so the next run leaves it alone. The keep list is one repo id per line, editable by hand; repos listed there are excluded from every rule.
 
 ### Undoing a prune
 
@@ -247,17 +247,17 @@ radicle-seed-prune quarantine restore <rid>
 After the window the local copy is gone; the repo is re-fetchable from the network as long as other nodes still hold it (what the minimum seed counts are for). Two commands, in this order:
 
 ```sh
-rad unblock rad:<rid>
-rad seed rad:<rid>
+rad unseed rad:<rid>
+rad seed  rad:<rid>
 ```
 
-`rad seed` on its own is not enough: it only rewrites an existing policy row's scope, so a blocked repo stays blocked and the fetch is refused, even though the CLI prints a success line.
+`rad seed` on its own is not enough: it only rewrites an existing policy row's scope, so a blocked repo stays blocked and the fetch is refused, even though the CLI prints a success line. `rad unseed` deletes that row whatever policy it holds, which is what drops the block. Newer heartwood also has `rad unblock`; `rad unseed` is used here because it works on every version and the `rad seed` that follows puts the seeding row back either way.
 
 ```sh
 # every repo a given run removed, from that run's audit log
 awk -F'\t' '!/^#/ && $1 != "blocked-peer" {print "rad:"$1}' \
   ~/.radicle/prune-audit/prune-20260628T183150Z.log |
-  while read -r rid; do rad unblock "$rid" && rad seed "$rid"; done
+  while read -r rid; do rad unseed "$rid" && rad seed "$rid"; done
 ```
 
 The node keeps running during a prune. After a large first run, `sudo systemctl restart radicle-node` clears the stale "inventory announce limit" warning; `--restart-node` runs that restart for you, if the run has the rights to restart the service. On some heartwood versions `rad node inventory` still lists removed RIDs afterwards; that listing is cosmetic and the repos are gone.

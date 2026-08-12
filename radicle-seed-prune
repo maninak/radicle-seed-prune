@@ -18,7 +18,7 @@
 # RECOVERABILITY
 #   A pruned repo waits QUARANTINE_DAYS in AUDIT_DIR/quarantine, where one command puts it
 #   back ("quarantine restore <rid>"). After that it is re-fetchable from the network
-#   (rad unblock <rid>, then rad seed <rid>) AS LONG AS other nodes still hold it. Both
+#   (rad unseed <rid>, then rad seed <rid>) AS LONG AS other nodes still hold it. Both
 #   commands: rad seed on its own rewrites only an existing policy row's scope, so on a
 #   blocked repo it prints success and leaves the block standing. That re-fetch is why the
 #   size/age rules keep a minimum other-seed count. Three verdicts (junk-id, spam-batch,
@@ -568,7 +568,7 @@ OPTIONS
 
 QUARANTINE VERBS
   list             what is held, how long it has been held, and when each entry goes
-  restore <rid>... put it back in storage, unblock it, re-seed it, and keep it thereafter
+  restore <rid>... put it back in storage, clear the block, re-seed it, and keep it after
   delete <rid>...  delete it now instead of waiting; --all takes everything held
   purge            delete everything already past its window
 
@@ -687,9 +687,12 @@ if [ "$CMD" = quarantine ]; then
         # nor comes back, so putting the directory back is only half the undo. Both commands,
         # in this order: rad seed only ever rewrites an existing policy row's SCOPE, so on a
         # blocked repo it reports success and changes nothing, and the fetch is refused later
-        # by the fetch worker. rad unblock is what actually drops the block row.
-        "$RAD" unblock "rad:$rid" >/dev/null 2>&1 \
-          || echo "#   WARN 'rad unblock rad:$rid' failed; it is still blocked" >&2
+        # by the fetch worker. rad unseed deletes the policy row whatever policy it holds, so
+        # it drops the block, and it is the same verb the prune itself uses. The narrower
+        # rad unblock is missing from older heartwood, and buys nothing here: the rad seed
+        # below puts the seeding row back either way.
+        "$RAD" unseed "rad:$rid" >/dev/null 2>&1 \
+          || echo "#   WARN 'rad unseed rad:$rid' failed; it is still blocked" >&2
         "$RAD" seed "rad:$rid" >/dev/null 2>&1 \
           || echo "#   WARN back on disk but 'rad seed rad:$rid' failed; run it yourself" >&2
         keep_add "$rid" \
