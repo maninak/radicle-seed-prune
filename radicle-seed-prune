@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 #
-# radicle-seed-prune - reclaim disk on a Radicle (heartwood) seed node by dropping
-# low-value repositories: stale giants, abandoned repos, and obviously disposable ones.
+# radicle-seed-prune - automatically detect and prune lower-value repos, spam and abuse from
+# a Radicle (heartwood) node's storage. Two jobs at once: it reclaims disk from stale giants,
+# abandoned repos and disposable ones, and it moderates mass-generated spam, link farms, media
+# dumps and peers who push their own files into repos they do not own.
 #
 # DRY-RUN by default - it only prints the plan and changes nothing. Pass --apply to act.
 #
@@ -549,7 +551,8 @@ fi
 usage() {
   local me; me=$(basename "$SELF")
   cat <<HELPTEXT
-$me $VERSION - reclaim disk on a Radicle (heartwood) seed by pruning low-value repos
+$me $VERSION
+Automatically detect and prune lower-value repos, spam and abuse from a Radicle node's storage.
 
 USAGE
   $me [options]                    plan a prune, and with --apply carry it out

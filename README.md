@@ -7,16 +7,14 @@
 [![Shell](https://img.shields.io/badge/shell-bash-121011.svg?logo=gnu-bash&logoColor=white)](./radicle-seed-prune)
 [![rad: - zxvTkxzouwrYFwycnsctrMT3iM2E](https://img.shields.io/static/v1?label=rad%3A&message=zxvTkxzouwrYFwycnsctrMT3iM2E&color=6666FF&cacheSeconds=64800)](https://app.radicle.at/nodes/seed.radicle.at/rad:zxvTkxzouwrYFwycnsctrMT3iM2E)
 
-**Prunes spam, abuse and low-value repos from a [Radicle](https://radicle.dev) seed's storage.**
+**Automatically detect and prune lower-value repos, spam and abuse from a [Radicle](https://radicle.dev) node's storage.**
 
 It does two jobs:
 
 - **Reclaims disk**: prunes stale giants, long-abandoned repos and disposable ones.
 - **Moderates content**: prunes mass-generated spam, link farms and media dumps, and names peers who push their own files into repos they do not own.
 
-One bash script, no dependencies beyond what a seed already has, dry run by default.
-
-The default thresholds were tuned against one seed, radicle.at, of about 11,200 repos. Read the plan before you apply anything, then tell me what those defaults did on your seed: feedback from a second seed is what they most need.
+Tuned against and running in production for seed.radicle.at seeding the whole public Radicle network. Read the plan before you apply anything.
 
 ## Install
 
@@ -417,7 +415,7 @@ Every name and description in storage is *skeletonised*: digit runs become `#`, 
 
 Only the members carrying the agreed description are pruned; repos with no description at all are never flagged. Descriptions differing only by a number count as agreeing.
 
-On a real seed of about 11,200 repos the rule flags 442 repos in 10 batches and nothing else, leaving large mirror imports alone.
+On a real seed mirroring the whole public network the rule flags 442 repos in 10 batches and nothing else, leaving large mirror imports alone.
 
 ## Rule E: link farms
 
@@ -434,7 +432,7 @@ Both counts are recomputed from storage on every run, so there is no blocklist t
 
 A code link is ignored in condition 2 when the repo it comes from is itself suspect, so that a farm cannot vouch for the domain it sells. A repo counts as suspect when rule D calls it generated, or when it would already qualify as a link farm under a looser version of condition 2 (`LINK_CODE_LOOSE_PCT`, 50%, in place of `LINK_CODE_MAX_PCT`). Turning rule D off leaves rule E with a shorter suspect list.
 
-Rule E reads file content, capped per blob (`LINK_BLOB_PREFIX`, 65536 bytes) and per repo (`LINK_REPO_BUDGET`); a blob past the cap is read up to the cap rather than skipped. On the ~11,200-repo seed above it takes about 4 minutes of a 9-minute uncached dry run with 5 workers.
+Rule E reads file content, capped per blob (`LINK_BLOB_PREFIX`, 65536 bytes) and per repo (`LINK_REPO_BUDGET`); a blob past the cap is read up to the cap rather than skipped. On the seed above it takes about 4 minutes of a 9-minute uncached dry run with 5 workers.
 
 ## Rule F: media dumps
 
@@ -476,7 +474,7 @@ A delegate of any repo in storage is never accused, and neither is this node its
 
 Blocking is never a side effect of a prune: the plan prints the exact `rad block <nid>` line for each peer rule G names, `--block-peers` raises a prompt per peer, and `--block-peers --yes` answers those prompts in an unattended run ([usage](#usage)). Each block is written to the audit log with the evidence behind it. Dropping a blocked peer's refs frees no disk until `git gc` runs, and this tool never runs `git gc`, so the run counts none of those bytes as reclaimed.
 
-On the seed the defaults were tuned against, the rule names nobody across all ~11,200 repos.
+On the seed the defaults were tuned against, the rule names nobody in the whole public network.
 
 A `RULES` without `G` turns it off.
 
@@ -517,4 +515,4 @@ If that is you, or you are not sure which side of the line you land on, email [i
 
 [PolyForm Noncommercial License 1.0.0](./LICENSE). Free to use, modify, and share for any **noncommercial** purpose; you must preserve the copyright and required-notice lines (attribution). **Commercial use is not permitted** without a separate license. For commercial licensing, email [info@radicle.tools](mailto:info@radicle.tools).
 
-Built by [maninak](https://maninak.com).
+Built by [maninak](https://maninak.com). A [radicle.tools](https://radicle.tools) artifact: homegrown apps and tools for Radicle.
