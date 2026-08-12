@@ -7,17 +7,135 @@
 [![Shell](https://img.shields.io/badge/shell-bash-121011.svg?logo=gnu-bash&logoColor=white)](./radicle-seed-prune)
 [![rad: - zxvTkxzouwrYFwycnsctrMT3iM2E](https://img.shields.io/static/v1?label=rad%3A&message=zxvTkxzouwrYFwycnsctrMT3iM2E&color=6666FF&cacheSeconds=64800)](https://app.radicle.at/nodes/seed.radicle.at/rad:zxvTkxzouwrYFwycnsctrMT3iM2E)
 
-**Prune spam, abuse and low-value repos from a [Radicle](https://radicle.dev) seed's storage: part disk cleaner, part content moderation.**
+**Prunes spam, abuse and low-value repos from a [Radicle](https://radicle.dev) seed's storage.**
 
-A seed that seeds everything mirrors the whole public network and grows without bounds, and *everything* includes what nobody would host knowingly. So this tool does two jobs. It reclaims disk, by pruning stale giants, long-abandoned repos and obviously disposable ones. And it moderates content, by pruning mass-generated spam, link farms and media dumps, and by naming the peers that push their files into other people's repos. One bash script, no dependencies beyond what a seed already has, and a dry run unless you ask otherwise.
+It does two jobs:
 
-Know which job you are opting into, because on the seed this was built against, moderation is nearly all of the work: 517 of the 523 repos in the current plan are spam and abuse verdicts. Only 6 repos, freeing 0.03 GiB, are there for being merely old or disposable. Disk is not what drives the plan either: the two purely spam verdicts account for 471 of those repos and 0.45 GiB, while 46 media repos carry the other 2 GiB. The stakes differ in kind, too. Deleting the wrong repo to save disk is a bug; deleting the wrong repo as a moderation call is an accusation the affected person never hears and cannot appeal. Three verdicts may delete the last copy the network is known to hold, which is why pruning [quarantines instead of deleting](#quarantine).
+- **Reclaims disk**: prunes stale giants, long-abandoned repos and disposable ones.
+- **Moderates content**: prunes mass-generated spam, link farms and media dumps, and names peers who push their own files into repos they do not own.
 
-Every threshold below was tuned against **one corpus**: radicle.at, about 11,200 repos, which the author reviewed by hand (the review of all 47 rule F verdicts found exactly one false positive, which was then fixed). Your seed is not that corpus. Treat the defaults as a starting point and read the plans this tool prints before applying anything, rather than trusting numbers measured on somebody else's storage.
+One bash script, no dependencies beyond what a seed already has, dry run by default.
+
+The default thresholds were tuned against one seed, radicle.at, of about 11,200 repos. Read the plan before you apply anything, then tell me what those defaults did on your seed: feedback from a second seed is what they most need.
+
+## Install
+
+```sh
+curl -O https://raw.githubusercontent.com/maninak/radicle-seed-prune/master/radicle-seed-prune
+chmod +x radicle-seed-prune
+```
+
+Needs `bash`, `git`, `jq` and `rad` on `PATH`. Run it as the user that owns the Radicle home you want pruned, or set `RAD_HOME` to that home.
+
+## Usage
+
+```sh
+./radicle-seed-prune                  # preview: print the plan, change nothing
+./radicle-seed-prune --apply          # apply, asks [y/N] first when run in a terminal
+./radicle-seed-prune --apply --yes    # answer the confirmation with y (scripts, cron)
+./radicle-seed-prune --apply --force  # apply even if the plan trips a runaway cap or the ratchet
+./radicle-seed-prune --apply --restart-node  # ...and restart the node afterwards
+./radicle-seed-prune --block-peers    # block what rule G found, one [y/N] per peer; prunes nothing
+./radicle-seed-prune quarantine ...   # list, restore, delete, purge quarantined repos
+./radicle-seed-prune --version
+```
+
+There is no `--dry-run` flag: running with no flags is the dry run. `--apply` scans once, prints that same plan, asks `[y/N]` in a terminal, and just applies when there is nobody to ask (cron, a pipe). `--yes` answers every prompt a run asks, including the per-peer block prompt.
+
+`--block-peers` is its own action and does not imply `--apply`; pass both flags if you mean both actions. It asks once per peer before blocking that peer. `--block-peers --yes` answers those prompts with y, which is the form a cron job wants; `--block-peers` alone with nobody to ask (cron, a pipe) blocks nobody and prints the `rad block` commands instead.
+
+The plan is sorted largest repo first and totals the disk the run would free. `--help` lists the options and the quarantine verbs, and prints the paths this run resolved.
+
+Every knob is an environment variable rather than a flag, so a run is configured the way `rad` itself is:
+
+```sh
+RAD_HOME=/var/lib/radicle ./radicle-seed-prune          # a seed home that isn't yours
+RAD=/nix/store/.../bin/rad ./radicle-seed-prune         # a specific rad binary
+```
+
+### Example output
+
+A dry run against a seed of 11,201 repos:
+
+```
+# radicle-seed-prune 0.4.0  2026-08-12T04:40:21Z   mode=DRY-RUN
+# home=/var/lib/radicle
+# disk: 126.7GB free (47.0%)  pressure=0% [relax>=54GB crit<=2GB]
+# rules: A junk(>30d, seeds>=1; id-names seeds>=0)  B size(>500MB & >=P95, >90d, seeds>=3)  C stale(>730d, seeds>=3)  D spam(batch>=5 & desc>=80%, >7d, seeds>=0)
+# rule E link-farm(>=5 spam domains, each linked from >=0.4% of repos and from the code of <10% of them, >7d, seeds>=0)
+# rule F media-dump(>=64KB of media and <2048B of anything else, >7d, seeds>=1)  media-batch(that media held by >=5 repos, <65536B of anything else)
+# rule G parasite-peer(one file of theirs in >=10 repos they do not own, >=1MB media, <16384B of anything else) [reports only; --block-peers asks per peer]
+# excluded: 9 pinned, 6 private, 0 own, 0 kept
+# spam batches: 10 template(s) matching 447 repos, before the age and seed checks:
+#      54  template-a-*-*
+#      51  template-b-*-*
+#      51  template-c-*-*
+#      46  template-d-*-*
+#      45  template-e-*-*
+#   ...and 5 more
+# spam domains: 94 domain(s) linked from >=44 repos, <10% from code;
+#   492 repo(s) link to >=5 of them, before the age and seed checks:
+#     424 repos  spam-host-1.example
+#     331 repos  spam-host-2.example
+#     307 repos  spam-host-3.example
+#     305 repos  spam-host-4.example
+#     295 repos  spam-host-5.example
+#   ...and 89 more
+# rule E: 43 repo(s) spared, the spam links were pushed by peers that are not their delegates
+# repos=11201  sizes P50=0M P90=10M P95=33M P99=197M rel-cut(P95)=33M  abs-cut=500M
+# skipped: 0 unreadable, 148 written in the last 2d, 1 with no readable refs
+
+RID                                     SIZE  SEEDS   AGE(d) REASON        NEAR        NAME
+zEXAMPLEREPOaaaaaaaaaaaaaaa          330.8MB     13      190 media-dump    -           example-repo-1
+zEXAMPLEREPObbbbbbbbbbbbbbb          192.7MB      8      190 media-dump    -           example-repo-2
+zEXAMPLEREPOccccccccccccccc           50.5MB     14      186 media-dump    -           example-repo-3
+zEXAMPLEREPOddddddddddddddd           44.5MB     15      190 media-dump    -           example-repo-4
+zEXAMPLEREPOeeeeeeeeeeeeeee           42.1MB     18      242 media-dump    -           example-repo-5
+zEXAMPLEREPOfffffffffffffff           30.8MB      5      190 media-dump    -           example-repo-6
+zEXAMPLEREPOggggggggggggggg           28.6MB      3      733 stale         seeds       example-repo-7
+zEXAMPLEREPOhhhhhhhhhhhhhhh           21.8MB      7      539 media-dump    -           example-repo-8
+zEXAMPLEREPOiiiiiiiiiiiiiii           12.3MB      9      183 media-dump    media       example-repo-9
+[... 18 more single-repo rows ...]
+zEXAMPLEREPOjjjjjjjjjjjjjjj           74.0KB      7       30 junk-name     age         example-demo-repo
+zEXAMPLEREPOkkkkkkkkkkkkkkk           73.9KB     12       30 junk-name     age         example-test
+(436 repos)                           49.8MB                 spam-batch    12 near     same pattern across many repos; PLAN_FULL=1 lists them
+(35 repos)                           413.7MB                 link-farm     2 near      same pattern across many repos; PLAN_FULL=1 lists them
+(23 repos)                             1.3GB                 media-batch   0 near      same pattern across many repos; PLAN_FULL=1 lists them
+
+# PLAN: prune 523 repos, 2.52 GiB (quarantined 7d, so the disk comes back then)
+#   junk-name         3 repos      0.00 GiB
+#   link-farm        35 repos      0.40 GiB
+#   media-batch      23 repos      1.29 GiB
+#   media-dump       23 repos      0.75 GiB
+#   spam-batch      436 repos      0.05 GiB
+#   stale             3 repos      0.03 GiB
+#   19 of them cleared a threshold by under 20%: see the NEAR column, which names the threshold that was close. Read those rows first.
+# DRY-RUN: nothing changed. Re-run with --apply to execute.
+```
+
+Corpus verdicts (`spam-batch`, `link-farm`, `media-batch`) fold to one summary line per group at `PLAN_COLLAPSE_ROWS` (20) rows; single-repo verdicts are always listed in full, and `PLAN_FULL=1` lists everything.
+
+`AGE(d)` is the age the matching rule measured: days since last activity for A, B and C, days since creation for D, E and F.
+
+`NEAR` names any threshold the row cleared by less than `NEAR_PCT` (20%), and is `-` when the row cleared every one of them comfortably. It reports the numbers the matching rule actually tested: `age` for every rule, `seeds` where the rule has a seed floor above zero, plus `size` for rule B, `media` for rule F and `score` for rule E. Those are the rows to read first, and the summary under the plan counts them. `NEAR_PCT=0` marks nothing.
+
+Progress lines go to stderr, the plan to stdout, so `> plan.txt` keeps them apart.
+
+### Exit codes
+
+| Code | Meaning                                                                                                                              |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `0`  | Success, including a dry run and an `--apply` you declined at the prompt                                                             |
+| `1`  | Storage missing or unreadable, or an unexpected failure (the run prints the line and the command)                                    |
+| `2`  | Bad argument                                                                                                                         |
+| `3`  | The plan tripped a runaway cap or the history ratchet. Read it, then re-run with `--force`                                           |
+| `5`  | Refused to guess: node unreachable, NID unknown, routing table empty, exclusions unreadable, or too much of storage could not be read |
+
+Exit 5 means the tool could not see enough to be trusted; nothing was touched.
 
 ## What gets pruned
 
-A repo is pruned if it is **not excluded** and matches **at least one rule**. `RULES` (default `ABCDEFG`) is one switch over all of them: a letter absent from it means that rule neither scans nor puts anything in the plan, and the run header marks it disabled. A repo a disabled rule would have claimed falls through to whichever rule is next, so switching one off never quietly spares a repo the others would still take.
+A repo is pruned if it is **not excluded** and matches **at least one rule**. `RULES` (default `ABCDEFG`) selects which rules run: a letter absent from it means that rule neither scans nor puts anything in the plan, and a repo a disabled rule would have claimed falls through to the next rule.
 
 ### Exclusions (never touched)
 
@@ -26,44 +144,45 @@ A repo is pruned if it is **not excluded** and matches **at least one rule**. `R
 | Pinned repos    | `config.web.pinned.repositories`                      |
 | Private repos   | `rad ls --private`                                    |
 | Your own repos  | `rad ls` (repos you initialized or forked / delegate) |
+| Kept repos      | `$AUDIT_DIR/keep.txt`, one repo id per line ([more](#quarantine)) |
 | Freshly written | storage dir modified within `FRESH_GUARD_DAYS`        |
 | Unknown age     | no readable refs                                      |
 | Unreadable      | hit an error when reading the repo                    |
 
 ### Rules
 
-Every rule has the same shape: **something about the repo**, *and* it is old enough, *and* enough other nodes still hold it. All three, always. Defaults shown; each is an environment variable.
+Every rule has the same shape: **something about the repo**, *and* it is old enough, *and* enough other nodes still hold it. Defaults shown; each is an environment variable.
 
 | Rule               | The repo looks like                                                                 | Minimum age               | Other seeds              |
 | ------------------ | ----------------------------------------------------------------------------------- | ------------------------- | ------------------------ |
 | **A, junk-name**   | a disposable *word* in the name (`test`, `tmp`, `old`, `demo`)                      | `JUNK_STALE_DAYS`, 30d    | ≥ `JUNK_MIN_SEEDS`, 1    |
-| **A, junk-id**     | the name is *nothing but* a random hex id (`08a25d0f666d`)                          | `JUNK_STALE_DAYS`, 30d    | ≥ `JUNK_ID_MIN_SEEDS`, 0 |
+| **A, junk-id**     | the name is *nothing but* a random hex id (`0a1b2c3d4e5f`)                          | `JUNK_STALE_DAYS`, 30d    | ≥ `JUNK_ID_MIN_SEEDS`, 0 |
 | **B, size**        | a giant: over `ABS_SIZE_FLOOR_MB` (500M) *and* in the top `REL_PCTL`% by size (P95) | `OUTLIER_STALE_DAYS`, 90d | ≥ `MIN_OTHER_SEEDS`, 3   |
-| **C, stale**       | nothing in particular; the catch-all for whatever the other rules missed                    | `STALE_YEARS_DAYS`, 730d  | ≥ `MIN_OTHER_SEEDS`, 3   |
+| **C, stale**       | nothing in particular; the catch-all for whatever the other rules missed            | `STALE_YEARS_DAYS`, 730d  | ≥ `MIN_OTHER_SEEDS`, 3   |
 | **D, spam-batch**  | one of a batch stamped out from one template ([more](#rule-d-spam-batches))         | `SPAM_STALE_DAYS`, 7d     | ≥ `SPAM_MIN_SEEDS`, 0    |
 | **E, link-farm**   | published to carry links rather than code ([more](#rule-e-link-farms))              | `LINK_STALE_DAYS`, 7d     | ≥ `LINK_MIN_SEEDS`, 0    |
 | **F, media-dump**  | video, images or audio with no project around them ([more](#rule-f-media-dumps))    | `MEDIA_STALE_DAYS`, 7d    | ≥ `MEDIA_MIN_SEEDS`, 1   |
 | **F, media-batch** | the same media files, published across many repos ([more](#rule-f-media-dumps))     | `MEDIA_STALE_DAYS`, 7d    | ≥ `MEDIA_MIN_SEEDS`, 1   |
 
-Rule G is missing from the table because it judges a **peer**, not a repo, and prunes nothing: it names peers that use other people's repos as their file hosting and prints the `rad block` line for each, to be acted on only by a human ([more](#rule-g-parasite-peers)).
+Rule G is missing from the table because it judges a **peer**, not a repo, and prunes nothing: it names peers who use repos they do not own as file hosting of their own, and prints the `rad block` line for each such peer ([more](#rule-g-parasite-peers)).
 
 #### How age is measured
 
-A, B and C measure **last activity**: they are about abandonment, and a repo somebody touched is not abandoned. Activity is any signed change, however small (a commit, an issue, a comment, a reaction, a label), since each is a git commit under some peer's `refs/cobs/*`. The tool takes the newest `creatordate` across every peer's refs, and reads when the change was *authored*, so a just-fetched old comment still counts as old.
+A, B and C measure **last activity**. Activity is any signed change, however small: a commit, an issue, a comment, a reaction, a label. The tool takes the newest `creatordate` across every peer's refs.
 
-D, E and F measure **creation** instead, because the spam wave this tool was written against appends a comment to its own repos every few days, which would reset a last-activity clock and make the whole wave permanently immune. Creation is the older of the repo's oldest ref date and the day this seed first saw it (`$RAD_HOME/prune-audit/first-seen.tsv`, appended on every run, dry or not). A pusher controls the first date and cannot reach the second.
+D, E and F measure **creation** instead, because spam that comments on its own repos would reset a last-activity clock. Creation is the older of the repo's oldest ref date and the day this seed first saw it (`$RAD_HOME/prune-audit/first-seen.tsv`, appended on every run, dry or not). A pusher controls the first date and cannot reach the second.
 
 #### Verdicts that may delete the last copy we know of
 
-Only `junk-id`, `spam-batch` and `link-farm`, which default to a seed floor of `0`. "Other seeds" counts the nodes *our routing table* says announce a repo, which is not proof a copy exists elsewhere, so the floor drops only where the evidence is conclusive: for generated bulk and for a repo whose whole purpose is to advertise a link, "nobody else seeds it" measures worthlessness rather than rarity. A disposable *word* in a name is a guess (`my-old-thesis` is somebody's thesis), and a large or long-abandoned *unique* repo is the very thing a seed exists to preserve. These three verdicts are also why pruning [quarantines instead of deleting](#quarantine): for exactly them, "re-fetch it from the network" is the undo that may not work. `JUNK_ID_MIN_SEEDS=1 SPAM_MIN_SEEDS=1 LINK_MIN_SEEDS=1` restores never-take-the-last-copy everywhere.
+Only `junk-id`, `spam-batch` and `link-farm`, which default to a seed floor of `0`. "Other seeds" counts the nodes our routing table says announce a repo, not proof a copy exists elsewhere; these three verdicts are why pruning [quarantines instead of deleting](#quarantine). `JUNK_ID_MIN_SEEDS=1 SPAM_MIN_SEEDS=1 LINK_MIN_SEEDS=1` restores a floor of 1 everywhere.
 
 #### Names that count as disposable
 
-`test`, `tmp`, `temp`, `scratch`, `playground`, `sandbox`, `demo`, `dummy`, `wip`, `trash`, `junk`, `old`, `throwaway`, `helloworld`, as whole words delimited by `-`, `_`, `.` or the ends of the name. Plus `foo` / `bar` / `baz`, but only as an entire name, so `BAR_widget` is safe. A space is deliberately not a delimiter, because names with spaces read as prose where "old" and "demo" are ordinary English words: `test-old` matches, `The old man` does not. A name that is *nothing but* a random hex id of `JUNK_ID_MIN_LEN`+ characters counts too (`08a25d0f666d`), but not `12345678` and not `facade`, since both a letter and a digit are required.
+`test`, `tmp`, `temp`, `scratch`, `playground`, `sandbox`, `demo`, `dummy`, `wip`, `trash`, `junk`, `old`, `throwaway`, `helloworld`, as whole words delimited by `-`, `_`, `.` or the ends of the name; plus `foo` / `bar` / `baz`, but only as an entire name. A space is not a delimiter: `test-old` matches, `The old man` does not. A name that is *nothing but* a random hex id of `JUNK_ID_MIN_LEN`+ characters counts too (`0a1b2c3d4e5f`); both a letter and a digit are required, so `12345678` and `facade` do not.
 
 ### Disk pressure
 
-The thresholds above are the **relaxed** values, used when there is plenty of free space. As free disk falls, the tool **self-tightens**: pressure `p` rises from `0` to `1` linearly between a relax watermark (`max(PRESSURE_RELAX_PCT%, PRESSURE_RELAX_GB)` free) and a critical one (`min(PRESSURE_CRIT_PCT%, PRESSURE_CRIT_GB)` free), and every knob is interpolated from its relaxed value toward an aggressive one:
+The thresholds above are the **relaxed** values. As free disk falls, pressure `p` rises from `0` to `1` linearly between a relax watermark (`max(PRESSURE_RELAX_PCT%, PRESSURE_RELAX_GB)` free) and a critical one (`min(PRESSURE_CRIT_PCT%, PRESSURE_CRIT_GB)` free), and every knob is interpolated from its relaxed value toward an aggressive one:
 
 | knob                 | relaxed (`p=0`) | aggressive (`p=1`) |
 | -------------------- | --------------- | ------------------ |
@@ -77,22 +196,22 @@ The thresholds above are the **relaxed** values, used when there is plenty of fr
 
 The header prints the live pressure and the effective thresholds every run. On one node, pruning scaled from ~1.3k repos / 18 GiB at `p=0` to ~7.1k repos / 92 GiB at `p=1`.
 
-**Hard floors never scale.** `MIN_OTHER_SEEDS` bottoms out at 1, so rules B and C never take the last copy we know of, and the pinned/private/own exclusions always hold. Rule E does not scale at all, because its evidence is not about time: a repo either links to spam domains or it does not, and a full disk does not change that. `DISK_AWARE=0` disables scaling entirely.
+**Hard floors never scale.** `MIN_OTHER_SEEDS` bottoms out at 1, every exclusion holds at any pressure, and none of rule E's thresholds move with pressure at all. `DISK_AWARE=0` turns the scaling off entirely, so every knob keeps its relaxed value.
 
 ## Safety and recovery
 
-- **Dry run by default.** Nothing is touched without `--apply`.
-- **Quarantine instead of deletion.** A pruned repo stays on disk for `QUARANTINE_DAYS` and is restorable with one `mv` ([details](#quarantine)).
-- **Minimum seed counts** keep the last copy we know of, except for the three conclusive verdicts above.
-- **Runaway caps** (`MAX_PRUNE_COUNT`, `MAX_PRUNE_GB`) abort an unexpectedly large plan unless `--force`. Confirming interactively bypasses them, since you have seen the numbers; cron and `--yes` still respect them.
-- **A ratchet against the run's own history.** The fixed caps only catch a plan that jumps, never one that creeps: at a steady 2.5 GiB a week a plan could grow all year without touching `MAX_PRUNE_GB`, and sustained disk pressure loosens the thresholds on its own. An unattended run therefore also aborts when the plan is more than `RATCHET_FACTOR` (3) times the median of the last `RATCHET_RUNS` (8) applied runs, read from the history log. Fewer than three past runs is not treated as a baseline. `--force` or an interactive confirmation gets past it, like the caps.
-- **Freshness guard** skips repos with an in-flight fetch.
-- **Apply preflight** aborts if the node is down or exclusions cannot be read, so a transient failure never deletes your own or pinned repos.
-- **Blind scans abort.** More than `MAX_SCAN_FAIL_PCT` of storage unreadable is exit 5, not a small plausible plan.
-- **Blocking a peer is never automated.** Rule G only prints the `rad block` line; `--block-peers` asks a human, per peer ([more](#rule-g-parasite-peers)).
+- **Dry run by default.** Nothing is pruned without `--apply`, and no peer is blocked without `--block-peers`.
+- **Quarantine instead of deletion.** A pruned repo stays on disk for `QUARANTINE_DAYS` (7) and is restorable with one command ([details](#quarantine)).
+- **Minimum seed counts** keep the last copy we know of, except under `junk-id`, `spam-batch` and `link-farm` ([why](#verdicts-that-may-delete-the-last-copy-we-know-of)).
+- **Runaway caps** (`MAX_PRUNE_COUNT`, `MAX_PRUNE_GB`) abort a plan bigger than either cap. Two things get past them: `--force`, or a person answering `y` at the prompt, which is a human signing off on the numbers just printed. `--yes` is not one of them, so an unattended run still stops.
+- **History ratchet.** An unattended run aborts when the plan is more than `RATCHET_FACTOR` (3) times the median of the last `RATCHET_RUNS` (8) applied runs; `--force` or an interactive confirmation gets past it.
+- **Freshness guard** skips any repo whose storage directory was written within `FRESH_GUARD_DAYS` (2), which is what a fetch still arriving looks like.
+- **Apply preflight** aborts if the node is down or exclusions cannot be read.
+- **Blind scans abort.** More than `MAX_SCAN_FAIL_PCT` of the repos in storage unreadable is exit 5, not a small plausible plan.
+- **Blocking a peer takes two opt-ins:** `--block-peers`, and then a `y` to the prompt it raises for that peer. Without `--block-peers` the run only prints the `rad block` line for each peer rule G named. An unattended run has nobody to give the second opt-in, so it blocks nobody unless `--yes` gives it ([more](#rule-g-parasite-peers)).
 - **Audit log** records every prune and every block, with the evidence behind it.
 
-For each selected repo, in this exact order:
+For each selected repo, in this order:
 
 ```sh
 rad unseed <rid>                              # drop whatever single seeding policy the repo has
@@ -100,145 +219,56 @@ rad block  <rid>                              # set an explicit block, so defaul
 mv <storage>/<rid> <audit>/quarantine/<rid>   # out of storage, still on disk
 ```
 
-`rad unseed` removes whichever policy row a repo has, so it must run **before** `rad block`, never after, or it would wipe the block just set and the repo would re-seed.
+`rad unseed` must run **before** `rad block`, because unseeding clears whatever policy row the repo has, block included, and a repo with no policy row re-seeds under the default-allow scope.
 
 ### Quarantine
 
-A pruned repo moves to `$AUDIT_DIR/quarantine/<rid>` rather than being deleted; the real deletion happens `QUARANTINE_DAYS` (30) later, counted from when it arrived there, and purged by a later `--apply` including one that has nothing to prune. This exists for the three verdicts that may take the last copy the network is known to hold: for those, re-fetching from the network is exactly the undo that cannot work, so for a month the copy an appeal would need still exists, here. The completion line accordingly says "quarantined ... out of storage but still on disk" rather than "reclaimed", because disk still occupied must not be reported as freed. At the observed 2.5 GiB a week the holding cost is roughly 10 GiB. At the critical disk watermark the whole quarantine is emptied regardless of the window, because a recovery copy is a luxury a full disk cannot buy. `QUARANTINE=0` restores outright deletion.
+A pruned repo moves to `$AUDIT_DIR/quarantine/<rid>` rather than being deleted. It is deleted for real `QUARANTINE_DAYS` (7) days after it arrived there, by whichever `--apply` run comes next, including a run whose own plan is empty. At the critical disk watermark an `--apply` run empties the whole quarantine whether or not each entry has served its window. `QUARANTINE=0` deletes outright and keeps nothing.
+
+Every repo was unseeded and blocked before it was moved there, so nothing on the node points at the quarantine: deleting the directory by hand (`rm -rf`) is safe at any time and only costs the ability to restore.
+
+```sh
+radicle-seed-prune quarantine list             # what is held, and for how long
+radicle-seed-prune quarantine restore <rid>    # put it back in storage and re-seed it
+radicle-seed-prune quarantine delete <rid>     # or --all: delete now, for good
+radicle-seed-prune quarantine purge            # delete whatever is past its window
+```
+
+`restore` moves the repo back into storage, unblocks and re-seeds it, and adds it to the keep list, `$AUDIT_DIR/keep.txt`, so the next run leaves it alone. The keep list is one repo id per line, editable by hand; repos listed there are excluded from every rule.
 
 ### Undoing a prune
 
-Within the quarantine window the repo is still on this disk. Move it back and clear the block:
+Within the quarantine window:
 
 ```sh
-mv ~/.radicle/prune-audit/quarantine/<rid> ~/.radicle/storage/<rid>
-rad unseed rad:<rid> && rad seed rad:<rid>
+radicle-seed-prune quarantine restore <rid>
 ```
 
-After the window, deletion is local: a pruned repo is re-fetchable from the network as long as other nodes still hold it, which is what the minimum seed counts are for.
+After the window the local copy is gone; the repo is re-fetchable from the network as long as other nodes still hold it (what the minimum seed counts are for). Two commands, in this order:
 
 ```sh
-rad unseed rad:<rid> && rad seed rad:<rid>    # one repo
-
-# ...or every repo a given run removed, from that run's audit log
-awk -F'\t' '!/^#/ {print "rad:"$1}' ~/.radicle/prune-audit/prune-20260628T183150Z.log |
-  while read -r rid; do rad unseed "$rid" && rad seed "$rid"; done
+rad unblock rad:<rid>
+rad seed rad:<rid>
 ```
 
-The node keeps running during a prune. After a large first run, one `sudo systemctl restart radicle-node` clears the stale "inventory announce limit" warning from the node log; `--restart-node` does it for you when run with sufficient rights. On some heartwood versions `rad node inventory` may still list the removed RIDs afterwards. That is cosmetic: the repos are out of storage and blocked from re-seeding.
-
-## Install
+`rad seed` on its own is not enough: it only rewrites an existing policy row's scope, so a blocked repo stays blocked and the fetch is refused, even though the CLI prints a success line.
 
 ```sh
-curl -O https://raw.githubusercontent.com/maninak/radicle-seed-prune/master/radicle-seed-prune
-chmod +x radicle-seed-prune
+# every repo a given run removed, from that run's audit log
+awk -F'\t' '!/^#/ && $1 != "blocked-peer" {print "rad:"$1}' \
+  ~/.radicle/prune-audit/prune-20260628T183150Z.log |
+  while read -r rid; do rad unblock "$rid" && rad seed "$rid"; done
 ```
 
-Needs `bash`, `git`, `jq` and `rad` on `PATH`. Run it as the user that owns the Radicle home, or point `RAD_HOME` at one.
+The node keeps running during a prune. After a large first run, `sudo systemctl restart radicle-node` clears the stale "inventory announce limit" warning; `--restart-node` runs that restart for you, if the run has the rights to restart the service. On some heartwood versions `rad node inventory` still lists removed RIDs afterwards; that listing is cosmetic and the repos are gone.
 
-## Usage
+## Speed
 
-```sh
-./radicle-seed-prune                  # preview: print the plan, change nothing
-./radicle-seed-prune --apply          # apply, asks [y/N] first when run in a terminal
-./radicle-seed-prune --apply --yes    # apply without the prompt (scripts, cron)
-./radicle-seed-prune --apply --force  # apply even if the plan trips a runaway cap or the ratchet
-./radicle-seed-prune --apply --restart-node  # ...and restart the node afterwards
-./radicle-seed-prune --block-peers    # block what rule G found, one [y/N] per peer; prunes nothing
-./radicle-seed-prune --version
-```
+Rules E and F read the contents of every repo, which is most of a run. Almost nothing changes from one weekly run to the next, so what those two rules read is kept in `$AUDIT_DIR/cache`. A repo is reused from the cache when both its refs and its size on disk are identical to what the run that wrote that entry saw; if either has moved, the repo is read again.
 
-**There is no `--dry-run` flag, because running with no flags is the dry run.** `--apply` scans once, prints that same plan, then asks `[y/N]` in a terminal and just applies when there is nobody to ask (cron, a pipe). One scan, not two.
+On a seed of 11,221 repos and 270 GB on six cores, a first run takes about 10 minutes and the next one about 3, reusing 11,218 repos and producing the same plan.
 
-`--block-peers` is its own action and does not imply `--apply`: blocking a peer and pruning repos are separate decisions, and nobody should have to delete five hundred repos to deal with one peer. Combine them if you mean to. It needs a terminal and refuses outright without one, because a block is permanent, hits every repo at once, and the person blocked is never told: it is the one act here that always has a human answering for it, per peer.
-
-Read the preview first. It is sorted largest-first and totals the disk it will free. The script's own header is the full reference; `--help` prints it.
-
-Every knob is an environment variable rather than a flag, so a run is configured the way `rad` itself is:
-
-```sh
-RAD_HOME=/var/lib/radicle ./radicle-seed-prune          # a seed home that isn't yours
-RAD=/nix/store/.../bin/rad ./radicle-seed-prune         # a specific rad binary
-```
-
-### Example output
-
-A dry run against radicle.at, 11,201 repos:
-
-```
-# radicle-seed-prune 0.4.0  2026-08-12T04:40:21Z   mode=DRY-RUN
-# home=/home/seed/.radicle
-# disk: 126.7GB free (47.0%)  pressure=0% [relax>=54GB crit<=2GB]
-# rules: A junk(>30d, seeds>=1; id-names seeds>=0)  B size(>500MB & >=P95, >90d, seeds>=3)  C stale(>730d, seeds>=3)  D spam(batch>=5 & desc>=80%, >7d, seeds>=0)
-# rule E link-farm(>=5 spam domains, each linked from >=0.4% of repos and from the code of <10% of them, >7d, seeds>=0)
-# rule F media-dump(>=64KB of media and <2048B of anything else, >7d, seeds>=1)  media-batch(that media held by >=5 repos, <65536B of anything else)
-# rule G parasite-peer(one file of theirs in >=10 repos they do not own, >=1MB media, <16384B of anything else) [reports only; --block-peers asks per peer]
-# excluded: 9 pinned, 6 private, 0 own
-# spam batches: 10 template(s) matching 447 repos, before the age and seed checks:
-#      54  evens-*-*
-#      51  maximum-*-*
-#      51  palindrome-*-*
-#      46  table-*-*
-#      45  sum-*-*
-#   ...and 5 more
-# spam domains: 94 domain(s) linked from >=44 repos, <10% from code;
-#   492 repo(s) link to >=5 of them, before the age and seed checks:
-#     424 repos  twimg.com
-#     331 repos  eporner.com
-#     307 repos  arweave.net
-#     305 repos  erome.com
-#     295 repos  xhcdn.com
-#   ...and 89 more
-# rule E: 43 repo(s) spared, the spam links were pushed by peers that are not their delegates
-# repos=11201  sizes P50=0M P90=10M P95=33M P99=197M rel-cut(P95)=33M  abs-cut=500M
-# skipped: 0 unreadable, 148 written in the last 2d, 1 with no readable refs
-
-RID                                     SIZE  SEEDS   AGE(d) REASON        NAME
-zWXBqhnxmmtBpPZppF8tuPibu2uj         330.8MB     13      190 media-dump    PlayDrive
-z38ronZYeFMEXt3u9hQoP9CVoZuuE        192.7MB      8      190 media-dump    TheLawsOfTheSun
-z2sp67tHWdRWEqpiM4JQt19e6sgeH         50.5MB     14      186 media-dump    init
-zb2CDSi4vm1oVSbUcoovxTjx7P4z          44.5MB     15      190 media-dump    TheKogiHug
-z3fJS3VmUubTjvfVw8uRBa9Y8XWzu         42.1MB     18      242 media-dump    chatgpt-oai-zips
-z2y5Mxx4oiuE6y7jjj9nm3Tgk36rZ         30.8MB      5      190 media-dump    VectorEquilibrium
-zeF3SFbEZmst3EJu7T5vEHhwjrcv          28.6MB      3      733 stale         IGNORE-THIS
-z4EXRiEPNWyDzCZP4jG3edpWXQxJE         21.8MB      7      539 media-dump    rad.levitte.org
-z2yCHwsgUM216J6AVCd9Abio49JkC         12.3MB      9      183 media-dump    init
-[... 18 more single-repo rows ...]
-z2caBEEpVSqZQhDeRpuS3qr8EX72o         74.0KB      7       30 junk-name     fc-radicle-demo
-z7BN4ZDgGGY8SyKvfVZSr36mqvKg          73.9KB     12       30 junk-name     gro-test
-(436 repos)                           49.8MB                 spam-batch    same pattern across many repos; PLAN_FULL=1 lists them
-(35 repos)                           413.7MB                 link-farm     same pattern across many repos; PLAN_FULL=1 lists them
-(23 repos)                             1.3GB                 media-batch   same pattern across many repos; PLAN_FULL=1 lists them
-
-# PLAN: prune 523 repos, 2.52 GiB (quarantined 30d, so the disk comes back then)
-#   junk-name         3 repos      0.00 GiB
-#   link-farm        35 repos      0.40 GiB
-#   media-batch      23 repos      1.29 GiB
-#   media-dump       23 repos      0.75 GiB
-#   spam-batch      436 repos      0.05 GiB
-#   stale             3 repos      0.03 GiB
-# DRY-RUN: nothing changed. Re-run with --apply to execute.
-```
-
-Top to bottom: free disk and the pressure it produces, the thresholds **actually in effect at that pressure**, what was excluded, what each spam rule found, the size distribution rule B draws its percentile from, and what the run left alone. Then the plan, largest-first, with a total per reason.
-
-**The plan is grouped and folded.** A verdict resting on a corpus (`spam-batch`, `link-farm`, `media-batch`: the same template, domain or file across many repos) folds to a single summary line once its group reaches `PLAN_COLLAPSE_ROWS` (20), because five hundred near-identical rows bury the ones that matter. A verdict resting on one repo's own metadata is always listed in full however many there are: those are the rows that need human eyes. On the real seed this turns 523 rows into 32. `PLAN_FULL=1` lists everything.
-
-`AGE(d)` is the age the matching rule measured: days since last activity for A, B and C, days since creation for D, E and F. Progress lines go to stderr, the plan to stdout, so `> plan.txt` keeps them apart.
-
-`spam-batch` frees little disk and is still worth it: each of those repos is an entry the node announces, fetches and re-announces forever, and a row in every listing you read.
-
-### Exit codes
-
-| Code | Meaning                                                                                                                              |
-| ---- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `0`  | Success, including a dry run and an `--apply` you declined at the prompt                                                             |
-| `1`  | Storage missing or unreadable, or an unexpected failure (the run prints the line and the command)                                    |
-| `2`  | Bad argument                                                                                                                         |
-| `3`  | The plan tripped a runaway cap or the history ratchet. Read it, then re-run with `--force`                                           |
-| `5`  | Refused to guess: node unreachable, NID unknown, routing table empty, exclusions unreadable, or too much of storage could not be read |
-
-Exit 5 always means it could not see enough to be trusted, never that there was nothing to do. Nothing was touched.
+The whole cache is dropped whenever the script file or the environment it reads changes, so a threshold you have just tuned never leaves last week's verdicts standing. `CACHE=0` reads every repo on every run; deleting the cache directory forces one full re-read, after which caching resumes.
 
 ## Configuration
 
@@ -250,7 +280,7 @@ Every knob is an environment variable. Defaults shown.
 | -------- | --------- | --------------------------------------------------------------------------------------------- |
 | `RULES`  | `ABCDEFG` | The rules that run; a letter absent from it means that rule neither scans nor plans anything |
 
-`RULES=`, set but empty, means no rules at all, not the default set. The older per-rule switches (`LINK_SCAN=0`, `MEDIA_SCAN=0`, `PARASITE_SCAN=0`, and disabling rule D by sentinel) still work.
+`RULES=`, set but empty, means no rules at all, not the default set.
 
 **Where it runs**
 
@@ -279,7 +309,7 @@ Every knob is an environment variable. Defaults shown.
 | D    | `SPAM_MIN_BATCH`     | `5`       | Repos sharing a name skeleton before it counts as a batch              |
 | D    | `SPAM_DESC_AGREE_PCT` | `80`      | Share of that batch that must agree on one description skeleton        |
 | D    | `SPAM_REQUIRE_ID`     | `1`       | Demand a random-id slot in the name skeleton (`0` is looser)            |
-| D    | `SPAM_STALE_DAYS`     | `7`       | Age since creation, a grace period rather than evidence                 |
+| D    | `SPAM_STALE_DAYS`     | `7`       | Age since creation                                                      |
 | D    | `SPAM_MIN_SEEDS`      | `0`       | Other seeds required; `0` may take the last copy we know of             |
 | E    | `LINK_MIN_REPOS_PCT`  | `0.4`     | Share of storage that must link to a host before it can be a spam host  |
 | E    | `LINK_MIN_REPOS`      | `8`       | Absolute floor under that share                                         |
@@ -287,16 +317,16 @@ Every knob is an environment variable. Defaults shown.
 | E    | `LINK_REPO_BUDGET`    | `8000000` | Bytes read per repo, per pass                                          |
 | E    | `LINK_MIN_SCORE`      | `5`       | Spam domains a repo must link to before it is flagged                   |
 | E    | `LINK_DELEGATE_CHECK` | `1`       | Count only links from the repo's own delegates (`0` is faster, unsafe)  |
-| E    | `LINK_STALE_DAYS`     | `7`       | Age since creation, a grace period rather than evidence                 |
+| E    | `LINK_STALE_DAYS`     | `7`       | Age since creation                                                      |
 | E    | `LINK_MIN_SEEDS`      | `0`       | Other seeds required; `0` may take the last copy we know of             |
 | F    | `MEDIA_MIN_BYTES`     | `65536`   | Media bytes below which a repo is not worth judging                     |
 | F    | `MEDIA_TEXT_MAX_BYTES`| `2048`    | Everything that is not media, added up, must stay under this            |
-| F    | `MEDIA_STALE_DAYS`    | `7`       | Age since creation, a grace period rather than evidence                 |
+| F    | `MEDIA_STALE_DAYS`    | `7`       | Age since creation                                                      |
 | F    | `MEDIA_MIN_SEEDS`     | `1`       | Other seeds required; `1` keeps the last copy we know of                |
 | F    | `MEDIA_MIN_BATCH`     | `5`       | Repos holding one media file, byte for byte, to call it a campaign      |
 | F    | `MEDIA_TEXT_CEIL_BYTES`| `65536`  | The batch path's wider budget for everything that is not media          |
 | F    | `MEDIA_MAX_REFS`      | `10000`   | Refs above which a repo is too costly to read, so it goes unjudged      |
-| F    | `MEDIA_EXTS`          | see below | Extensions judged as media                                             |
+| F    | `MEDIA_EXTS`          | images, video, audio, archives | `\|`-separated extensions judged as media       |
 | G    | `PARASITE_MIN_REPOS`  | `10`      | Non-delegated repos one file of a peer's must reach, byte for byte      |
 | G    | `PARASITE_MIN_BYTES`  | `1048576` | Media bytes required across those repos (1 MiB)                         |
 | G    | `PARASITE_TEXT_MAX_BYTES` | `16384` | Text budget anywhere in storage; a peer who writes is a contributor   |
@@ -319,9 +349,13 @@ Every knob is an environment variable. Defaults shown.
 | Variable             | Default | Meaning                                                                    |
 | -------------------- | ------- | -------------------------------------------------------------------------- |
 | `QUARANTINE`         | `1`     | Quarantine pruned repos instead of deleting (`0` deletes, with no way back) |
-| `QUARANTINE_DAYS`    | `30`    | Days a quarantined repo stays recoverable before a later run purges it     |
+| `QUARANTINE_DAYS`    | `7`     | Days a quarantined repo stays recoverable before a later run purges it     |
+| `KEEP_FILE`          | `$AUDIT_DIR/keep.txt` | Repos excluded from every rule, one id per line; `quarantine restore` appends to it |
+| `CACHE`              | `1`     | Reuse rules E and F's reading of repos that have not changed (`0` reads everything, every run) |
+| `CACHE_DIR`          | `$AUDIT_DIR/cache` | Where that reading is kept                                      |
 | `PLAN_COLLAPSE_ROWS` | `20`    | Group size at which a corpus verdict folds to one summary line             |
 | `PLAN_FULL`          | `0`     | `1` lists every plan row, however large the group                          |
+| `NEAR_PCT`           | `20`    | A row's `NEAR` column names any threshold it cleared by less than this share of the threshold; `0` marks nothing |
 
 **Disk pressure** ([what it does](#disk-pressure))
 
@@ -330,7 +364,7 @@ Every knob is an environment variable. Defaults shown.
 | `DISK_AWARE`                               | `1`         | Scale thresholds with free disk (`0` to disable) |
 | `PRESSURE_RELAX_PCT` / `PRESSURE_RELAX_GB` | `20` / `20` | Above this much free: no pressure                |
 | `PRESSURE_CRIT_PCT` / `PRESSURE_CRIT_GB`   | `10` / `2`  | At/below `min()` of these: full pressure         |
-| `*_AGG`, e.g. `STALE_YEARS_DAYS_AGG`       | see below   | Full-pressure endpoint for each knob that scales |
+| `*_AGG`, e.g. `STALE_YEARS_DAYS_AGG`       | per knob    | Full-pressure endpoint for each knob that scales (defaults in the script, next to the knob) |
 
 ```sh
 # example: only chase the giants, leave everything else
@@ -339,7 +373,7 @@ ABS_SIZE_FLOOR_MB=1000 STALE_YEARS_DAYS=99999 ./radicle-seed-prune
 
 ## Run it on a schedule
 
-After a reviewed first run, a weekly cron keeps the seed trimmed. Deltas are small, so no restart is needed, and leaving out `--force` keeps the runaway caps and the history ratchet active as a safety net.
+After a reviewed first run, a weekly cron keeps the seed trimmed; leaving out `--force` keeps the runaway caps and the ratchet active.
 
 Cron runs with a minimal environment, so `HOME` and `PATH` have to be spelled out. Substitute the user your node runs as:
 
@@ -351,14 +385,18 @@ SHELL=/bin/sh
 
 Point `RAD_HOME` at the node's home instead if it does not live at `$HOME/.radicle`.
 
+To have the same job act on rule G as well, add `--block-peers --yes`. That blocks every peer the rule names, with nobody reviewing it, so only do it once you have watched a few runs name nobody.
+
 ## Audit trail
 
-Anything this tool actually does is written to `$RAD_HOME/prune-audit/` (default `~/.radicle/prune-audit/`). For a dry run that is the creation-date ledger and nothing else:
+Anything this tool does is written to `$RAD_HOME/prune-audit/` (default `~/.radicle/prune-audit/`). A dry run writes only the creation-date ledger and the scan cache:
 
-- **`prune-<UTC-timestamp>.log`**: one file per acting run, every repo removed, tab-separated as rid, size, other-seed count, last activity, reason, name, and the date the matching rule measured. Self-describing header on top. Peer blocks made under `--block-peers` are recorded here too, with the evidence behind each.
-- **`quarantine/<rid>`**: every pruned repo, held for `QUARANTINE_DAYS` before a later run purges it.
+- **`prune-<UTC-timestamp>.log`**: one file per acting run: every repo removed, tab-separated (rid, size, other-seed count, last activity, reason, name, the date the matching rule measured, any threshold that repo only just cleared), plus peer blocks made under `--block-peers` with the evidence behind each.
+- **`quarantine/<rid>`**: every pruned repo, held for `QUARANTINE_DAYS` ([more](#quarantine)).
+- **`keep.txt`**: repos excluded from every rule, one id per line, editable by hand; `quarantine restore` appends to it.
+- **`cache/`**: what rules E and F last read out of each repo. Safe to delete at any time; the next run reads everything again.
 - **`history.log`**: append-only, one line per applied run: timestamp, repos pruned, GiB moved out of storage, whether the quarantine was on, disk pressure. The history ratchet reads this file.
-- **`cron.log`**: with the cron above, the full console output of every run.
+- **`cron.log`**: with the cron recipe above, the full console output of every run.
 - **`first-seen.tsv`**: the creation-date ledger rules D, E and F read. Written on every run, dry or not.
 
 ```sh
@@ -368,117 +406,79 @@ cat  ~/.radicle/prune-audit/prune-2026*.log          # exact repos removed, with
 
 ## Rule D: spam batches
 
-A **spam batch** is a batch of repos one script stamped out from a single template: the same name shape with a slot filled in, the same description with a number swapped. They arrive by the hundred and cost the seed an inventory entry each.
+A **spam batch** is a batch of repos one script stamped out from a single template: the same name shape with a slot filled in, the same description with a number swapped. Rule D is decided by the corpus, never by a single repo.
 
-One repo called `flatten-2-33ed7115` described as *"Flatten a nested array. Variant 2."* could be anybody's scratch work. A hundred of them is a generator. So rule D is decided by the corpus, never by a single repo.
+Every name and description in storage is *skeletonised*: digit runs become `#`, random-id tokens (6+ hex characters carrying both a letter and a digit) become `%`, so `example-2-3a9f81c2` becomes `example-#-%`. Repos are grouped by that skeleton with `#` and `%` collapsed into one wildcard (`example-*-*`), and a group is a spam batch only when all of:
 
-Every name and description in storage is *skeletonised*: digit runs become `#`, random-id tokens (6+ hex characters carrying both a letter and a digit) become `%`. `flatten-2-33ed7115` becomes `flatten-#-%`. Repos are grouped by that skeleton with `#` and `%` collapsed into one wildcard, so `flatten-*-*`, and a group is a spam batch only when all of:
+1. the skeleton has at least one wildcard in it, so repos that simply share a fixed name are not a template;
+2. at least `SPAM_MIN_BATCH` repos share the skeleton;
+3. at least one of them carries a **random-id** slot rather than a plain enumeration (`SPAM_REQUIRE_ID=0` drops this);
+4. at least `SPAM_DESC_AGREE_PCT`% of them share **one** non-empty description skeleton.
 
-1. at least `SPAM_MIN_BATCH` repos share the skeleton;
-2. at least one of them carries a **random-id** slot rather than a plain enumeration (`SPAM_REQUIRE_ID=0` drops this);
-3. at least `SPAM_DESC_AGREE_PCT`% of them share **one** non-empty description skeleton.
+Only the members carrying the agreed description are pruned; repos with no description at all are never flagged. Descriptions differing only by a number count as agreeing.
 
-Only the members carrying that agreed description are pruned, so a genuine repo that happens to share the name shape is left alone. Collapsing `#` and `%` for grouping matters because a random hex token comes out all-digits about 2% of the time (`chunk-1-96180521`), which would otherwise split a batch and strand those siblings.
-
-**Two independent signals are required: the name shape and the description.** On a real 11,151-repo seed the rule flags 442 repos in 10 batches and nothing else. The description agreement does that work, not the batch size: on the same corpus, dropping `SPAM_MIN_BATCH` to 3 finds the same 10 batches and one repo more. What it leaves alone there:
-
-- a 240-repo hardware-driver mirror import, one repo per board: one name skeleton, but every repo carries its own real description;
-- a 427-repo set with one repo per standard code, likewise;
-- 48 unrelated repos sharing one migration note as their description while their names have nothing in common.
-
-The random-id requirement is the third guard. A version or enumeration slot (`mainline-6.1.y`, `release-202401`) means something to a human; an 8-hex-char token does not. Demanding both a letter and a digit in that token keeps a date or sequence suffix on the enumeration side of the line. Turning the requirement off is looser and can reach a version-mirror farm whose descriptions are also templated.
-
-Noteworthy:
-
-- **Timing is not a signal.** On a real seed the legitimate 240-repo mirror import spans `0.00` days of activity while the spam batch spans `14.8`. "Created in a burst" would flag the mirror and miss the spam.
-- **Descriptions differing only by a number count as agreeing**, since *"Variant 2"* vs *"Variant 3"* is the signature being hunted. A set whose descriptions differ only by a version number therefore rests entirely on the random-id requirement.
-
-Repos with no description at all are never flagged: one signal is not enough.
+On a real seed of about 11,200 repos the rule flags 442 repos in 10 batches and nothing else, leaving large mirror imports alone.
 
 ## Rule E: link farms
 
-A **link farm** is a repo published to carry links rather than code. Whatever files it has are a wrapper around the address it wants traffic sent to, and somebody is paid per visitor who arrives there. The repo is the billboard, not the product.
+A **link farm** is a repo published to carry links rather than code. Rule E matches on the addresses a repo points its readers at, so it also reaches a spammer who injects links into a clone of a real project.
 
-A generator changes its naming scheme in one line, which is how a link farm escapes rule D. It cannot change the address and still get paid, which is what rule E matches on. That also reaches a spammer who clones real projects and injects links into the copies: real names, real files, real history, and the injected links still land on domains nobody's code uses.
-
-Every hostname mentioned anywhere in every repo is collected, from committed files, issues, patches and comments alike, then folded to its **registrable domain**. A domain is a **spam domain** when both hold:
+Every hostname mentioned anywhere in every repo (committed files, issues, patches, comments) is folded to its **registrable domain**. A domain is a **spam domain** when both hold:
 
 1. at least `LINK_MIN_REPOS_PCT`% of the repos on the seed link to it, and at least `LINK_MIN_REPOS` of them;
 2. fewer than `LINK_CODE_MAX_PCT`% of those repos link to it *from their own code*, meaning from a file reachable from a branch or tag.
 
-A repo is flagged when **its own delegates** link it to at least `LINK_MIN_SCORE` spam domains, it is older than `LINK_STALE_DAYS`, and it has at least `LINK_MIN_SEEDS` other seeds.
+A repo is flagged when **its own delegates** link it to at least `LINK_MIN_SCORE` spam domains, the repo is older than `LINK_STALE_DAYS`, and at least `LINK_MIN_SEEDS` other seeds hold it. Only links pushed by the repo's delegates count, so a stranger opening spam issues on somebody's repo cannot get that repo deleted, and a repo whose delegate list cannot be read is dropped from the plan rather than judged.
 
-Both counts are recomputed from storage on every run, so **there is no blocklist to maintain**. A spammer who registers ten new domains gains nothing the moment enough of their repos link to them.
+Both counts are recomputed from storage on every run, so there is no blocklist to maintain.
 
-**Condition 2 is what keeps ordinary dependencies out.** On a real seed 197 repos link to `github.com`, clearing condition 1 easily, and 196 of them have it in a README or in source, so it fails condition 2. A site the spam exists to advertise has no such repos behind it: plenty of repos link to it, none of their code uses it.
+A code link is ignored in condition 2 when the repo it comes from is itself suspect, so that a farm cannot vouch for the domain it sells. A repo counts as suspect when rule D calls it generated, or when it would already qualify as a link farm under a looser version of condition 2 (`LINK_CODE_LOOSE_PCT`, 50%, in place of `LINK_CODE_MAX_PCT`). Turning rule D off leaves rule E with a shorter suspect list.
 
-**Why a percentage and not "no repo at all".** Publishing one repo whose README links to a domain is free, and under an all-or-nothing test that single repo would immunise it for the whole seed, permanently. The two populations sit nowhere near the threshold. Measured per hostname on a real seed: 68 spam hosts at 0%, every ordinary host above 98% (`github.com` 99.5%, `gnu.org` 100%, `w3.org` 98.6%). The one in between was `upload.wikimedia.org` at 1.6%, where 62 repos link to it, 61 spam hotlinking images and one a genuine project. It stays spam, and that project earns 1 point against a bar of `LINK_MIN_SCORE`.
-
-**Why the code count ignores some repos.** A spammer with a hundred repos could commit their own link into ten of them and push the domain over `LINK_CODE_MAX_PCT` using repos they already have. So the count runs in two passes. Pass 1 marks a repo *suspect* if rule D already calls it generated, or if it reaches `LINK_MIN_SCORE` against the same domain test run at the looser `LINK_CODE_LOOSE_PCT` (50%). Pass 2 is the real test, and a code link from a suspect repo does not count. Condition 1 still counts every repo on purpose: those repos are exactly what makes a spam domain stand out.
-
-**Why only the repo's own delegates count.** Any peer can push an issue or a comment to any public repo, and it lands in that repo's storage here. Counting a stranger's links as the repo's own would let anybody get somebody else's repo deleted by opening five spam issues on it. So every repo that scores is re-read across the refs its delegates control (the canonical branches, plus each delegate's namespace) and keeps its score only if it survives there. A repo whose delegates cannot be read leaves the plan. Conditions 1 and 2 still count every peer's content: a domain a stranger pastes into a thousand repos is a spam domain, whoever pasted it.
-
-**Why registrable domains and not hostnames.** A wildcard DNS record and one subdomain per repo would otherwise hold every name under condition 1 for free. The cost is that a shared platform (a blog host, an image host) is judged as one domain, and condition 2 is what protects the ones real projects actually use.
-
-**What it costs.** Rule E reads file content. On an 11,151-repo seed its harvest takes about 4 minutes of a 9-minute dry run with 5 workers, which is also about what rule F costs. Reads are capped per blob (`LINK_BLOB_PREFIX`, 65536 bytes) and per repo (`LINK_REPO_BUDGET`, 8000000 bytes per pass), and the caps truncate rather than skip a blob, so a link near the start of a large file is still seen. Reaching a cap is normal on a large repo and does not exclude it.
-
-**Known limit.** A spammer can still disqualify a domain, but only with repos neither pass marks suspect: individually named, individually described, each linking to that one domain and nothing else, and enough of them to reach `LINK_CODE_MAX_PCT` of its linkers. That is one such repo for every ten that link to the domain, paid again for every new domain, and they have to be hand-made rather than generated. Rule E does not stop that, it only makes it expensive.
-
-Rule E leans on rule D for one thing: rule D's batch list is one of the two ways a repo gets marked suspect. Turning rule D off leaves rule E working with a weaker suspect list.
+Rule E reads file content, capped per blob (`LINK_BLOB_PREFIX`, 65536 bytes) and per repo (`LINK_REPO_BUDGET`); a blob past the cap is read up to the cap rather than skipped. On the ~11,200-repo seed above it takes about 4 minutes of a 9-minute uncached dry run with 5 workers.
 
 ## Rule F: media dumps
 
-A **media dump** is a repo whose files are video, images or audio with no project around them. Radicle storage exists for collaborating on code, and a repo holding one `.mp4` and nothing else is using the seed as free file hosting. The spam wave does exactly that, and the files are often ones you would not want your seed serving.
+A **media dump** is a repo whose files are video, images or audio with no project around them, using the seed as free file hosting.
 
 A repo is flagged when all of:
 
 1. it carries at least `MEDIA_MIN_BYTES` (64 KiB) of media;
 2. everything that is *not* media adds up to less than `MEDIA_TEXT_MAX_BYTES` (2048);
-3. it is older than `MEDIA_STALE_DAYS` (7d, since creation, the same clock rules D and E use, and not backdatable);
+3. it is older than `MEDIA_STALE_DAYS` (7d, since creation);
 4. it has at least `MEDIA_MIN_SEEDS` (1) other seeds.
 
-**Condition 2 is what tells a dump from a real repo that holds media.** A game, a design system or a documented photo archive has a README, a licence, a manifest or a build file, and clears the text budget many times over. A repo carrying a video has nothing else at all. The budget is in bytes rather than files so that one 40-byte placeholder cannot buy an exemption.
+What a file *is* decides, not what it is called. Extensions (`MEDIA_EXTS`, `MEDIA_TEXT_EXTS`, `MEDIA_TEXT_NAMES`) are only a fast path: an unrecognised file has its first 16 bytes matched against media signatures, so renaming a video to `.dat` does not hide it. Archives (zip, gzip, rar, 7z) count as media; a file matching no signature counts as text and spares the repo. Reading is capped at `MEDIA_SNIFF_MAX_FILES` (200) per repo, and files past the cap count as text.
 
-**What a file is decides, not what it is called.** Extensions (`MEDIA_EXTS`, `MEDIA_TEXT_EXTS`, `MEDIA_TEXT_NAMES`) are only a fast path. A file on neither list is read, just its first 16 bytes, and matched against a table of media signatures, so renaming a video to `.dat` does not hide it. Archives (zip, gzip, rar, 7z) count as media too, because zipping a video is a one-command evasion; the cost is that a repo holding a release tarball and nothing else reads as a dump, which the seed floor bounds. A file matching no signature counts as text and spares the repo. A recognised *text* file over `MEDIA_SNIFF_TEXT_BYTES` (256 KiB) is read too, or a video called `README.md` would both hide itself and blow the budget that spares the repo. Reading is capped at `MEDIA_SNIFF_MAX_FILES` (200) per repo, and only happens while the repo could still be a dump. Files past that cap count as text, so a repo with more unrecognised files than the cap is spared rather than judged on a sample.
+Only the repo's own content counts: the canonical branches and tags, plus the namespaces of the delegates named in `refs/rad/id`, including the delegates' issues and comments across a COB's whole history. Every other peer's namespace is ignored, so a stranger pushing a video onto somebody's repo cannot put that repo in the plan.
 
-**Only the repo's own content counts.** That means the canonical branches and tags, plus the namespaces of the delegates named in `refs/rad/id`, a ref the local node writes only after verifying the identity document's signatures. The delegates' own issues and comments count too, because a dump hides as well in an attachment as in a commit, and a COB is read across its whole history, so an attachment from an older comment is still on disk and still counts. Every other peer's namespace is ignored entirely: a stranger pushing a video onto your near-empty repo cannot put *your* repo in the plan, because their namespace is never counted. Ignoring beats subtracting what those namespaces hold, which an earlier design tried: replicating a repo mirrors its own branches *and* its COB refs into every peer that seeds it, so subtracting on "a stranger holds this too" erased the repo's own README, lockfile and issue payloads and left a media-shaped remainder. Hand review caught a real company website mis-flagged exactly that way, and it was fixed by ignoring the namespaces outright.
+A branch or tag is read at its tip, so media committed and then deleted in a later commit is missed. A repo whose listing dies part-way, or with more than `MEDIA_MAX_REFS` (10000) refs, is left unjudged.
 
-**What is left unread, and which way that errs.** A branch or tag is read at its tip, so media committed and then deleted in a later commit is missed: walking every branch's history would cost far more and would count against a repo that legitimately dropped a big asset years ago. The walk stops the moment a repo's text passes the wider of the two budgets, since nothing still unread can change the answer: on a mirror of a real project that is the first few files out of a million. A repo whose listing dies part-way is left unjudged, because the fragment reads as a repo holding less text, and less text is the direction that condemns. So is a repo with more than `MEDIA_MAX_REFS` (10000) refs: reading every peer's refs is what this rule costs, and one repo on an 11k-repo seed has 152k of them, minutes of walking to learn that a repo half the network replicates is not a dump.
+A token README is enough to put a repo over the text budget above. The **batch path** reaches such a repo anyway: it is flagged `media-batch` when it meets conditions 1, 3 and 4 above, *and*:
 
-**A token README defeats the budget**, and nothing measurable about *one* repo can tell it from a small real project's README: they are the same bytes. A ratio does not help, because a 40 MB dump and a 40 MB photo archive, each behind a 2 KB README, are both 99.99% media.
+- at least `MEDIA_MIN_BYTES` of its media sits in files that `MEDIA_MIN_BATCH` (5) or more repos in storage also hold, byte for byte, and that this repo was not the first to hold (first by the creation-date ledger);
+- everything that is not media adds up to less than `MEDIA_TEXT_CEIL_BYTES` (64 KiB), the wider budget.
 
-That is what the **batch path** is for. Publishing the same files across many repos is evidence no single repo can manufacture, so where it exists the text budget widens and the fig leaf stops working. A repo is flagged `media-batch` when it meets conditions 1, 3 and 4 above, *and*:
+A dump that no other node announces is listed under `# review:` for a human to look at, rather than pruned. `MEDIA_MIN_SEEDS=0` sets that floor to zero, which lets rule F take the last copy this seed knows of.
 
-- at least `MEDIA_MIN_BYTES` of its media sits in files that `MEDIA_MIN_BATCH` (5) or more repos in storage also hold, byte for byte, and that this repo was not the first to hold. The first holder is left out of its own batch, or reposting somebody's photos into five repos of your own would put *their* repo in the plan. First is by the creation-date ledger, the one date a pusher cannot backdate, so on a seed whose ledger starts today the exemption falls to whichever repo sorts first until the ledger has some history;
-- everything that is not media adds up to less than `MEDIA_TEXT_CEIL_BYTES` (64 KiB), the wider budget. A README big enough to clear *that* is a document rather than a fig leaf, and spares the repo either way.
-
-**A dump no other node seeds is listed, not pruned.** Rule F's evidence is about one repo, weaker than a corpus of identical repos or a paid link, so unlike `spam-batch` and `link-farm` it keeps the last copy we know of. Those repos are printed under `# review:` rather than passed over, so the floor cannot quietly become a hiding place for anyone who makes sure nobody else seeds their dump. `MEDIA_MIN_SEEDS=0` drops the floor.
-
-**What it costs.** Rule F lists every file of every repo, so it is one of the two slow phases. On an 11,151-repo seed it takes about 4 minutes of a 9-minute dry run with 5 workers, roughly what rule E costs. Most of that is the short circuit doing its job: without it one mirror of a large project took 26 minutes on its own, because the walk read half a million files to learn what its first source file had already settled.
-
-**Known limit.** A distinct, plausible README over distinct media, per repo, still evades rule F. At that point nothing separates the repo from a small real archive, and the tool spares it. Rule F prices the dump rather than stopping it, and an actor who pays that price across many repos becomes visible to rule D instead. An actor who dumps into *other people's* repos instead of publishing their own is what rule G is for.
+Rule F lists every file of every repo, which is another 4 minutes of that same 9-minute uncached dry run.
 
 ## Rule G: parasite peers
 
-A **parasite peer** uses other people's repos as its file hosting: it pushes its files into the storage of repos it does not own, where no repo rule can reach them, because each repo, judged on its own content, is fine. Rule G judges the **peer**, and prunes nothing.
+A **parasite peer** uses other people's repos as its file hosting: its files sit in the storage of repos it does not own, where no repo rule can reach them. Rule G judges the **peer**, and prunes nothing.
 
 A peer is named when all of:
 
-1. one file of theirs, byte for byte, sits in at least `PARASITE_MIN_REPOS` (10) repos they do not delegate and whose own refs do not hold it;
-2. at least `PARASITE_MIN_BYTES` (1 MiB) of media sits across those repos;
-3. under `PARASITE_TEXT_MAX_BYTES` (16 KiB) of anything else, anywhere: a peer who writes is a contributor.
+1. one single file of the peer's own, matched byte for byte, sits in at least `PARASITE_MIN_REPOS` (10) repos that the peer does not delegate and whose own refs do not hold that file;
+2. the peer's media across those repos adds up to at least `PARASITE_MIN_BYTES` (1 MiB);
+3. everything the peer has pushed anywhere in storage that is *not* media adds up to less than `PARASITE_TEXT_MAX_BYTES` (16 KiB), because a peer who writes anything is a contributor.
 
-**The identical file is the evidence; the byte totals only corroborate it.** Totals alone are deliberately not enough, because someone active across many repos accumulates megabytes honestly. A person attaching a screenshot to an issue posts a different file each time; the same object id turning up in unrelated repos does not happen by accident.
+A delegate of any repo in storage is never accused, and neither is this node itself.
 
-**A delegate of any repo in storage is never accused, and neither is this node itself.** The node runs delegate refs through the same block list before checking the signature threshold, so blocking a delegate stops the repos they own from replicating.
+Blocking is never a side effect of a prune: the plan prints the exact `rad block <nid>` line for each peer rule G names, `--block-peers` raises a prompt per peer, and `--block-peers --yes` answers those prompts in an unattended run ([usage](#usage)). Each block is written to the audit log with the evidence behind it. Dropping a blocked peer's refs frees no disk until `git gc` runs, and this tool never runs `git gc`, so the run counts none of those bytes as reclaimed.
 
-**The act is separate from the finding, and is never automated.** A block is permanent, applies to every repo at once, and the person blocked is never told. So the plan always prints the exact `rad block <nid>` line for each peer it names, letting an operator act on one peer without handing the tool a standing licence over the whole list, and `--block-peers`, which is an action in its own right and does not imply `--apply`, refuses outright when there is no terminal and asks again per peer when there is. Each block is written to the audit log with the evidence behind it.
+On the seed the defaults were tuned against, the rule names nobody across all ~11,200 repos.
 
-Blocking is what makes it stick: the node filters every namespaced ref it receives through the block list whatever its seeding scope is, verified against the heartwood source at the node's own build, so refs dropped here do not come back. Dropping a peer's refs frees no disk until `git gc` runs, which this tool does not do, so nothing rule G does is counted as reclaimed.
-
-On radicle.at the rule names nobody at all across 11,200 repos. That is the intended resting state: it is tuned to stay silent until something is unmistakable, not to produce a weekly list.
-
-`PARASITE_SCAN=0` (or a `RULES` without `G`) turns it off.
+A `RULES` without `G` turns it off.
 
 ## Development
 
@@ -486,37 +486,35 @@ On radicle.at the rule names nobody at all across 11,200 repos. That is the inte
 bash tests/run.sh
 ```
 
-Needs only `bash`, `git` and coreutils. It builds a hermetic fixture (a throwaway Radicle home, a `rad` stub on `PATH`, real bare git repos with controlled dates and sizes) and runs the real script against it, so it never reads or writes the real node. See [`CHANGELOG.md`](./CHANGELOG.md) for release history.
+Needs only `bash`, `git` and coreutils. It builds a hermetic fixture and runs the real script against it, so it never reads or writes the real node. See [`CHANGELOG.md`](./CHANGELOG.md) for release history.
 
 ## Support
 
-If this kept your seed clean and saved you some disk space, some time, and a few bucks on your VPS bill, please support me:
+If this kept your seed clean and saved you a few bucks on your VPS bill:
 
 - 💛 Chip in on [Liberapay](https://liberapay.com/maninak/donate) with a micro-donation, if you can comfortably spare it.
 - 🌱 Seed this repo on [Radicle](https://app.radicle.at/nodes/seed.radicle.at/rad:zxvTkxzouwrYFwycnsctrMT3iM2E) and ⭐ star it on [GitHub](https://github.com/maninak/radicle-seed-prune).
 - 🗣️ Tell a fellow seed operator, or open an issue with ideas and edge cases you hit.
 
-[![Sponsor maninak on Liberapay](https://img.shields.io/badge/Liberapay-Donate-F6C915?logo=liberapay&logoColor=black)](https://liberapay.com/maninak/donate)
-
 ## Commercial use
 
-The license is noncommercial, and the intent behind it is narrow: keep the script from being repackaged and sold. It is not meant to get in the way of anyone running a seed.
+The license is noncommercial; the intent is to keep the script from being repackaged and sold, not to get in the way of anyone running a seed.
 
 **Free, no need to ask:**
 
 - Personal use, hobby projects, research, experiments, and testing.
 - Charitable organizations, educational institutions, public research organizations, public safety or health organizations, environmental protection organizations, and government institutions, regardless of how they are funded.
 
-So running a public seed as an individual, a collective, or a nonprofit is free, and always will be.
+Running a public seed as an individual, a collective, or a nonprofit is free, and always will be.
 
 **Needs a separate license:**
 
-- For-profit companies, including running it only on your own infrastructure to cut your own hosting bill. Nothing has to be sold for the use to count as commercial.
+- For-profit companies, including purely internal use on your own infrastructure. Smaller storage bills and the review hours the script saves you are both commercial value; nothing has to be sold for the use to count.
 
-If that is you, or you are not sure which side of the line you land on, email [info@radicle.tools](mailto:info@radicle.tools). It is usually a short conversation, and I would much rather say yes than have you guess.
+If that is you, or you are not sure which side of the line you land on, email [info@radicle.tools](mailto:info@radicle.tools).
 
 ## License
 
 [PolyForm Noncommercial License 1.0.0](./LICENSE). Free to use, modify, and share for any **noncommercial** purpose; you must preserve the copyright and required-notice lines (attribution). **Commercial use is not permitted** without a separate license. For commercial licensing, email [info@radicle.tools](mailto:info@radicle.tools).
 
-Built by Kostis ([@maninak](https://github.com/maninak)).
+Built by [maninak](https://maninak.com).
