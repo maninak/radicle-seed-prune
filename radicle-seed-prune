@@ -978,15 +978,16 @@ media_exts='$MEDIA_EXTS'
 max_refs=$MEDIA_MAX_REFS
 PEER
   cat >> "$tmp/peer.sh" <<'PEER'
-shopt -s nullglob
-# Prints "<oid> <bytes> <path>" for every blob reachable from the refs in $1 but not from any
-# ref in $2. Both arrive as newline-separated lists on the named variables, never as arguments,
-# because a widely replicated repo has thousands of refs and argv has a size limit.
+# Prints "<oid> <bytes> <path>" for every blob reachable from the refs in $2 but not from any
+# ref in $3, both newline-separated lists. They go in on stdin rather than as arguments, since
+# a widely replicated repo has thousands of refs and argv has a size limit a ref list reaches.
+# `^ref` is how rev-list spells "and not this one", and it stops the walk at the first commit
+# the two sides share, so a peer who only mirrors the repo costs almost nothing to rule out.
 only_in() {
-  printf '%s\n' $1 > "$TMPDIR_PEER/want"
-  printf '%s\n' $2 | sed 's/^/^/' >> "$TMPDIR_PEER/want"
-  GIT_DIR="$d" git rev-list --objects --ignore-missing --stdin \
-      --filter=object:type=blob < "$TMPDIR_PEER/want" 2>/dev/null \
+  local d=$1 want=$2 exclude=$3
+  { printf '%s\n' $want; printf '%s\n' $exclude | sed 's/^/^/'; } \
+    | GIT_DIR="$d" git rev-list --objects --ignore-missing --stdin \
+        --filter=object:type=blob 2>/dev/null \
     | GIT_DIR="$d" git cat-file \
         --batch-check='%(objectname) %(objecttype) %(objectsize) %(rest)' 2>/dev/null \
     | awk '$2 == "blob" { path = $0; sub(/^[^ ]+ [^ ]+ [^ ]+ /, "", path)
@@ -1005,8 +1006,6 @@ split_bytes() {
       else                                                              other += size }
     END { printf "= %.0f %.0f\n", media, other }'
 }
-TMPDIR_PEER=$(mktemp -d) || exit 0
-trap 'rm -rf "$TMPDIR_PEER"' EXIT
 for d; do
   rid=${d##*/}
   # Same trust root as rule F: refs/rad/id is written by the local node only after it verifies
@@ -1038,13 +1037,13 @@ for d; do
   [ -n "$strangers" ] || continue
   # The cheap tier: one listing for every stranger at once. Most repos stop here.
   combined=$(cut -f2 <<<"${strangers#$'\n'}")
-  any=$(only_in "$combined" "$own" | split_bytes | awk '$1 == "="{ print ($2 > 0) }')
-  [ "$any" = 1 ] || continue
+  media_here=$(only_in "$d" "$combined" "$own" | split_bytes | awk '$1 == "=" { print $2 }')
+  [ "${media_here:-0}" -gt 0 ] || continue
   # Something is there, so pay to learn whose. One listing per peer, and the peers with
   # nothing of their own drop out having cost one walk that ends at the first shared commit.
   for nid in $(cut -f1 <<<"${strangers#$'\n'}" | sort -u); do
     mine=$(awk -F'\t' -v n="$nid" '$1 == n { print $2 }' <<<"${strangers#$'\n'}")
-    only_in "$mine" "$own" | split_bytes \
+    only_in "$d" "$mine" "$own" | split_bytes \
       | awk -v nid="$nid" -v rid="$rid" '
           $1 == "b" { printf "b\t%s\t%s\t%s\t%s\n", nid, rid, $2, $3 }
           $1 == "=" { printf "=\t%s\t%s\t%s\t%s\n", nid, rid, $2, $3 }'
