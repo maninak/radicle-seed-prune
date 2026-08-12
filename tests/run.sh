@@ -804,6 +804,17 @@ nof=$(RULES=ABCDE run)
   && ok "a rule left out of RULES does not even run its scan" \
   || no "RULES=ABCDE still ran or planned rule F"
 
+# Turning a rule off must not SPARE a repo the remaining rules would have taken. Rule D is the
+# case that matters: its corpus scan runs whatever RULES says, because rule E reads its suspect
+# list, so a dropped D verdict could shadow the rule C verdict underneath it.
+withd=$(STALE_YEARS_DAYS=30 RULES=ABCDEFG run)
+nod=$(STALE_YEARS_DAYS=30 RULES=ABCEFG run)
+{ has "$withd" "zspam1" && has "$nod" "zspam1" \
+  && grep -qE "^zspam1 .* spam-batch " <<<"$withd" \
+  && grep -qE "^zspam1 .* stale " <<<"$nod"; } \
+  && ok "a repo a disabled rule would have claimed falls through to the next rule" \
+  || no "RULES=ABCEFG let a batch member escape rule C as well as rule D"
+
 
 # --- rule G: parasite peers --- Three peers put the identical clip in the same three repos.
 # Only one of them is accused, so each exemption is what separates it from the other two, not
@@ -1008,9 +1019,9 @@ grep -qE "^zinfetch .*stale" <<<"$plan_fg" \
 # that quietly drops every large repo from the plan, and past MAX_SCAN_FAIL_PCT it aborts the
 # whole run.
 plan_bud=$(LINK_REPO_BUDGET=100 run)
-{ has "$plan_bud" "zheavy" && ! grep -q "could not read the contents" <<<"$plan_bud"; } \
-  && ok "a repo bigger than the read budget is still judged" \
-  || no "the read budget excludes big repos"
+{ has "$plan_bud" "zheavy" && ! grep -q "could not read .* repo(s)" <<<"$plan_bud"; } \
+  && ok "a repo bigger than the read budget is still judged, and not counted as unreadable" \
+  || no "the read budget excluded a big repo or reported it as a read failure"
 
 # Rules A/B/C must keep clocking ACTIVITY: a repo touched yesterday is not abandoned.
 ! grep -qE "^zfresh4 " <<<"$plan" \
@@ -1223,18 +1234,20 @@ grep -q "rad block $PARA" <<<"$plan_g" \
   || no "rule G named a peer without printing how to act on it"
 
 if command -v script >/dev/null 2>&1; then
-  # Two prompts: the plan, then this one peer. "y" then "n" leaves the peer alone, which is
-  # what separates the per-peer question from a blanket licence given by the flag.
+  # Two prompts, and the peer comes first because --block-peers is its own action that does
+  # not wait on the prune. "n" then "y" leaves the peer alone and still applies the plan,
+  # which is what separates the per-peer question from a blanket licence given by the flag.
   build_fixture; assert_isolated
-  printf 'y\nn\n' | script -qec \
+  printf 'n\ny\n' | script -qec \
     "env DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 PARASITE_MIN_REPOS=3 PARASITE_MIN_BYTES=65536 \
          PARASITE_TEXT_MAX_BYTES=4096 '$SCRIPT' --apply --block-peers" /dev/null \
     >"$ROOT/gn.out" 2>&1
   { ! grep -q "$PARA" "$RSP_HOME/.stub_block" 2>/dev/null \
     && GIT_DIR="$STORAGE/zpara1" git for-each-ref "refs/namespaces/$PARA/" \
-         --format=x 2>/dev/null | grep -q x; } \
-    && ok "--block-peers + n leaves that peer alone" \
-    || no "--block-peers blocked a peer the operator declined"
+         --format=x 2>/dev/null | grep -q x \
+    && [ ! -e "$STORAGE/zjunk1" ]; } \
+    && ok "--block-peers + n leaves that peer alone, and the prune still applies" \
+    || no "--block-peers blocked a declined peer, or the second answer missed the prune"
 
   build_fixture; assert_isolated
   printf 'y\ny\n' | script -qec \
@@ -1255,14 +1268,32 @@ if command -v script >/dev/null 2>&1; then
   done
   kept=1
   GIT_DIR="$STORAGE/zpara1" git rev-parse --verify -q master >/dev/null 2>&1 || kept=0
-  GIT_DIR="$STORAGE/zpara1" git for-each-ref "refs/namespaces/$WRITER/" --format=x 2>/dev/null \
-    | grep -q x || kept=0
+  GIT_DIR="$STORAGE/zpara1" git for-each-ref "refs/namespaces/$WRITER/" \
+    --format=x 2>/dev/null | grep -q x || kept=0
   { [ "$gonerefs" = 1 ] && [ "$kept" = 1 ]; } \
     && ok "a blocked peer's refs are dropped and nothing else is touched" \
     || no "blocking left the peer's refs behind or removed somebody else's"
   grep -q "blocked-peer.*$PARA.*repos=" "$RSP_HOME/prune-audit/"prune-*.log 2>/dev/null \
     && ok "a block is recorded in the audit log with the evidence behind it" \
     || no "a peer was blocked without the evidence being written down"
+
+  # Blocking a peer and pruning repos are separate decisions, so --block-peers must stand on
+  # its own: nobody should have to delete the whole plan to deal with one peer. One "y", for
+  # the peer, since without --apply there is no plan prompt to answer.
+  build_fixture; assert_isolated
+  before=$(ls "$STORAGE" | wc -l)
+  printf 'y\n' | script -qec \
+    "env DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 PARASITE_MIN_REPOS=3 PARASITE_MIN_BYTES=65536 \
+         PARASITE_TEXT_MAX_BYTES=4096 '$SCRIPT' --block-peers" /dev/null \
+    >"$ROOT/gsolo.out" 2>&1
+  grep -q "$PARA" "$RSP_HOME/.stub_block" 2>/dev/null \
+    && ok "--block-peers blocks without --apply" \
+    || no "--block-peers did nothing without --apply"
+  { [ "$(ls "$STORAGE" | wc -l)" = "$before" ] \
+    && [ ! -s "$RSP_HOME/.stub_unseed" ] \
+    && grep -q "no repos were pruned" "$ROOT/gsolo.out"; } \
+    && ok "--block-peers on its own prunes nothing" \
+    || no "--block-peers pruned repos without --apply"
 else
   skip "no util-linux script(1); cannot drive the per-peer block prompt through a pty"
 fi
@@ -1298,6 +1329,19 @@ after=$(ls "$STORAGE" | wc -l)
 
 # --- quarantine --- The three floor-0 verdicts may take the last copy the network is known to
 # hold, so "re-fetch it" is not an undo for exactly the repos that most need one.
+
+# A dry run promises disk it will not free for a month, so the plan line must not say
+# "reclaim" while the quarantine is on, and must say it when it is off.
+build_fixture; assert_isolated
+qplan=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 run)
+{ grep -q "quarantined 30d, so the disk comes back then" <<<"$qplan" \
+  && ! grep -q 'PLAN:.*reclaim' <<<"$qplan"; } \
+  && ok "the plan does not promise disk the quarantine is still holding" \
+  || no "the plan claimed to reclaim disk that quarantine keeps for 30 days"
+DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 QUARANTINE=0 run | grep -q 'PLAN:.*reclaim' \
+  && ok "QUARANTINE=0 puts the reclaim promise back in the plan" \
+  || no "QUARANTINE=0 still hedged the plan's disk figure"
+
 build_fixture; assert_isolated
 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null >/dev/null 2>&1
 Q="$RSP_HOME/prune-audit/quarantine"
@@ -1323,6 +1367,39 @@ out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/nul
 { [ ! -e "$Q/zoldquar" ] && grep -q 'purged 1 repo' <<<"$out"; } \
   && ok "quarantine is purged once the window passes" \
   || no "a quarantined repo outlived QUARANTINE_DAYS"
+
+# The window has to run from when the repo ARRIVED in quarantine. mv keeps the source mtime,
+# and rules B and C select repos nothing has touched for 90 to 730 days, so measuring from
+# that would purge their recovery copy on the very next run. zrot1 is the stale fixture.
+build_fixture; assert_isolated
+Q="$RSP_HOME/prune-audit/quarantine"
+# Age the directory itself, or mv would carry a fresh mtime across and the check below could
+# not tell the fixed behaviour from the broken one.
+touch -d "200 days ago" "$STORAGE/zrot1"
+DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 STALE_YEARS_DAYS=30 "${NOTTY[@]}" "$SCRIPT" --apply \
+  </dev/null >/dev/null 2>&1
+[ -d "$Q/zrot1" ] || no "the stale fixture never reached quarantine, so the next check is moot"
+out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 STALE_YEARS_DAYS=30 "${NOTTY[@]}" "$SCRIPT" --apply \
+      </dev/null 2>&1)
+{ [ -d "$Q/zrot1" ] && ! grep -q 'purged' <<<"$out"; } \
+  && ok "a repo untouched for years still gets its full quarantine window" \
+  || no "quarantine measured the window from the repo's own mtime, so it purged immediately"
+
+# A seed that has caught up has an empty plan every week. If the purge only ran on weeks with
+# something to prune, quarantined disk would never come back at all.
+build_fixture; assert_isolated
+Q="$RSP_HOME/prune-audit/quarantine"
+mkdir -p "$Q/zoldquar2"; touch -d "40 days ago" "$Q/zoldquar2"
+out=$(DISK_AWARE=0 RULES= "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1)
+{ [ ! -e "$Q/zoldquar2" ] && grep -q 'nothing to do' <<<"$out"; } \
+  && ok "an empty plan still purges quarantine past its window" \
+  || no "a run with nothing to prune left expired quarantine on disk"
+
+# RULES= is set but empty, and on a deleter that has to mean NO rules. Read as unset it would
+# fall back to the default and run all seven, which is the one direction that cannot be undone.
+{ ! grep -qE '^z' <<<"$(RULES= run)" && has "$(run)" "zjunk1"; } \
+  && ok "RULES= means no rules, not the default set" \
+  || no "an empty RULES fell back to running every rule"
 
 # At the critical watermark a recovery copy is a luxury the disk cannot buy.
 build_fixture; assert_isolated

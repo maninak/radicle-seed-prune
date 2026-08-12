@@ -204,8 +204,10 @@
 #   THE ACT IS SEPARATE FROM THE FINDING, and it is the one act here that is never automated.
 #   A block is permanent, applies to every repo at once, and the person blocked is never told,
 #   so --block-peers refuses outright when there is no terminal to ask at, and asks again for
-#   each peer when there is. The plan prints the exact `rad block` line for every peer it names
-#   whether or not that flag was given, so an operator can act on one peer without handing the
+#   each peer when there is. It is also an action of its own and does not imply --apply, since
+#   nobody should have to delete five hundred repos to deal with one peer. The plan prints the
+#   exact `rad block` line for every peer it names whether or not that flag was given, so an
+#   operator can act on one peer without handing the
 #   tool a standing licence over the whole list, and each block is written to the audit log
 #   with the evidence behind it. Blocking is what makes it stick: the node filters every
 #   namespaced ref it receives through the block list whatever its seeding scope is, so refs
@@ -239,10 +241,12 @@
 #   radicle-seed-prune --apply --yes          # apply without the prompt (scripts / cron)
 #   radicle-seed-prune --apply --force        # apply even if the plan trips the runaway caps
 #   radicle-seed-prune --apply --restart-node # ...and restart the node service afterwards
+#   radicle-seed-prune --block-peers          # block what rule G found, asking per peer
 #
 # --apply scans ONCE, prints the plan, then in a terminal asks before deleting; run
 # non-interactively (cron, a pipe) it just applies. Confirming interactively also bypasses the
-# runaway caps. --yes (-y) skips the prompt.
+# runaway caps. --yes (-y) skips the prompt. --block-peers is a separate action and prunes
+# nothing on its own; pass both to do both.
 #
 # ENVIRONMENT
 #   Everything is configured by environment variable - there are no tuning flags. RAD_HOME is
@@ -414,8 +418,10 @@ PARASITE_TEXT_MAX_BYTES="${PARASITE_TEXT_MAX_BYTES:-16384}"
 # Which rules may run at all. One spelling for every rule, because enable/disable is the knob
 # an operator reaches for first and it used to be spelled four different ways (a sentinel here,
 # a *_SCAN=0 there, and nothing at all for B and C). A letter absent from this string means
-# that rule neither scans nor puts anything in the plan.
-RULES="${RULES:-ABCDEFG}"
+# that rule neither scans nor puts anything in the plan. RULES= (set but empty) means no rules
+# at all, not the default: an operator who writes that means none, and on a tool that deletes,
+# reading it as "all of them" fails in the one direction that cannot be undone.
+RULES="${RULES-ABCDEFG}"
 rule_on(){ case "$RULES" in (*"$1"*) return 0 ;; (*) return 1 ;; esac; }
 
 MAX_PRUNE_COUNT="${MAX_PRUNE_COUNT:-1000}"       # runaway guards (abort unless --force)
@@ -573,9 +579,10 @@ rule_b="B size(>${eff_abs_mb}MB & >=P${eff_pctl}, >${eff_outlier_days}d, seeds>=
 rule_c="C stale(>${eff_stale_days}d, seeds>=${eff_seeds})"
 rule_d="D spam(batch>=${SPAM_MIN_BATCH} & desc>=${SPAM_DESC_AGREE_PCT}%,"
 rule_d="$rule_d >${eff_spam_days}d, seeds>=${SPAM_MIN_SEEDS})"
-for _r in A B C D; do
-  rule_on "$_r" || eval "rule_${_r,}=\"\${rule_${_r,}} [DISABLED: not in RULES]\""
-done
+rule_on A || rule_a="$rule_a [DISABLED: not in RULES]"
+rule_on B || rule_b="$rule_b [DISABLED: not in RULES]"
+rule_on C || rule_c="$rule_c [DISABLED: not in RULES]"
+rule_on D || rule_d="$rule_d [DISABLED: not in RULES]"
 echo "# rules: $rule_a  $rule_b  $rule_c  $rule_d"
 
 rule_e="E link-farm(>=${LINK_MIN_SCORE} spam domains, each linked from"
@@ -720,7 +727,7 @@ nspam=$(wc -l < "$tmp/spam"); nspambatch=$(wc -l < "$tmp/spambatch")
 if [ "$nspam" -gt 0 ]; then
   echo "# spam batches: $nspambatch template(s) matching $nspam repos," \
        "before the age and seed checks:"
-  sort -k1,1nr "$tmp/spambatch" | head -5 | awk -F'\t' '{printf "#   %5d  %s\n", $1, $2}'
+  sort -k1,1nr "$tmp/spambatch" | awk -F'\t' 'NR<=5 {printf "#   %5d  %s\n", $1, $2}'
   [ "$nspambatch" -gt 5 ] && echo "#   ...and $((nspambatch - 5)) more"
 fi
 
@@ -1008,8 +1015,8 @@ split_bytes() {
 }
 for d; do
   rid=${d##*/}
-  # Same trust root as rule F: refs/rad/id is written by the local node only after it verifies
-  # the identity document's signatures, so a stranger's push cannot make itself a delegate.
+  # refs/rad/id is written by the local node only after it verifies the identity document's
+  # signatures, so a stranger's push cannot make itself a delegate.
   # This runs before any skip below, because a delegate is never blocked and that protection
   # must not depend on whether the rest of this repo turned out to be worth walking.
   dids=$(GIT_DIR="$d" git grep -h -oE 'did:key:z[1-9A-HJ-NP-Za-km-z]+' refs/rad/id \
@@ -1017,7 +1024,11 @@ for d; do
          | sed 's/^did:key://' | sort -u | tr '\n' ' ')
   if [ -z "$dids" ]; then printf 'u\t%s\n' "$rid"; continue; fi
   for nid in $dids; do printf 'd\t%s\n' "$nid"; done
-  allrefs=$(GIT_DIR="$d" git for-each-ref --format='%(refname)' 2>/dev/null) || continue
+  # --count stops the listing one past the cap, so a repo with 152k refs never reaches a shell
+  # variable. The cap is rule F's MEDIA_MAX_REFS: both rules pay the same cost, walking every
+  # peer's refs, and a second knob for one number nobody would set differently is noise.
+  allrefs=$(GIT_DIR="$d" git for-each-ref --count=$(( max_refs + 1 )) \
+              --format='%(refname)' 2>/dev/null) || continue
   mapfile -t refs <<<"$allrefs"
   [ "${#refs[@]}" -le "$max_refs" ] || continue
   # OWN is everything the delegates control, and it is the exclusion set. Whole histories go in
@@ -1195,7 +1206,7 @@ if [ -s "$tmp/hosts" ]; then
          "<$LINK_CODE_MAX_PCT% from code;"
     echo "#   $nfarm repo(s) link to >=$LINK_MIN_SCORE of them," \
          "before the age and seed checks:"
-    sort -k1,1nr "$tmp/linktop" | head -5 | awk -F'\t' '{printf "#   %5d repos  %s\n", $1, $2}'
+    sort -k1,1nr "$tmp/linktop" | awk -F'\t' 'NR<=5 {printf "#   %5d repos  %s\n", $1, $2}'
     [ "$nspamdom" -gt 5 ] && echo "#   ...and $((nspamdom - 5)) more"
   fi
 fi
@@ -1218,6 +1229,9 @@ OWNED
   cat >> "$tmp/owned.sh" <<'OWNED'
 for rid in "$@"; do
   d="$STORAGE/$rid"
+  # `rad inspect` gives the CURRENT identity revision, not the union of every revision ever
+  # signed. Here a delegate list is what lets a link condemn a repo, so the narrower list is
+  # the one that errs toward sparing.
   nids=$("$RAD" inspect "rad:$rid" --delegates 2>/dev/null \
          | grep -oE 'z[1-9A-HJ-NP-Za-km-z]{40,}' | tr '\n' ' ')
   [ -n "$nids" ] || { echo "$rid" >&3; continue; }   # no delegate list: ownership unknown
@@ -1339,7 +1353,8 @@ while IFS=$'\t' read -r rid mb ob; do
     MEDIA[$rid]=media-batch
   fi
 done < "$tmp/media"
-while read -r r; do [ -n "$r" ] && unset 'MEDIA[$r]'; done < "$tmp/media-fail"
+# No unset pass over media-fail: every worker path that writes a rid there continues before
+# printing that repo's totals, so a failed repo is never in $tmp/media and never reached MEDIA.
 
 # ------------------------------------------------------------------- rule G: judge the peers
 # Folds the per-repo evidence into one verdict per peer. The accusation is a single file, byte
@@ -1442,33 +1457,37 @@ while IFS=$'\t' read -r rid sz mt life birth; do
   # $age_from records the date the matching rule measured, so the plan's AGE column explains
   # its own verdict. Without it a spam-batch row touched yesterday prints AGE 1 beside a 7-day
   # minimum.
+  #
+  # Each branch asks rule_on first, so a rule left out of RULES cannot claim a repo and then
+  # have its row dropped later: that would hide the repo from the rules still running. Rule D
+  # needs this most, because its corpus scan runs even when D is off, since rule E reads it.
   age_from=$life
-  if   [ -n "${SPAM[$rid]:-}" ] && [ "$origin" != 0 ] && [ "$origin" -lt "$spam_cut" ] \
-       && [ "$seeds" -ge "$SPAM_MIN_SEEDS" ]; then
+  if   rule_on D && [ -n "${SPAM[$rid]:-}" ] && [ "$origin" != 0 ] \
+       && [ "$origin" -lt "$spam_cut" ] && [ "$seeds" -ge "$SPAM_MIN_SEEDS" ]; then
     reason="spam-batch"; age_from=$origin
-  elif [ -n "${LINKSCORE[$rid]:-}" ] && [ "$origin" != 0 ] && [ "$origin" -lt "$link_cut" ] \
-       && [ "$seeds" -ge "$LINK_MIN_SEEDS" ]; then
+  elif rule_on E && [ -n "${LINKSCORE[$rid]:-}" ] && [ "$origin" != 0 ] \
+       && [ "$origin" -lt "$link_cut" ] && [ "$seeds" -ge "$LINK_MIN_SEEDS" ]; then
     reason="link-farm"; age_from=$origin
-  elif [ -n "${MEDIA[$rid]:-}" ] && [ "$origin" != 0 ] && [ "$origin" -lt "$media_cut" ] \
-       && [ "$seeds" -ge "$MEDIA_MIN_SEEDS" ]; then
+  elif rule_on F && [ -n "${MEDIA[$rid]:-}" ] && [ "$origin" != 0 ] \
+       && [ "$origin" -lt "$media_cut" ] && [ "$seeds" -ge "$MEDIA_MIN_SEEDS" ]; then
     reason=${MEDIA[$rid]}; age_from=$origin
-  elif [ "$is_junkid" = 1 ] && [ "$life" -lt "$junk_cut" ] \
+  elif rule_on A && [ "$is_junkid" = 1 ] && [ "$life" -lt "$junk_cut" ] \
        && [ "$seeds" -ge "$JUNK_ID_MIN_SEEDS" ]; then
     reason="junk-id"
-  elif [ "$is_junk" = 1 ] && [ "$life" -lt "$junk_cut" ] \
+  elif rule_on A && [ "$is_junk" = 1 ] && [ "$life" -lt "$junk_cut" ] \
        && [ "$seeds" -ge "$JUNK_MIN_SEEDS" ]; then
     reason="junk-name"
-  elif [ "$is_big" = 1 ] && [ "$life" -lt "$outlier_cut" ] \
+  elif rule_on B && [ "$is_big" = 1 ] && [ "$life" -lt "$outlier_cut" ] \
        && [ "$seeds" -ge "$eff_seeds" ]; then
     reason="size-outlier"
-  elif [ "$life" -lt "$stale_cut" ] && [ "$seeds" -ge "$eff_seeds" ]; then
+  elif rule_on C && [ "$life" -lt "$stale_cut" ] && [ "$seeds" -ge "$eff_seeds" ]; then
     reason="stale"
   fi
   # Rule F's evidence is about one repo, so it keeps the last copy we know of. Listing what
   # that floor spared, rather than passing over it in silence, is what stops the floor becoming
   # a standing exemption for anyone who makes sure nobody else seeds their dump. Only repos
   # nothing else prunes are listed, so the line can say they were kept.
-  if [ -z "$reason" ] && [ -n "${MEDIA[$rid]:-}" ] && [ "$origin" != 0 ] \
+  if [ -z "$reason" ] && rule_on F && [ -n "${MEDIA[$rid]:-}" ] && [ "$origin" != 0 ] \
      && [ "$origin" -lt "$media_cut" ] && [ "$seeds" -lt "$MEDIA_MIN_SEEDS" ]; then
     printf '%s\t%s\t%s\n' "$rid" "${MEDIA[$rid]}" "$name" >> "$tmp/media-review"
   fi
@@ -1492,14 +1511,7 @@ blind=$(( nrepos - total_repos + nblind ))
 }
 
 # -------------------------------------------------------------------------------------- report
-# A disabled rule is filtered out here as well as skipped above, because rules A, B and C cost
-# nothing to evaluate and are decided inline: this is the one place every verdict passes.
-awk -F'\t' -v rules="$RULES" '
-      BEGIN { split("junk-name A junk-id A size-outlier B stale C spam-batch D " \
-                    "link-farm E media-dump F media-batch F", m, " ")
-              for (i = 1; i < length(m); i += 2) letter[m[i]] = m[i+1] }
-      { if (!($5 in letter) || index(rules, letter[$5])) print }' "$tmp/plan" \
-  | sort -t$'\t' -k2,2nr > "$tmp/plan.sorted"
+sort -t$'\t' -k2,2nr "$tmp/plan" > "$tmp/plan.sorted"
 nplan=$(wc -l < "$tmp/plan.sorted")
 bytes=$(awk -F'\t' '{s+=$2} END{printf "%.0f", s}' "$tmp/plan.sorted")
 gib=$(awk -v b="$bytes" 'BEGIN{printf "%.2f", b/1073741824}')
@@ -1515,7 +1527,7 @@ awk -F'\t' -v now="$now" -v collapse="$PLAN_COLLAPSE_ROWS" -v full="$PLAN_FULL" 
      # The corpus verdicts. Each one is decided by a pattern across MANY repos, so reading its
      # rows one by one tells a reader nothing the group line does not already say.
      BEGIN { split("spam-batch link-farm media-batch", c, " ")
-             for (i in c) corpus[c[i]] = 1 }
+             for (i = 1; i in c; i++) corpus[c[i]] = 1 }
      NR == FNR { n[$5]++; b[$5] += $2; next }
      FNR == 1 { for (r in n) if (corpus[r] && !full && n[r] >= collapse) fold[r] = 1
                 printf "\n%-34s %9s %6s %8s %-13s %s\n",
@@ -1523,9 +1535,11 @@ awk -F'\t' -v now="$now" -v collapse="$PLAN_COLLAPSE_ROWS" -v full="$PLAN_FULL" 
      { if ($5 in fold) next
        printf "%-34s %9s %6s %8s %-13s %s\n",
               $1, size($2), $3, int((now - $7) / 86400), $5, $6 }
-     END { for (r in fold)
+     # In the order c was split, not `for (r in fold)`: awk leaves that order unspecified, and
+     # a plan that prints its rows differently from one run to the next cannot be diffed.
+     END { for (i = 1; i in c; i++) if (c[i] in fold)
              printf "%-34s %9s %6s %8s %-13s %s\n",
-                    sprintf("(%d repos)", n[r]), size(b[r]), "", "", r,
+                    sprintf("(%d repos)", n[c[i]]), size(b[c[i]]), "", "", c[i],
                     "same pattern across many repos; PLAN_FULL=1 lists them"
      }' "$tmp/plan.sorted" "$tmp/plan.sorted"
 
@@ -1539,7 +1553,15 @@ if [ "$nreview" -gt 0 ]; then
 fi
 
 echo
-echo "# PLAN: prune $nplan repos, reclaim ${gib} GiB"
+# The plan promises only what the run will actually deliver. Under quarantine the disk does
+# not come back for a month, and a forecast that says "reclaim" would be the same overclaim
+# the DONE line below is careful not to make.
+if [ "$QUARANTINE" = 1 ]; then
+  echo "# PLAN: prune $nplan repos, ${gib} GiB" \
+       "(quarantined ${QUARANTINE_DAYS}d, so the disk comes back then)"
+else
+  echo "# PLAN: prune $nplan repos, reclaim ${gib} GiB"
+fi
 awk -F'\t' '{ c[$5]++; b[$5]+=$2 }
      END { for (r in c) printf "#   %-13s %5d repos  %8.2f GiB\n",
                                r, c[r], b[r]/1073741824 }' "$tmp/plan.sorted" | sort
@@ -1550,7 +1572,7 @@ if [ "$nparasite" -gt 0 ]; then
   echo
   echo "# PARASITE PEERS: $nparasite (rule G)"
   echo "#   the count is repos reached by ONE file of theirs, not repos they touched"
-  while IFS=$'\t' read -r nid widest nrepos mb ob oid; do
+  while IFS=$'\t' read -r nid widest npeerrepos mb ob oid; do
     printf '#   %s  %3d repos  %6.1f MB media  %6d B text  blob %s\n' \
            "$nid" "$widest" "$(awk -v b="$mb" 'BEGIN{printf "%.1f", b/1048576}')" \
            "$ob" "${oid:0:12}"
@@ -1563,89 +1585,86 @@ if [ "$nparasite" -gt 0 ]; then
   echo "#   Blocking is permanent, invisible to the peer, and applies to every repo at once."
   echo "#   Check the evidence first, then run whichever of these you agree with:"
   cut -f1 "$tmp/parasites" | sed 's/^/#     rad block /'
-  echo "#   Or --apply --block-peers, which asks again for each peer and needs a terminal."
+  echo "#   Or --block-peers, which asks again for each peer and needs a terminal."
+fi
+
+# The audit log for this run, created by whichever act writes to it first. Pruning repos and
+# blocking peers are separate decisions that can each happen without the other, so neither of
+# them owns the file.
+run_ts=$(date -u +%FT%TZ)
+audit=""
+blocked=0
+open_audit() {
+  [ -z "$audit" ] || return 0
+  mkdir -p "$AUDIT_DIR"
+  audit="$AUDIT_DIR/prune-$(date -u +%Y%m%dT%H%M%SZ).log"
+  printf '# %s  pressure=%s%%\n' "$run_ts" "$press_pct" > "$audit"
+  echo "# audit log: $audit"
+}
+
+# Rule G's action. A block is permanent, it is invisible to the person blocked, and it applies
+# to every repo at once, so it is the one thing here that never happens without a human in the
+# room: --block-peers refuses outright when nothing can be asked, and asks again per peer.
+# Blocking is what makes it stick, since the node filters every namespaced ref it receives
+# through the block list whatever the seeding scope is, so refs dropped here do not come back.
+# Dropping them frees no disk until git gc runs, which this tool does not do, so none of it is
+# counted as reclaimed.
+if [ "$BLOCK_PEERS" = 1 ] && [ "$nparasite" -gt 0 ]; then
+  # The answers come in on fd 9, opened once here. Reading them from /dev/stdin instead would
+  # find the loop's own input file below, since that loop redirects stdin to read the verdicts.
+  asked=1
+  if [ -t 0 ]; then exec 9<&0
+  elif { : >/dev/tty; } 2>/dev/null; then exec 9</dev/tty
+  else asked=0; fi
+  if [ "$asked" = 0 ]; then
+    echo "# --block-peers needs a terminal: blocking a peer is not a decision to automate." >&2
+    echo "# Nobody was blocked. The commands are listed above; run them yourself." >&2
+  else
+    while IFS=$'\t' read -r nid widest npeerrepos mb ob oid; do
+      printf '# Block %s? it put %s in %s repos it does not own [y/N] ' \
+             "$nid" "${oid:0:12}" "$widest"
+      reply=""; IFS= read -r reply <&9 || reply=""
+      case "$reply" in [yY]) ;; *) echo "#   skipped $nid"; continue ;; esac
+      "$RAD" block "$nid" >/dev/null 2>&1 \
+        || { echo "#   WARN block failed, leaving refs alone: $nid" >&2; continue; }
+      blocked=$((blocked+1))
+      open_audit
+      # The evidence goes in the audit log beside the block, because a standing judgement
+      # about a person that nobody can later explain is one nobody can later undo either.
+      printf 'blocked-peer\t%s\tblob=%s\trepos=%s\tmedia_bytes=%s\tother_bytes=%s\n' \
+             "$nid" "$oid" "$widest" "$mb" "$ob" >> "$audit"
+      # Only the repos where this peer put content of its own. Where it merely mirrors a repo,
+      # its refs hold that repo's own blobs, so removing them would free nothing and the block
+      # already stops anything new arriving.
+      while IFS=$'\t' read -r _ _ rid _ _; do
+        d="$STORAGE/$rid"
+        [ -d "$d" ] || continue
+        GIT_DIR="$d" git for-each-ref --format='delete %(refname)' \
+            "refs/namespaces/$nid/" 2>/dev/null \
+          | GIT_DIR="$d" git update-ref --stdin 2>/dev/null \
+          || echo "#   WARN could not drop $nid refs from $rid" >&2
+      done < <(awk -F'\t' -v n="$nid" '$1 == "=" && $2 == n && $4 > 0' "$tmp/peer")
+    done < "$tmp/parasites"
+    echo "# blocked $blocked of $nparasite peer(s); run git gc to reclaim their objects."
+  fi
 fi
 
 if [ "$APPLY" = 0 ]; then
-  echo "# DRY-RUN: nothing changed. Re-run with --apply to execute."
+  if [ "$blocked" -gt 0 ]; then
+    echo "# DRY-RUN: no repos were pruned; $blocked peer(s) blocked, as answered above."
+  else
+    echo "# DRY-RUN: nothing changed. Re-run with --apply to execute."
+  fi
   exit 0
 fi
-
-# --apply: the (slow) scan above ran ONCE. In a terminal, ask before deleting;
-# non-interactively (cron, a pipe) just apply. --yes skips the prompt. A yes here is the human
-# sign-off that lets a run bypass the runaway caps below.
-[ "$nplan" = 0 ] && { echo "# nothing to do"; exit 0; }
-CONFIRMED=0
-if [ "$YES" = 0 ]; then
-  prompt="# Apply now? unseed + block + DELETE $nplan repos, reclaiming ${gib} GiB"
-  [ "$BLOCK_PEERS" = 1 ] && [ "$nparasite" -gt 0 ] \
-    && prompt="$prompt, and BLOCK $nparasite peer(s)"
-  prompt="$prompt [y/N] "
-  reply=""; asked=1
-  if [ -t 0 ]; then                                   # stdin is a terminal
-    printf '%s' "$prompt"; IFS= read -r reply || reply=""
-  elif { : >/dev/tty; } 2>/dev/null; then             # piped input but a terminal exists
-    printf '%s' "$prompt" >/dev/tty; IFS= read -r reply </dev/tty || reply=""
-  else
-    asked=0                                       # no terminal (cron/CI/pipe): no prompt
-  fi
-  if [ "$asked" = 1 ]; then
-    case "$reply" in
-      [yY]|[yY][eE][sS]) CONFIRMED=1; echo "# confirmed." ;;
-      *)                 echo "# aborted; nothing changed."; exit 0 ;;
-    esac
-  fi
-fi
-
-# --------------------------------------------------------------------------------------- apply
-# Runaway caps guard unattended runs. An interactive yes is a human confirming the exact
-# numbers just printed, so a confirmed run bypasses them. --yes and cron still respect them.
-if [ "$FORCE" = 0 ] && [ "$CONFIRMED" = 0 ]; then
-  over_gb=$(awk -v b="$bytes" -v m="$MAX_PRUNE_GB" 'BEGIN{print (b/1073741824 > m) ? 1 : 0}')
-  if [ "$nplan" -gt "$MAX_PRUNE_COUNT" ] || [ "$over_gb" = 1 ]; then
-    echo "# ABORT: plan ($nplan repos, ${gib} GiB) trips runaway caps" \
-         "(count=$MAX_PRUNE_COUNT gb=$MAX_PRUNE_GB)." >&2
-    echo "# Review it, then re-run with --force (unattended), or confirm interactively." >&2
-    exit 3
-  fi
-  # The median of past runs, not the mean: one big first run would otherwise raise the bar
-  # permanently and defeat the whole check. Fewer than three past runs is no baseline at all.
-  # `|| true` because a seed that has never pruned has no history file at all, and under
-  # `set -e` an assignment from a command that failed would end the run right here.
-  usual=$(awk -F'\t' -v keep="$RATCHET_RUNS" '
-            { for (i = 1; i <= NF; i++) if ($i ~ /^deleted=[0-9]+$/) { sub(/^deleted=/, "", $i)
-                                                                      v[++n] = $i + 0 } }
-            END { if (n < 3) { print ""; exit }
-                  start = (n > keep) ? n - keep + 1 : 1; m = 0
-                  for (i = start; i <= n; i++) w[++m] = v[i]
-                  # insertion sort: m is at most RATCHET_RUNS, so this stays trivial
-                  for (i = 2; i <= m; i++) { x = w[i]; j = i - 1
-                    while (j > 0 && w[j] > x) { w[j+1] = w[j]; j-- }
-                    w[j+1] = x }
-                  print (m % 2) ? w[(m+1)/2] : int((w[m/2] + w[m/2+1]) / 2) }' \
-            "$AUDIT_DIR/history.log" 2>/dev/null || true)
-  if [ -n "$usual" ] && [ "$usual" -gt 0 ] \
-     && [ "$nplan" -gt $(( usual * RATCHET_FACTOR )) ]; then
-    echo "# ABORT: plan is $nplan repos where the last $RATCHET_RUNS runs pruned about" \
-         "$usual. Something changed; a ${RATCHET_FACTOR}x jump is not a routine week." >&2
-    echo "# Review it, then re-run with --force (unattended), or confirm interactively." >&2
-    exit 3
-  fi
-fi
-
-mkdir -p "$AUDIT_DIR"
-run_ts=$(date -u +%FT%TZ)
-audit="$AUDIT_DIR/prune-$(date -u +%Y%m%dT%H%M%SZ).log"
-press_pct=$(awk -v p="$p" 'BEGIN{printf "%.0f",p*100}')
-{ printf '# %s  pressure=%s%%  plan=%s repos / %s GiB\n' \
-    "$run_ts" "$press_pct" "$nplan" "$gib"
-  printf '# rid\tsize_bytes\tother_seeds\tlast_activity_unix\treason\tname\tage_from_unix\n'
-  cat "$tmp/plan.sorted"; } > "$audit"
-echo "# audit log: $audit"
 
 # Empty the quarantine of anything past its window before pruning, so the disk this run
 # reports as reclaimed is disk that actually came back. Under real pressure the window is
 # ignored and the whole quarantine goes: a recovery copy is a luxury a full disk cannot buy.
+#
+# Above the "nothing to do" exit below, because a seed that has caught up has an empty plan
+# every week, and quarantined disk that only comes back on a week with something to prune is
+# quarantined disk that never comes back.
 quar="$AUDIT_DIR/quarantine"
 if [ "$QUARANTINE" = 1 ]; then
   mkdir -p "$quar" 2>/dev/null || true
@@ -1668,13 +1687,71 @@ if [ "$QUARANTINE" = 1 ]; then
                             "${QUARANTINE_DAYS}d; they are gone for good now."
 fi
 
+# --apply: the (slow) scan above ran ONCE. In a terminal, ask before deleting;
+# non-interactively (cron, a pipe) just apply. --yes skips the prompt. A yes here is the human
+# sign-off that lets a run bypass the runaway caps below.
+[ "$nplan" = 0 ] && { echo "# nothing to do"; exit 0; }
+CONFIRMED=0
+if [ "$YES" = 0 ]; then
+  prompt="# Apply now? unseed + block + DELETE $nplan repos, reclaiming ${gib} GiB [y/N] "
+  reply=""; asked=1
+  if [ -t 0 ]; then                                   # stdin is a terminal
+    printf '%s' "$prompt"; IFS= read -r reply || reply=""
+  elif { : >/dev/tty; } 2>/dev/null; then             # piped input but a terminal exists
+    printf '%s' "$prompt" >/dev/tty; IFS= read -r reply </dev/tty || reply=""
+  else
+    asked=0                                       # no terminal (cron/CI/pipe): no prompt
+  fi
+  if [ "$asked" = 1 ]; then
+    case "$reply" in
+      [yY]|[yY][eE][sS]) CONFIRMED=1; echo "# confirmed." ;;
+      *)                 echo "# aborted; no repos were pruned."; exit 0 ;;
+    esac
+  fi
+fi
+
+# --------------------------------------------------------------------------------------- apply
+# Runaway caps guard unattended runs. An interactive yes is a human confirming the exact
+# numbers just printed, so a confirmed run bypasses them. --yes and cron still respect them.
+if [ "$FORCE" = 0 ] && [ "$CONFIRMED" = 0 ]; then
+  over_gb=$(awk -v b="$bytes" -v m="$MAX_PRUNE_GB" 'BEGIN{print (b/1073741824 > m) ? 1 : 0}')
+  if [ "$nplan" -gt "$MAX_PRUNE_COUNT" ] || [ "$over_gb" = 1 ]; then
+    echo "# ABORT: plan ($nplan repos, ${gib} GiB) trips runaway caps" \
+         "(count=$MAX_PRUNE_COUNT gb=$MAX_PRUNE_GB)." >&2
+    echo "# Review it, then re-run with --force (unattended), or confirm interactively." >&2
+    exit 3
+  fi
+  # The median of past runs, not the mean: one big first run would otherwise raise the bar
+  # permanently and defeat the whole check. Fewer than three past runs is no baseline at all.
+  # `|| true` because a seed that has never pruned has no history file at all, and under
+  # `set -e` an assignment from a command that failed would end the run right here.
+  usual=$(grep -oE 'deleted=[0-9]+' "$AUDIT_DIR/history.log" 2>/dev/null \
+          | sed 's/^deleted=//' | tail -n "$RATCHET_RUNS" | sort -n \
+          | awk '{ v[NR] = $1 + 0 }
+                 END { if (NR < 3) exit
+                       print (NR % 2) ? v[(NR+1)/2] : int((v[NR/2] + v[NR/2+1]) / 2) }' \
+          || true)
+  if [ -n "$usual" ] && [ "$usual" -gt 0 ] \
+     && [ "$nplan" -gt $(( usual * RATCHET_FACTOR )) ]; then
+    echo "# ABORT: plan is $nplan repos where the last $RATCHET_RUNS runs pruned about" \
+         "$usual. Something changed; a ${RATCHET_FACTOR}x jump is not a routine week." >&2
+    echo "# Review it, then re-run with --force (unattended), or confirm interactively." >&2
+    exit 3
+  fi
+fi
+
+open_audit
+{ printf '# plan=%s repos / %s GiB\n' "$nplan" "$gib"
+  printf '# rid\tsize_bytes\tother_seeds\tlast_activity_unix\treason\tname\tage_from_unix\n'
+  cat "$tmp/plan.sorted"; } >> "$audit"
+
 if [ "$QUARANTINE" = 1 ]; then
   echo "# unseed + block + quarantine $nplan repos (recoverable for ${QUARANTINE_DAYS}d)..."
 else
   echo "# unseed + block + delete $nplan repos..."
 fi
 deleted=0
-while IFS=$'\t' read -r rid sz seeds life reason name; do
+while IFS=$'\t' read -r rid _; do
   "$RAD" unseed "rad:$rid" >/dev/null 2>&1 || true     # clear any policy FIRST
   "$RAD" block  "rad:$rid" >/dev/null 2>&1 \
     || { echo "#   WARN block failed, skipping delete: $rid" >&2; continue; }
@@ -1685,7 +1762,10 @@ while IFS=$'\t' read -r rid sz seeds life reason name; do
         # A repo pruned twice (re-fetched, pruned again) would otherwise fail to move onto
         # its own older copy, so the older copy goes first.
         rm -rf -- "$quar/$rid" 2>/dev/null
-        mv -- "$d" "$quar/$rid" 2>/dev/null && deleted=$((deleted+1)) \
+        # touch, because the purge below measures the window by directory mtime and mv keeps
+        # the old one. Rules B and C select repos nothing has touched for 90 to 730 days, so
+        # without this their recovery copy would be past its window the moment it arrived.
+        mv -- "$d" "$quar/$rid" 2>/dev/null && touch "$quar/$rid" && deleted=$((deleted+1)) \
           || echo "#   WARN quarantine failed: $d" >&2
       else
         rm -rf -- "$d" && deleted=$((deleted+1)) \
@@ -1703,53 +1783,6 @@ done < "$tmp/plan.sorted"
   echo "# The audit log lists the plan, not what actually got deleted." >&2
 }
 
-# Rule G's action. A block is permanent, it is invisible to the person blocked, and it applies
-# to every repo at once, so it is the one thing here that never happens without a human in the
-# room: --block-peers refuses outright when nothing can be asked, and asks again per peer.
-# Blocking is what makes it stick, since the node filters every namespaced ref it receives
-# through the block list whatever the seeding scope is, so refs dropped here do not come back.
-# Dropping them frees no disk until git gc runs, which this tool does not do, so none of it is
-# counted as reclaimed.
-if [ "$BLOCK_PEERS" = 1 ] && [ "$nparasite" -gt 0 ]; then
-  # The answers come in on fd 9, opened once here. Reading them from /dev/stdin instead would
-  # find the loop's own input file below, since that loop redirects stdin to read the verdicts.
-  asked=1
-  if [ -t 0 ]; then exec 9<&0
-  elif { : >/dev/tty; } 2>/dev/null; then exec 9</dev/tty
-  else asked=0; fi
-  if [ "$asked" = 0 ]; then
-    echo "# --block-peers needs a terminal: blocking a peer is not a decision to automate." >&2
-    echo "# Nobody was blocked. The commands are listed above; run them yourself." >&2
-  else
-    blocked=0
-    while IFS=$'\t' read -r nid widest nrepos mb ob oid; do
-      printf '# Block %s? it put %s in %s repos it does not own [y/N] ' \
-             "$nid" "${oid:0:12}" "$widest"
-      reply=""; IFS= read -r reply <&9 || reply=""
-      case "$reply" in [yY]) ;; *) echo "#   skipped $nid"; continue ;; esac
-      "$RAD" block "$nid" >/dev/null 2>&1 \
-        || { echo "#   WARN block failed, leaving refs alone: $nid" >&2; continue; }
-      blocked=$((blocked+1))
-      # The evidence goes in the audit log beside the block, because a standing judgement
-      # about a person that nobody can later explain is one nobody can later undo either.
-      printf 'blocked-peer\t%s\tblob=%s\trepos=%s\tmedia_bytes=%s\tother_bytes=%s\n' \
-             "$nid" "$oid" "$widest" "$mb" "$ob" >> "$audit"
-      # Only the repos where this peer put content of its own. Where it merely mirrors a repo,
-      # its refs hold that repo's own blobs, so removing them would free nothing and the block
-      # already stops anything new arriving.
-      while IFS=$'\t' read -r _ _ rid _ _; do
-        d="$STORAGE/$rid"
-        [ -d "$d" ] || continue
-        GIT_DIR="$d" git for-each-ref --format='delete %(refname)' \
-            "refs/namespaces/$nid/" 2>/dev/null \
-          | GIT_DIR="$d" git update-ref --stdin 2>/dev/null \
-          || echo "#   WARN could not drop $nid refs from $rid" >&2
-      done < <(awk -F'\t' -v n="$nid" '$1 == "=" && $2 == n && $4 > 0' "$tmp/peer")
-    done < "$tmp/parasites"
-    echo "# blocked $blocked of $nparasite peer(s); run git gc to reclaim their objects."
-  fi
-fi
-
 if [ "$RESTART" = 1 ]; then
   echo "# restarting $SERVICE (clears the stale inventory-announce warning)..."
   systemctl restart "$SERVICE" 2>&1 || sudo systemctl restart "$SERVICE" 2>&1 \
@@ -1757,8 +1790,9 @@ if [ "$RESTART" = 1 ]; then
 fi
 
 # one appended line per run: the index into the per-run audit logs
-printf '%s\tdeleted=%s\treclaimed_gib=%s\tquarantined=%s\tpressure=%s%%\taudit=%s\n' \
-  "$run_ts" "$deleted" "$gib" "$QUARANTINE" "$press_pct" "$(basename "$audit")" \
+printf '%s\tdeleted=%s\treclaimed_gib=%s\tquarantine=%s\tpressure=%s%%\taudit=%s\n' \
+  "$run_ts" "$deleted" "$gib" "$([ "$QUARANTINE" = 1 ] && echo on || echo off)" \
+  "$press_pct" "$(basename "$audit")" \
   >> "$AUDIT_DIR/history.log"
 
 # The GiB figure is what LEAVES storage. With quarantine on it is not free space yet, and
