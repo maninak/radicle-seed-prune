@@ -4,7 +4,14 @@
 # it builds a throwaway Radicle-home fixture (fake `rad` stub on PATH + real bare git repos
 # with controlled activity dates and sizes) and runs the real script against it.
 #
-#   bash tests/run.sh
+#   tests/run.sh                 everything, in order, in one process
+#   tests/run.sh -k quarantine   only the sections that mention "quarantine"
+#   tests/run.sh -n 7            only the 7th section, in a process of its own
+#   tests/run.sh -e              every section, each in a process of its own
+#
+# A section is everything from one fixture rebuild to the next, and it must set up everything
+# it reads: a whole run takes minutes and one section takes seconds, so a section that only
+# passes after the one above it has run takes that loop away from whoever comes next.
 #
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -207,19 +214,72 @@ e_tree(){
 }
 e_code(){ local rid=$1; shift; e_push "$rid" master README.md "$@"; }
 
+# Building the fixture below is about 700 git invocations, and the suite wants a clean one
+# roughly forty times, which used to be most of its runtime. It is built once and kept as a
+# template; every later call throws the working copy away and restores it from that template,
+# which is a copy of a few MB, and a reflink on a filesystem that has them.
 build_fixture(){
-  [ -n "${ROOT:-}" ] && rm -rf "$ROOT" 2>/dev/null # re-runnable: drop the previous fixture
-  ROOT=$(mktemp -d)
-  trap 'rm -rf "$ROOT" 2>/dev/null' EXIT           # always clean up, even on failure
-  local bin="$ROOT/bin"; mkdir -p "$bin"
-  cp "$HERE/rad-stub" "$bin/rad"; chmod +x "$bin/rad"
+  [ -n "${ROOT:-}" ] || { ROOT=$(mktemp -d); _fixture_env
+                          trap 'rm -rf "$ROOT" 2>/dev/null' EXIT ; }
+  if [ -z "${TEMPLATE:-}" ]; then
+    if [ "${RSP_FIXTURE_CACHE:-1}" = 0 ]; then
+      _build_fixture
+      TEMPLATE=$(mktemp -d); cp -a --reflink=auto "$ROOT/." "$TEMPLATE/"
+      trap 'rm -rf "$ROOT" "$TEMPLATE" 2>/dev/null' EXIT
+    else
+      TEMPLATE=$(cached_template) || exit 3         # kept between runs, so never deleted here
+    fi
+  fi
+  # A test that left a directory unreadable would otherwise leave it standing here, and the
+  # fixture that follows would be the previous test's leftovers rather than a fresh one. ROOT
+  # is the same directory for the whole process now, so a failure to clear it has to stop it.
+  if [ -e "$ROOT" ]; then
+    chmod -R u+rwX "$ROOT" 2>/dev/null
+    rm -rf "$ROOT"
+    [ -e "$ROOT" ] && { echo "ABORT: could not clear the fixture at $ROOT"; exit 3; }
+  fi
+  mkdir -p "$ROOT"
+  cp -a --reflink=auto "$TEMPLATE/." "$ROOT/"
+}
+
+# Building the fixture takes about eighteen seconds, which is most of what running a single
+# section costs, and nothing about it changes between two runs of the same suite. It is kept
+# under TMPDIR between runs, keyed by the part of this file that builds it plus the rad stub,
+# so editing a test reuses it and editing the fixture does not. Every date inside it is
+# relative to the moment it was built, so it is thrown away after an hour rather than left to
+# drift towards the day thresholds the tests sit near. RSP_FIXTURE_CACHE=0 turns it off.
+cached_template(){
+  local key dir staging
+  key=$( { sed -n '1,/^# ---- end of header/p' "$0"; cat "$HERE/rad-stub"; } \
+         | sha1sum | cut -c1-12 )
+  dir="${TMPDIR:-/tmp}/rsp-fixture-$key"
+  # An hour old is still today's dates; older than that and the day thresholds the tests sit
+  # near have moved under it.
+  if [ -d "$dir" ] && [ -z "$(find "$dir" -maxdepth 0 -mmin +60)" ]; then
+    printf '%s\n' "$dir"; return 0
+  fi
+  _build_fixture >&2
+  # Filled beside the target and renamed onto it, which is one atomic step: a second suite
+  # running at the same time sees either no template or a whole one, never half of one.
+  staging=$(mktemp -d -p "$(dirname "$dir")")
+  cp -a --reflink=auto "$ROOT/." "$staging/"
+  rm -rf "$dir" 2>/dev/null
+  mv -T "$staging" "$dir" 2>/dev/null || rm -rf "$staging"
+  [ -d "$dir" ] || { echo "ABORT: could not cache the fixture at $dir" >&2; return 1; }
+  # The key changes whenever the fixture does, so yesterday's templates are dead weight.
+  find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'rsp-fixture-*' -type d -mtime +0 \
+    -exec rm -rf {} + 2>/dev/null
+  printf '%s\n' "$dir"
+}
+
+# Where the fixture is and what the script under test must read. Separate from building it,
+# because a process that restores the template instead of building it needs this all the same.
+_fixture_env(){
   # A Debian seed runs mawk, which is stricter than gawk in ways that matter here: it ignores
   # a {n} interval regex instead of honouring it, and prints an integer over 2^31 as %.6g.
   # Test against it wherever it exists, or a program that only works under gawk ships green.
-  local awkbin=${AWK:-$(command -v mawk || command -v awk)}
-  ln -sf "$awkbin" "$bin/awk"
-  export PATH="$bin:$PATH"
-  echo "# awk under test: $(readlink -f "$awkbin")"
+  AWKBIN=${AWK:-$(command -v mawk || command -v awk)}
+  export PATH="$ROOT/bin:$PATH"
 
   export RSP_HOME="$ROOT/rad-home"
   export RSP_NID="zOURNODExxxxxxxxxxxxxxxxxxxxx"
@@ -229,17 +289,23 @@ build_fixture(){
   # ISOLATION: pin every input the script reads so a test can NEVER touch the real Radicle
   # home, even if the caller's shell exported RAD_HOME/RAD/STORAGE/etc. STORAGE in particular
   # confines all deletions to the temp dir (the script only rm's paths under "$STORAGE"/z*).
-  export RAD="$bin/rad"
+  export RAD="$ROOT/bin/rad"
   export RAD_HOME="$RSP_HOME"
   export STORAGE="$RSP_HOME/storage"
   export CONFIG="$RSP_HOME/config.json"
   export AUDIT_DIR="$RSP_HOME/prune-audit"
   export OUR_NID="$RSP_NID"
   export SERVICE="rsp-test-does-not-exist.service"
-  export PATH="$bin:$PATH"
   # Hermetic git: ignore the user's global/system config, so fixture commits never use their
   # signing key (gpgsign) or identity, and the host config can't change behaviour.
   export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+}
+
+_build_fixture(){
+  local bin="$ROOT/bin"; mkdir -p "$bin"
+  cp "$HERE/rad-stub" "$bin/rad"; chmod +x "$bin/rad"
+  ln -sf "$AWKBIN" "$bin/awk"
+  echo "# awk under test: $(readlink -f "$AWKBIN")"
 
   printf '%b\n' "$MANIFEST_ROWS" > "$RSP_MANIFEST"
   # A rid outside the base58 alphabet never survives `rad ls` parsing, so its repo would sit
@@ -500,14 +566,96 @@ run(){ local out; out=$("$SCRIPT" "$@" 2>&1); RC=$?; printf '%s' "$out"; }
 # drop the tty for the non-interactive --apply test
 NOTTY=(); command -v setsid >/dev/null && NOTTY=(setsid)
 
+# The three peers the rule G fixture pushes with: the parasite, the one who also wrote
+# something, and the one who delegates a repo of its own. Named here rather than in the
+# section that first checks them, because six sections read them.
+PARA=zPARASITExxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+WRITER=zWRITERxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+CONTRIB=$(dlg zparaown)
+
+summary(){
+  [ -n "${ROOT:-}" ] && rm -rf "$ROOT" 2>/dev/null
+  echo "-----------------------------------------"
+  echo "passed: $PASS   failed: $FAIL"
+  [ "$FAIL" = 0 ]
+}
+
+# ---- end of header ---------------------------------------------------------
+# Everything below the marker is one long straight-line script, cut into sections by the
+# fixture rebuild that opens each one. A section always starts from a fresh fixture, so running
+# one on its own gives the same result it gets in the whole suite. This prints the sections a
+# caller asked for, or, in count mode, how many there are.
+sections(){                      # $1 = regex, or "" for all   $2 = index, or 0   $3 = "count"?
+  awk -v pat="$1" -v want="$2" -v mode="$3" '
+    function flush() {
+      if (buf == "") return
+      n++
+      if (mode != "count") {
+        if (want > 0) { if (n == want) printf "%s", buf }
+        else if (pat == "" || buf ~ pat) printf "%s", buf
+      }
+      buf = ""
+    }
+    /^# ---- end of sections/ { stop = 1 }
+    stop { next }
+    /^build_fixture($|;)/ { flush(); started = 1 }
+    started { buf = buf $0 "\n" }
+    END { flush(); if (mode == "count") print n }
+  ' "$0"
+}
+
+# Settings every section runs under, so a section run on its own is the same run it gets in
+# the whole suite. PLAN_FULL because nearly every assertion looks for one repo's row, and the
+# folding that hides those rows on a real 519-row plan gets its own test rather than silencing
+# the rest.
+export DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 MEDIA_MIN_BYTES=20000 PLAN_FULL=1
+
+# The three ways to run something other than the whole file in one process:
+#
+#   tests/run.sh -k quarantine   the sections whose text matches this regular expression. A
+#                                test name, a rid, a knob or a rule letter all select one,
+#                                which is the loop to be in while changing a single rule.
+#   tests/run.sh -n 7            the 7th section alone, in a process of its own.
+#   tests/run.sh -e              every section, each in a process of its own, one after
+#                                another. Slower than a plain run and not there for speed: a
+#                                section that only passes because the section above it ran
+#                                first fails here, and that is what keeps -k honest.
+case "${1:-}" in
+  -k|-n)
+    [ $# -ge 2 ] || { echo "usage: $0 [-k PATTERN | -n INDEX | -e]"; exit 3; }
+    [ "$1" = -k ] && chosen=$(sections "$2" 0 "") || chosen=$(sections "" "$2" "")
+    [ -n "$chosen" ] || { echo "no section matches: $2"; exit 3; }
+    eval "$chosen"
+    summary
+    exit
+    ;;
+  -e)
+    total=$(sections "" 0 count); printed=$(mktemp)
+    # Each section keeps its own tally in its own process and prints it, which is noise forty
+    # times over, so the tallies are dropped here and the ok and FAIL lines counted instead.
+    for i in $(seq 1 "$total"); do
+      bash "$0" -n "$i" || echo "# section $i exited $?, see above"
+    done | grep -vE '^(-+$|passed: )' | tee "$printed"
+    PASS=$(grep -c '^ok   - ' "$printed")
+    FAIL=$(grep -c '^FAIL - ' "$printed")
+    # A section that died part-way took the assertions after it down with it, and neither count
+    # above can see the ones that never ran.
+    [ "$FAIL" -gt 0 ] || FAIL=$(grep -c '^# section [0-9]* exited ' "$printed")
+    rm -f "$printed"
+    summary
+    exit
+    ;;
+esac
+
 # ============================================================================
+# The classification tests below are cut into the sections that follow rather than left as
+# one, so that -k on a rule reaches a handful of runs instead of forty. The price is that
+# several of them build the same default plan again for themselves: a section that borrowed it
+# from another could not be run on its own.
 build_fixture
 assert_isolated                                   # STORAGE must be inside the temp fixture
 
 # --- classification & exclusions (relaxed thresholds, disk-awareness off) ---
-# PLAN_FULL because nearly every assertion below looks for one repo's row. The folding that
-# hides those rows on a real 519-row plan gets its own test rather than silencing the rest.
-export DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 MEDIA_MIN_BYTES=20000 PLAN_FULL=1
 plan=$(run)
 has "$plan" "zjunk1"  && grep -qE "^zjunk1 .*junk-name"     <<<"$plan" \
   && ok "junk-named stale repo pruned (junk-name)"     \
@@ -537,6 +685,74 @@ has "$plan" "zhexid23" && grep -qE "^zhexid23 .*junk-id" <<<"$plan" \
 ! has "$plan" "zdigit24" \
   && ok "all-digit name '12345678' not treated as a random id"  \
   || no "'12345678' not a random id"
+
+# Rules A/B/C must keep clocking ACTIVITY: a repo touched yesterday is not abandoned.
+! grep -qE "^zfresh4 " <<<"$plan" \
+  && ok "an actively-used repo is still spared by the activity rules" \
+  || no "activity rules unaffected"
+
+# --- taking the last copy WE KNOW OF, but only where the evidence is conclusive --- "No other
+# seed has it" is worthlessness for machine-generated bulk and preservation value for anything
+# else, so the two rule-A branches are gated apart and rule C is not in this game at all.
+has "$plan" "zhexzero27" && grep -qE "^zhexzero27 .*junk-id" <<<"$plan" \
+  && ok "zero-seed random-id name is pruned (junk-id takes the last copy)" \
+  || no "zero-seed junk-id pruned"
+! has "$plan" "zwordzero28" \
+  && ok "zero-seed 'test-orphan' is kept (a word in a name is a guess, not proof)" \
+  || no "zero-seed junk-name kept"
+has "$plan" "zspamzero" && grep -qE "^zspamzero .*spam-batch" <<<"$plan" \
+  && ok "zero-seed spam batch member is pruned" || no "zero-seed spam-batch pruned"
+
+# Both new floors must be able to say no, or they are decoration.
+plan_i=$(JUNK_ID_MIN_SEEDS=1 run)
+! has "$plan_i" "zhexzero27" && has "$plan_i" "zhexid23" \
+  && ok "JUNK_ID_MIN_SEEDS=1 spares the zero-seed id repo, keeps the seeded one" \
+  || no "JUNK_ID_MIN_SEEDS check is vacuous"
+# ...and the word branch's floor must be the REASON zwordzero28 survives, not a coincidence of
+# it also failing every other rule: drop the floor and it has to appear.
+plan_w=$(JUNK_MIN_SEEDS=0 run)
+grep -qE "^zwordzero28 .*junk-name" <<<"$plan_w" \
+  && ok "JUNK_MIN_SEEDS=0 does reach the zero-seed word repo (so the keep above is real)" \
+  || no "zero-seed junk-name keep is vacuous"
+plan_s=$(SPAM_MIN_SEEDS=1 run)
+! has "$plan_s" "zspamzero" && has "$plan_s" "zspam1" \
+  && ok "SPAM_MIN_SEEDS=1 spares the zero-seed spam repo, keeps the seeded ones" \
+  || no "SPAM_MIN_SEEDS check is vacuous"
+
+# A repo whose description quotes an rid must still be filed under its OWN rid, not the quoted
+# one. Regression: a description may itself quote an rid ("...used for the site in
+# rad:z3U9..."), and taking the LAST rad: token on the row filed the whole repo under the rid
+# it merely mentioned.
+grep -qE "^zridin25 .*ridquoter$" <<<"$plan" \
+  && ok "a description quoting an rid still files under the row's own rid" \
+  || no "row filed under its own rid"
+# Regression: the name column was read as field 2, so any name with a space was silently
+# truncated ("Blog e64" became "Blog") - and a truncated name is what rule D skeletonises.
+grep -qE "^zspaced26 .*Blog e64$" <<<"$plan" \
+  && ok "a name containing spaces survives the parse" \
+  || no "spaced name survives the parse"
+
+# --- disk-pressure: at full pressure, stale window shrinks + seed floor drops to 1 ---
+plan_hi=$(DISK_AWARE=1 ABS_SIZE_FLOOR_MB=1 \
+          PRESSURE_CRIT_PCT=100 PRESSURE_CRIT_GB=99999999 \
+          PRESSURE_RELAX_PCT=100 PRESSURE_RELAX_GB=999999999 run)
+grep -qE "pressure=100%" <<<"$plan_hi" \
+  && ok "pressure reaches 100% under forced watermarks" \
+  || no "pressure=100%"
+has "$plan_hi" "zbwid9" \
+  && ok "pressure prunes a repo that was kept at p=0"   \
+  || no "pressure widens the net"
+has "$plan_hi" "zfews5" \
+  && ok "pressure drops seed floor to 1 (under-seeded now pruned)" \
+  || no "pressure drops seed floor"
+! has "$plan_hi" "zfresh4" \
+  && ok "pressure still keeps a fresh repo"          \
+  || no "pressure keeps fresh repo"
+
+
+build_fixture; assert_isolated
+# Built here rather than inherited, so this section can run on its own.
+plan=$(run)
 
 # --- rule D: generated-bulk batches, decided by the corpus ---
 # The three batches are identical except for the one variable each tests, so these assertions
@@ -596,6 +812,10 @@ plan_b=$(SPAM_STALE_DAYS=99999 run)
 [ "$(grep -cE "^zspam" <<<"$plan_b" || true)" = 0 ] \
   && ok "SPAM_STALE_DAYS spares a batch younger than the window" \
   || no "rule D creation window is vacuous"
+
+
+build_fixture; assert_isolated
+
 # --- rule E: link farms ---
 # Thresholds are lowered so three fixture repos can stand in for the hundreds a real wave has.
 plan_e=$(LINK_MIN_REPOS=3 LINK_MIN_SCORE=2 run)
@@ -662,6 +882,13 @@ plan_e3=$(LINK_MIN_REPOS=3 LINK_MIN_SCORE=2 LINK_STALE_DAYS=99999 run)
   && ok "LINK_STALE_DAYS spares a link farm younger than the window" \
   || no "rule E creation window is vacuous"
 
+
+build_fixture; assert_isolated
+
+# --- rule E: whose links count, and what counts as one host --- The thresholds are lowered
+# again here, and the plan built rather than inherited, so this section can run on its own.
+plan_e=$(LINK_MIN_REPOS=3 LINK_MIN_SCORE=2 run)
+
 # --- rule E: only the repo's own peers' links count ---
 # Anybody may push an issue to any public repo and it lands in that repo's storage here. Left
 # alone, five spam links in five issues would put somebody else's repo in the plan.
@@ -704,6 +931,11 @@ plan_epc=$(LINK_MIN_REPOS=3 LINK_MIN_SCORE=2 LINK_MIN_REPOS_PCT=10 run)
 [ "$(grep -cE "^zfarm[1-3] " <<<"$plan_epc" || true)" = 0 ] \
   && ok "LINK_MIN_REPOS_PCT raises the linker bar above the floor" \
   || no "LINK_MIN_REPOS_PCT is vacuous"
+
+
+build_fixture; assert_isolated
+# Built here rather than inherited, so this section can run on its own.
+plan=$(run)
 
 # --- rule F: media dumps --- Radicle storage is for collaborating on code, and a repo tracking
 # a video and nothing else is using the seed as file hosting. The seven fixtures differ from
@@ -775,124 +1007,12 @@ grep -qE "^zmediaspc .*media-dump" <<<"$plan" \
   && ok "a peer replicating a repo does not subtract the repo's own COB text from itself" \
   || no "replication erased zmediacobm's issue thread and left it looking like a dump"
 
-# --- a plan nobody reads is not a review --- A verdict decided by a pattern across many repos
-# folds to one line once the group is big; a verdict decided by one repo's own metadata never
-# folds, however many there are, because those are the rows that want eyes.
-folded=$(PLAN_FULL=0 PLAN_COLLAPSE_ROWS=2 run)
-{ grep -qE '^\([0-9]+ repos\) .* spam-batch' <<<"$folded" \
-  && ! has "$folded" "zspam1"; } \
-  && ok "a big corpus verdict folds to one line in the plan" \
-  || no "spam-batch did not fold, so a 434-row group would print in full"
-has "$folded" "zjunk1" \
-  && ok "a verdict resting on one repo is always listed, never folded" \
-  || no "a judgment-tier row was folded away where a human could not see it"
-grep -q "PLAN_FULL=1" <<<"$folded" \
-  && ok "the folded line says how to see what it hid" \
-  || no "the plan folded rows without saying how to expand them"
 
-# --- one spelling for turning a rule off --- Every rule answers to the same switch, including
-# B and C, which used to have no off switch at all.
-noa=$(RULES=BCDEFG run)
-{ ! has "$noa" "zjunk1" && has "$noa" "zbig2"; } \
-  && ok "a rule left out of RULES puts nothing in the plan" \
-  || no "RULES=BCDEFG still pruned a rule A repo, or took rule B down with it"
-grep -q 'A junk.*DISABLED: not in RULES' <<<"$noa" \
-  && ok "the banner says which rules are switched off" \
-  || no "a disabled rule was not marked in the banner"
-nof=$(RULES=ABCDE run)
-{ ! has "$nof" "zmediamd" && ! grep -q 'measuring repo trees' <<<"$nof"; } \
-  && ok "a rule left out of RULES does not even run its scan" \
-  || no "RULES=ABCDE still ran or planned rule F"
+build_fixture; assert_isolated
 
-# Turning a rule off must not SPARE a repo the remaining rules would have taken. Rule D is the
-# case that matters: its corpus scan runs whatever RULES says, because rule E reads its suspect
-# list, so a dropped D verdict could shadow the rule C verdict underneath it.
-withd=$(STALE_YEARS_DAYS=30 RULES=ABCDEFG run)
-nod=$(STALE_YEARS_DAYS=30 RULES=ABCEFG run)
-{ has "$withd" "zspam1" && has "$nod" "zspam1" \
-  && grep -qE "^zspam1 .* spam-batch " <<<"$withd" \
-  && grep -qE "^zspam1 .* stale " <<<"$nod"; } \
-  && ok "a repo a disabled rule would have claimed falls through to the next rule" \
-  || no "RULES=ABCEFG let a batch member escape rule C as well as rule D"
-
-
-# --- rule G: parasite peers --- Three peers put the identical clip in the same three repos.
-# Only one of them is accused, so each exemption is what separates it from the other two, not
-# a shortage of evidence.
-PARA=zPARASITExxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-WRITER=zWRITERxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-CONTRIB=$(dlg zparaown)
-# Exported, not prefixed: run is a shell function, and an assignment in front of one does not
-# reach the script it launches.
-export PARASITE_MIN_REPOS=3 PARASITE_MIN_BYTES=65536 PARASITE_TEXT_MAX_BYTES=4096
-gplan=$(run)
-grep -q "PARASITE PEERS: 1" <<<"$gplan" && grep -q "$PARA" <<<"$gplan" \
-  && ok "a peer posting one file into repos it does not own is reported (rule G)" \
-  || no "rule G missed a peer republishing one file across repos it does not own"
-! grep -q "$CONTRIB" <<<"$gplan" \
-  && ok "a peer who delegates a repo somewhere in storage is never accused" \
-  || no "rule G accused a delegate, whose block would stop their own repo replicating"
-! grep -q "$WRITER" <<<"$gplan" \
-  && ok "a peer who also wrote something is not a parasite" \
-  || no "rule G accused a peer that contributed text"
-{ ! has "$gplan" "zpara1" && ! has "$gplan" "zpara2" && ! has "$gplan" "zpara3"; } \
-  && ok "rule G puts no repo in the plan; the peer is the finding" \
-  || no "rule G pruned a repo somebody else pushed into"
-grep -q -- "--block-peers" <<<"$gplan" \
-  && ok "rule G reports without blocking until --block-peers is given" \
-  || no "rule G did not say that blocking needs its own opt-in"
-unset PARASITE_MIN_REPOS PARASITE_MIN_BYTES PARASITE_TEXT_MAX_BYTES
-
-# --- numbers must not follow the operator's locale --- mawk honours LC_NUMERIC, so under a
-# comma locale it hands back "2,52e+10" and the awk that reads it gets 2. The script pins
-# LC_ALL=C; this checks the plan is byte-identical either way rather than eyeballing output.
-if locale -a 2>/dev/null | grep -qix 'de_AT.utf8'; then
-  # Plan rows only: the banner carries a timestamp, so two runs never match on it.
-  # Both sides are pinned, because the machine running the suite may itself be on a comma
-  # locale, in which case an unpinned baseline would match the comma run and prove nothing.
-  # Exported rather than prefixed for the same reason as the rule G knobs above: run is a
-  # shell function, and an assignment in front of one never reaches the script it launches.
-  unset LC_ALL
-  export LC_NUMERIC=C;             base=$(run | grep -v '^#')
-  export LC_NUMERIC=de_AT.UTF-8;   comma=$(run | grep -v '^#')
-  unset LC_NUMERIC
-  [ -n "$base" ] && [ "$comma" = "$base" ] \
-    && ok "a comma-decimal locale does not change the plan" \
-    || no "the plan changes under LC_NUMERIC=de_AT.UTF-8; a number went through the locale"
-else
-  skip "no comma-decimal locale installed to test LC_ALL=C against"
-fi
-# Each worker is written to a file and run later, so a stray apostrophe inside one of their
-# single-quoted awk programs is invisible to `bash -n` on the script itself. It closes the
-# quote, and only the generated worker then fails to parse. Parse each one on its own.
-badbody=""
-# Discovered from the script, not listed here: a hand-kept list would silently stop covering
-# whichever worker was added last, which is the exact moment this gate is worth having.
-tags=$(grep -oE "<<'[A-Z]+'\$" "$SCRIPT" | tr -d "<'" | sort -u)
-[ -n "$tags" ] || no "found no generated workers to parse; the gate has stopped working"
-for tag in $tags; do
-  awk -v tag="$tag" '$0 ~ ("<<" "\047" tag "\047$") { f=1; next }
-                     f && $0 == tag { exit }
-                     f' "$SCRIPT" > "$HERE/.body.$tag.sh"
-  bash -n "$HERE/.body.$tag.sh" 2>/dev/null || badbody="$badbody $tag"
-  rm -f "$HERE/.body.$tag.sh"
-done
-[ -z "$badbody" ] \
-  && ok "every generated worker parses on its own" \
-  || no "generated worker(s)$badbody do not parse; a quote inside one is unbalanced"
-
-# mawk prints any integral value over 2^31 with "%.6g", so an unformatted 3 GB size arrives as
-# "2.81904e+09" and the shell reading it stops dead. This machine's awk prints it in full, so
-# no fixture can reach the bug from here: pin the formats that avoid it instead.
-# Both counts come from the script, so a new printf that emits a byte count without %.0f
-# raises the first and not the second. A fixed number here would instead go red for any new
-# printf at all, formatted or not, which is a gate that cries wolf until someone edits it.
-emitre='printf "[^"]*", *[^;]*\b(size|media|text|unk|other)\b'
-fmtre='printf "[^"]*%\.0f[^"]*", *[^;]*\b(size|media|text|unk|other)\b'
-nemit=$(grep -cE "$emitre" "$SCRIPT"); nfmt=$(grep -cE "$fmtre" "$SCRIPT")
-{ [ "$nemit" -gt 0 ] && [ "$nemit" = "$nfmt" ]; } \
-  && ok "every byte count handed back to the shell is formatted ($nfmt sites)" \
-  || no "$((nemit - nfmt)) unformatted byte count(s) reach the shell as 2.81904e+09 on mawk"
+# --- rule F: the batch path, and every threshold that gates a media verdict --- Both read one
+# default plan, built here rather than inherited, so this section can run on its own.
+plan=$(run)
 
 # The batch path. A README clears the single-repo budget, so these five can only be reached by
 # what no one repo can fake: other repos holding the very same file.
@@ -974,6 +1094,140 @@ grep -qE "^zmediazero .*media-dump" <<<"$plan_fz" \
   && ok "nothing to review once the floor is 0 and it was pruned instead" \
   || no "review list is vacuous"
 
+
+build_fixture; assert_isolated
+
+# --- a plan nobody reads is not a review --- A verdict decided by a pattern across many repos
+# folds to one line once the group is big; a verdict decided by one repo's own metadata never
+# folds, however many there are, because those are the rows that want eyes.
+folded=$(PLAN_FULL=0 PLAN_COLLAPSE_ROWS=2 run)
+{ grep -qE '^\([0-9]+ repos\) .* spam-batch' <<<"$folded" \
+  && ! has "$folded" "zspam1"; } \
+  && ok "a big corpus verdict folds to one line in the plan" \
+  || no "spam-batch did not fold, so a 434-row group would print in full"
+has "$folded" "zjunk1" \
+  && ok "a verdict resting on one repo is always listed, never folded" \
+  || no "a judgment-tier row was folded away where a human could not see it"
+grep -q "PLAN_FULL=1" <<<"$folded" \
+  && ok "the folded line says how to see what it hid" \
+  || no "the plan folded rows without saying how to expand them"
+
+# --- one spelling for turning a rule off --- Every rule answers to the same switch, including
+# B and C, which used to have no off switch at all.
+noa=$(RULES=BCDEFG run)
+{ ! has "$noa" "zjunk1" && has "$noa" "zbig2"; } \
+  && ok "a rule left out of RULES puts nothing in the plan" \
+  || no "RULES=BCDEFG still pruned a rule A repo, or took rule B down with it"
+grep -q 'A junk.*DISABLED: not in RULES' <<<"$noa" \
+  && ok "the banner says which rules are switched off" \
+  || no "a disabled rule was not marked in the banner"
+nof=$(RULES=ABCDE run)
+{ ! has "$nof" "zmediamd" && ! grep -q 'measuring repo trees' <<<"$nof"; } \
+  && ok "a rule left out of RULES does not even run its scan" \
+  || no "RULES=ABCDE still ran or planned rule F"
+
+# Turning a rule off must not SPARE a repo the remaining rules would have taken. Rule D is the
+# case that matters: its corpus scan runs whatever RULES says, because rule E reads its suspect
+# list, so a dropped D verdict could shadow the rule C verdict underneath it.
+withd=$(STALE_YEARS_DAYS=30 RULES=ABCDEFG run)
+nod=$(STALE_YEARS_DAYS=30 RULES=ABCEFG run)
+{ has "$withd" "zspam1" && has "$nod" "zspam1" \
+  && grep -qE "^zspam1 .* spam-batch " <<<"$withd" \
+  && grep -qE "^zspam1 .* stale " <<<"$nod"; } \
+  && ok "a repo a disabled rule would have claimed falls through to the next rule" \
+  || no "RULES=ABCEFG let a batch member escape rule C as well as rule D"
+
+
+build_fixture; assert_isolated
+
+# --- rule G: parasite peers --- Three peers put the identical clip in the same three repos.
+# Only one of them is accused, so each exemption is what separates it from the other two, not
+# a shortage of evidence.
+# Exported, not prefixed: run is a shell function, and an assignment in front of one does not
+# reach the script it launches.
+export PARASITE_MIN_REPOS=3 PARASITE_MIN_BYTES=65536 PARASITE_TEXT_MAX_BYTES=4096
+gplan=$(run)
+grep -q "PARASITE PEERS: 1" <<<"$gplan" && grep -q "$PARA" <<<"$gplan" \
+  && ok "a peer posting one file into repos it does not own is reported (rule G)" \
+  || no "rule G missed a peer republishing one file across repos it does not own"
+! grep -q "$CONTRIB" <<<"$gplan" \
+  && ok "a peer who delegates a repo somewhere in storage is never accused" \
+  || no "rule G accused a delegate, whose block would stop their own repo replicating"
+! grep -q "$WRITER" <<<"$gplan" \
+  && ok "a peer who also wrote something is not a parasite" \
+  || no "rule G accused a peer that contributed text"
+{ ! has "$gplan" "zpara1" && ! has "$gplan" "zpara2" && ! has "$gplan" "zpara3"; } \
+  && ok "rule G puts no repo in the plan; the peer is the finding" \
+  || no "rule G pruned a repo somebody else pushed into"
+grep -q -- "--block-peers" <<<"$gplan" \
+  && ok "rule G reports without blocking until --block-peers is given" \
+  || no "rule G did not say that blocking needs its own opt-in"
+unset PARASITE_MIN_REPOS PARASITE_MIN_BYTES PARASITE_TEXT_MAX_BYTES
+
+
+build_fixture; assert_isolated
+
+# --- gates on the script itself: its locale, its generated workers, its number formats ---
+
+# --- numbers must not follow the operator's locale --- mawk honours LC_NUMERIC, so under a
+# comma locale it hands back "2,52e+10" and the awk that reads it gets 2. The script pins
+# LC_ALL=C; this checks the plan is byte-identical either way rather than eyeballing output.
+if locale -a 2>/dev/null | grep -qix 'de_AT.utf8'; then
+  # Plan rows only: the banner carries a timestamp, so two runs never match on it.
+  # Both sides are pinned, because the machine running the suite may itself be on a comma
+  # locale, in which case an unpinned baseline would match the comma run and prove nothing.
+  # Exported rather than prefixed for the same reason as the rule G knobs above: run is a
+  # shell function, and an assignment in front of one never reaches the script it launches.
+  unset LC_ALL
+  export LC_NUMERIC=C;             base=$(run | grep -v '^#')
+  export LC_NUMERIC=de_AT.UTF-8;   comma=$(run | grep -v '^#')
+  unset LC_NUMERIC
+  [ -n "$base" ] && [ "$comma" = "$base" ] \
+    && ok "a comma-decimal locale does not change the plan" \
+    || no "the plan changes under LC_NUMERIC=de_AT.UTF-8; a number went through the locale"
+else
+  skip "no comma-decimal locale installed to test LC_ALL=C against"
+fi
+# Each worker is written to a file and run later, so a stray apostrophe inside one of their
+# single-quoted awk programs is invisible to `bash -n` on the script itself. It closes the
+# quote, and only the generated worker then fails to parse. Parse each one on its own.
+badbody=""
+# Discovered from the script, not listed here: a hand-kept list would silently stop covering
+# whichever worker was added last, which is the exact moment this gate is worth having.
+tags=$(grep -oE "<<'[A-Z]+'\$" "$SCRIPT" | tr -d "<'" | sort -u)
+[ -n "$tags" ] || no "found no generated workers to parse; the gate has stopped working"
+for tag in $tags; do
+  awk -v tag="$tag" '$0 ~ ("<<" "\047" tag "\047$") { f=1; next }
+                     f && $0 == tag { exit }
+                     f' "$SCRIPT" > "$HERE/.body.$tag.sh"
+  bash -n "$HERE/.body.$tag.sh" 2>/dev/null || badbody="$badbody $tag"
+  rm -f "$HERE/.body.$tag.sh"
+done
+[ -z "$badbody" ] \
+  && ok "every generated worker parses on its own" \
+  || no "generated worker(s)$badbody do not parse; a quote inside one is unbalanced"
+
+# mawk prints any integral value over 2^31 with "%.6g", so an unformatted 3 GB size arrives as
+# "2.81904e+09" and the shell reading it stops dead. This machine's awk prints it in full, so
+# no fixture can reach the bug from here: pin the formats that avoid it instead.
+# Both counts come from the script, so a new printf that emits a byte count without %.0f
+# raises the first and not the second. A fixed number here would instead go red for any new
+# printf at all, formatted or not, which is a gate that cries wolf until someone edits it.
+emitre='printf "[^"]*", *[^;]*\b(size|media|text|unk|other)\b'
+fmtre='printf "[^"]*%\.0f[^"]*", *[^;]*\b(size|media|text|unk|other)\b'
+nemit=$(grep -cE "$emitre" "$SCRIPT"); nfmt=$(grep -cE "$fmtre" "$SCRIPT")
+{ [ "$nemit" -gt 0 ] && [ "$nemit" = "$nfmt" ]; } \
+  && ok "every byte count handed back to the shell is formatted ($nfmt sites)" \
+  || no "$((nemit - nfmt)) unformatted byte count(s) reach the shell as 2.81904e+09 on mawk"
+
+
+build_fixture; assert_isolated
+
+# --- the clocks a row is judged on, and the margin printed beside them --- The ledger, the
+# freshness guard and the AGE column all read one default plan, built here rather than
+# inherited, so this section runs on its own.
+plan=$(run)
+
 # --- the creation clock cannot be reset by a push --- Every date inside a repo is set by
 # whoever pushed it, so force-pushing every ref with fresh dates would renew rules D and E
 # forever. What this seed recorded when it first saw the repo cannot be reached from outside,
@@ -991,20 +1245,6 @@ grep -q "^zjunk1"$'\t' "$AUDIT_DIR/first-seen.tsv" \
 { ! grep -q 'integer expression' <<<"$plan" && ! has "$plan" "zfresh4"; } \
   && ok "a torn ledger line is skipped, not fed to an arithmetic comparison" \
   || no "a torn ledger line is skipped"
-
-# The other way a non-number reaches an age comparison, and this one is in every heartwood
-# repo: refs/rad/sigrefs points at a blob, a blob has no creatordate, so `for-each-ref
-# --sort=creatordate` prints that ref first with an empty date field and the object id lands
-# where the date should be. Rules D, E and F then compare a 40-hex string and spare the repo.
-build_fixture; assert_isolated
-blob=$(printf 'sigrefs\n' | GIT_DIR="$STORAGE/zmediaone" git hash-object -w --stdin)
-GIT_DIR="$STORAGE/zmediaone" git update-ref refs/rad/sigrefs "$blob"
-touch -d "10 days ago" "$STORAGE/zmediaone"        # update-ref just made the repo look fresh
-out=$(DISK_AWARE=0 run)
-{ grep -qE "^zmediaone .*media-dump" <<<"$out" \
-  && ! grep -q 'integer expression' <<<"$out"; } \
-  && ok "a ref with no date does not put an object id where the repo's age belongs" \
-  || no "a dateless ref blinded the age rules, and the repo went unjudged"
 
 # --- what the run left alone is counted in the report, not silently absent ---
 skipped_re='^# skipped: [0-9]+ unreadable, 1 written in the last 2d,'
@@ -1045,6 +1285,13 @@ grep -qE '^#   [0-9]+ of them cleared a threshold by under 20%' <<<"$near_close"
   && ok "the plan summary counts the rows that were near a threshold" \
   || no "the plan never said how many of its rows were near a threshold"
 
+
+build_fixture; assert_isolated
+
+# --- what a run cannot read is reported, never quietly dropped --- A repo over the read
+# budget, an empty listing, a home rad never saw, an injected failure, a node that is down
+# and a directory nobody may read: each one is named, and the run finishes or aborts loudly.
+
 # --- a repo larger than the read budget is judged, not excluded --- Reaching LINK_REPO_BUDGET
 # closes the harvest pipe early and kills the object lister with SIGPIPE. Read as a failure,
 # that quietly drops every large repo from the plan, and past MAX_SCAN_FAIL_PCT it aborts the
@@ -1054,75 +1301,12 @@ plan_bud=$(LINK_REPO_BUDGET=100 run)
   && ok "a repo bigger than the read budget is still judged, and not counted as unreadable" \
   || no "the read budget excluded a big repo or reported it as a read failure"
 
-# Rules A/B/C must keep clocking ACTIVITY: a repo touched yesterday is not abandoned.
-! grep -qE "^zfresh4 " <<<"$plan" \
-  && ok "an actively-used repo is still spared by the activity rules" \
-  || no "activity rules unaffected"
-
-# --- taking the last copy WE KNOW OF, but only where the evidence is conclusive --- "No other
-# seed has it" is worthlessness for machine-generated bulk and preservation value for anything
-# else, so the two rule-A branches are gated apart and rule C is not in this game at all.
-has "$plan" "zhexzero27" && grep -qE "^zhexzero27 .*junk-id" <<<"$plan" \
-  && ok "zero-seed random-id name is pruned (junk-id takes the last copy)" \
-  || no "zero-seed junk-id pruned"
-! has "$plan" "zwordzero28" \
-  && ok "zero-seed 'test-orphan' is kept (a word in a name is a guess, not proof)" \
-  || no "zero-seed junk-name kept"
-has "$plan" "zspamzero" && grep -qE "^zspamzero .*spam-batch" <<<"$plan" \
-  && ok "zero-seed spam batch member is pruned" || no "zero-seed spam-batch pruned"
-
-# Both new floors must be able to say no, or they are decoration.
-plan_i=$(JUNK_ID_MIN_SEEDS=1 run)
-! has "$plan_i" "zhexzero27" && has "$plan_i" "zhexid23" \
-  && ok "JUNK_ID_MIN_SEEDS=1 spares the zero-seed id repo, keeps the seeded one" \
-  || no "JUNK_ID_MIN_SEEDS check is vacuous"
-# ...and the word branch's floor must be the REASON zwordzero28 survives, not a coincidence of
-# it also failing every other rule: drop the floor and it has to appear.
-plan_w=$(JUNK_MIN_SEEDS=0 run)
-grep -qE "^zwordzero28 .*junk-name" <<<"$plan_w" \
-  && ok "JUNK_MIN_SEEDS=0 does reach the zero-seed word repo (so the keep above is real)" \
-  || no "zero-seed junk-name keep is vacuous"
-plan_s=$(SPAM_MIN_SEEDS=1 run)
-! has "$plan_s" "zspamzero" && has "$plan_s" "zspam1" \
-  && ok "SPAM_MIN_SEEDS=1 spares the zero-seed spam repo, keeps the seeded ones" \
-  || no "SPAM_MIN_SEEDS check is vacuous"
-
-# A repo whose description quotes an rid must still be filed under its OWN rid, not the quoted
-# one. Regression: a description may itself quote an rid ("...used for the site in
-# rad:z3U9..."), and taking the LAST rad: token on the row filed the whole repo under the rid
-# it merely mentioned.
-grep -qE "^zridin25 .*ridquoter$" <<<"$plan" \
-  && ok "a description quoting an rid still files under the row's own rid" \
-  || no "row filed under its own rid"
-# Regression: the name column was read as field 2, so any name with a space was silently
-# truncated ("Blog e64" became "Blog") - and a truncated name is what rule D skeletonises.
-grep -qE "^zspaced26 .*Blog e64$" <<<"$plan" \
-  && ok "a name containing spaces survives the parse" \
-  || no "spaced name survives the parse"
-
 # --- an empty `rad ls` degrades loudly: blank names and a blind rule D would otherwise look
 # exactly like a clean seed ---
 out=$(RSP_NO_LS=1 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 run)
 { grep -q "WARN: .*returned no repos" <<<"$out" && ! grep -q '^# spam batches' <<<"$out"; } \
   && ok "an empty repo listing is reported, not silently read as 'no spam'" \
   || no "empty repo listing warns"
-
-# --- disk-pressure: at full pressure, stale window shrinks + seed floor drops to 1 ---
-plan_hi=$(DISK_AWARE=1 ABS_SIZE_FLOOR_MB=1 \
-          PRESSURE_CRIT_PCT=100 PRESSURE_CRIT_GB=99999999 \
-          PRESSURE_RELAX_PCT=100 PRESSURE_RELAX_GB=999999999 run)
-grep -qE "pressure=100%" <<<"$plan_hi" \
-  && ok "pressure reaches 100% under forced watermarks" \
-  || no "pressure=100%"
-has "$plan_hi" "zbwid9" \
-  && ok "pressure prunes a repo that was kept at p=0"   \
-  || no "pressure widens the net"
-has "$plan_hi" "zfews5" \
-  && ok "pressure drops seed floor to 1 (under-seeded now pruned)" \
-  || no "pressure drops seed floor"
-! has "$plan_hi" "zfresh4" \
-  && ok "pressure still keeps a fresh repo"          \
-  || no "pressure keeps fresh repo"
 
 # --- RAD_HOME reaches rad as ENVIRONMENT, not just as a shell variable --- Regression: the
 # script resolved RAD_HOME but never exported it, so every rad call queried the default home
@@ -1178,6 +1362,20 @@ grep -qE '^# WARN: [0-9]+ scan error' <<<"$out" \
 { ! has "$out" "ztwoyr3" && has "$out" "zjunk1"; } \
   && ok "unreadable repo excluded from plan, others still planned" \
   || no "unreadable repo excluded from plan"
+
+# The other way a non-number reaches an age comparison, and this one is in every heartwood
+# repo: refs/rad/sigrefs points at a blob, a blob has no creatordate, so `for-each-ref
+# --sort=creatordate` prints that ref first with an empty date field and the object id lands
+# where the date should be. Rules D, E and F then compare a 40-hex string and spare the repo.
+build_fixture; assert_isolated
+blob=$(printf 'sigrefs\n' | GIT_DIR="$STORAGE/zmediaone" git hash-object -w --stdin)
+GIT_DIR="$STORAGE/zmediaone" git update-ref refs/rad/sigrefs "$blob"
+touch -d "10 days ago" "$STORAGE/zmediaone"        # update-ref just made the repo look fresh
+out=$(DISK_AWARE=0 run)
+{ grep -qE "^zmediaone .*media-dump" <<<"$out" \
+  && ! grep -q 'integer expression' <<<"$out"; } \
+  && ok "a ref with no date does not put an object id where the repo's age belongs" \
+  || no "a dateless ref blinded the age rules, and the repo went unjudged"
 
 # The tables under the plan header are the evidence a corpus verdict rests on, and each shows
 # only its top few. Truncated with no way to reach the rest, a reviewer cannot check the other
@@ -1268,8 +1466,13 @@ done
 # --- rule G's act, the only thing in the tool that judges a PERSON --- Blocking is permanent
 # and the peer never hears about it, so it needs a human in the room every time: --apply alone
 # must not reach it, and --block-peers must refuse when there is nobody to ask.
-export PARASITE_MIN_REPOS=3 PARASITE_MIN_BYTES=65536 PARASITE_TEXT_MAX_BYTES=4096
+#
+# Each of the five sections below sets rule G's thresholds again. They are the same three
+# values every time and only the first needs them in a full run, but a section that inherited
+# them from the section above could not be run on its own, and one that judges no peer at all
+# passes these assertions for the wrong reason.
 build_fixture; assert_isolated
+export PARASITE_MIN_REPOS=3 PARASITE_MIN_BYTES=65536 PARASITE_TEXT_MAX_BYTES=4096
 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null >/dev/null 2>&1
 { ! grep -q "$PARA" "$RSP_HOME/.stub_block" 2>/dev/null \
   && GIT_DIR="$STORAGE/zpara1" git for-each-ref "refs/namespaces/$PARA/" \
@@ -1278,6 +1481,7 @@ DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null >/de
   || no "--apply acted on a peer without --block-peers"
 
 build_fixture; assert_isolated
+export PARASITE_MIN_REPOS=3 PARASITE_MIN_BYTES=65536 PARASITE_TEXT_MAX_BYTES=4096
 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply --block-peers \
   </dev/null >"$ROOT/nb.out" 2>&1
 { ! grep -q "$PARA" "$RSP_HOME/.stub_block" 2>/dev/null \
@@ -1288,6 +1492,7 @@ DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply --block-peers \
 # The unattended form an operator asks for explicitly. Two opt-ins, because this blocks a peer
 # across every repo at once with nobody reviewing it.
 build_fixture; assert_isolated
+export PARASITE_MIN_REPOS=3 PARASITE_MIN_BYTES=65536 PARASITE_TEXT_MAX_BYTES=4096
 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --block-peers --yes \
   </dev/null >"$ROOT/by.out" 2>&1
 { grep -q "$PARA" "$RSP_HOME/.stub_block" 2>/dev/null \
@@ -1298,6 +1503,7 @@ DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --block-peers --yes \
 # "Exclusions (never touched)" has to mean the same thing whichever action is running: a kept
 # repo keeps the parasite's refs too, and the block alone stops anything new landing in it.
 build_fixture; assert_isolated
+export PARASITE_MIN_REPOS=3 PARASITE_MIN_BYTES=65536 PARASITE_TEXT_MAX_BYTES=4096
 echo zpara3 > "$RSP_HOME/keep.txt"
 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 KEEP_FILE="$RSP_HOME/keep.txt" "${NOTTY[@]}" \
   "$SCRIPT" --block-peers --yes </dev/null >"$ROOT/bk.out" 2>&1
@@ -1311,6 +1517,7 @@ rm -f "$RSP_HOME/keep.txt"
 
 # --yes alone must not start blocking peers: the finding is not the act.
 build_fixture; assert_isolated
+export PARASITE_MIN_REPOS=3 PARASITE_MIN_BYTES=65536 PARASITE_TEXT_MAX_BYTES=4096
 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply --yes \
   </dev/null >/dev/null 2>&1
 grep -q "$PARA" "$RSP_HOME/.stub_block" 2>/dev/null \
@@ -1803,8 +2010,5 @@ out=$(cd "$ROOT" && env RAD_HOME="./rad-home" STORAGE="./rad-home/storage" \
   && ok "relative RAD_HOME/STORAGE/RAD survive the cwd anchor" \
   || no "relative paths survive cd / (rc=$rc)"
 
-rm -rf "$ROOT"
-# ============================================================================
-echo "-----------------------------------------"
-echo "passed: $PASS   failed: $FAIL"
-[ "$FAIL" = 0 ]
+# ---- end of sections -------------------------------------------------------
+summary
