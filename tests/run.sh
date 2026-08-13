@@ -1076,22 +1076,23 @@ plan_fo=$(RULES=ABCDEG run)
   && ok "a RULES without F turns rule F off, says so, and still finishes" \
   || no "a RULES without F disables rule F"
 
-# Rule F defaults to keeping the last copy we know of, unlike rules D and E.
-! has "$plan" "zmediazero" \
-  && ok "a media dump no other node seeds is kept by default" \
-  || no "MEDIA_MIN_SEEDS keeps the last copy"
-plan_fz=$(MEDIA_MIN_SEEDS=0 run)
-grep -qE "^zmediazero .*media-dump" <<<"$plan_fz" \
-  && ok "MEDIA_MIN_SEEDS=0 lets rule F take the last copy we know of" \
+# Rule F may take the last copy we know of, like rules D and E. Its evidence is what the repo
+# itself holds, and a dump nobody else seeds is still a dump.
+grep -qE "^zmediazero .*media-dump" <<<"$plan" \
+  && ok "a media dump no other node seeds is pruned by default" \
+  || no "the default seed floor spared a dump nobody else seeds"
+plan_fz=$(MEDIA_MIN_SEEDS=1 run)
+! has "$plan_fz" "zmediazero" \
+  && ok "MEDIA_MIN_SEEDS=1 keeps the last copy we know of" \
   || no "MEDIA_MIN_SEEDS is vacuous"
-# Sparing it silently would make the seed floor a permanent hiding place, so the run says what
-# it saw and left alone.
-{ grep -q '^# review: 1 media dump(s) no other node seeds, kept:' <<<"$plan" \
-    && grep -qE '^#   zmediazero +media-dump' <<<"$plan"; } \
+# Sparing it silently would make the seed floor a permanent hiding place, so a run that raised
+# the floor says what it saw and left alone.
+{ grep -q '^# review: 1 media dump(s) no other node seeds, kept:' <<<"$plan_fz" \
+    && grep -qE '^#   zmediazero +media-dump' <<<"$plan_fz"; } \
   && ok "the dump it kept is named for a human to look at" \
   || no "the review list names what it kept"
-! grep -q '^# review:' <<<"$plan_fz" \
-  && ok "nothing to review once the floor is 0 and it was pruned instead" \
+! grep -q '^# review:' <<<"$plan" \
+  && ok "nothing to review at the default floor, where it was pruned instead" \
   || no "review list is vacuous"
 
 

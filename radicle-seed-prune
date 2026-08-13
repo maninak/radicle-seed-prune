@@ -137,7 +137,7 @@
 #       >= MEDIA_MIN_BYTES of media files on the refs this repo's own delegates control
 #       AND everything that is NOT media adds up to < MEDIA_TEXT_MAX_BYTES
 #       AND the repo is older than MEDIA_STALE_DAYS
-#       AND other-seeds >= MEDIA_MIN_SEEDS  (default 1: keeps the last copy we know of)
+#       AND other-seeds >= MEDIA_MIN_SEEDS  (default 0: may take the last copy we know of)
 #
 #   Rule F, batch path - the same dump published again and again, decided by the CORPUS:
 #       >= MEDIA_MIN_BYTES of media, of which >= MEDIA_MIN_BYTES sits in blobs that
@@ -299,7 +299,7 @@ set -euo pipefail
 # also fixes sort to byte order, so a plan does not reorder itself between machines.
 export LC_ALL=C
 
-VERSION="0.5.0"
+VERSION="0.5.1"
 
 # `set -e` on its own exits mute: a command failing anywhere below would end the run with a
 # bare non-zero status and nothing to debug from. Name the line, the command, and the status
@@ -405,7 +405,7 @@ MEDIA_TEXT_MAX_BYTES="${MEDIA_TEXT_MAX_BYTES:-2048}"
 MEDIA_TEXT_CEIL_BYTES="${MEDIA_TEXT_CEIL_BYTES:-65536}"
 MEDIA_MIN_BATCH="${MEDIA_MIN_BATCH:-5}"          # repos holding one blob to call it a campaign
 MEDIA_STALE_DAYS="${MEDIA_STALE_DAYS:-7}"        # minimum age, from creation like D and E
-MEDIA_MIN_SEEDS="${MEDIA_MIN_SEEDS:-1}"          # 1 keeps the last copy we know of
+MEDIA_MIN_SEEDS="${MEDIA_MIN_SEEDS:-0}"          # 0 may take the last copy; 1 keeps it
 # How much of each repo to look at. Only the first bytes of a file are ever read, and only
 # while the repo could still be a dump, so these bound an already small cost. A file past
 # either bound counts as text, which spares the repo.
@@ -2003,10 +2003,10 @@ while IFS=$'\t' read -r rid sz mt life birth; do
     reason="stale"
     near_age "$life" "$stale_cut"; near_min "$seeds" "$eff_seeds" seeds
   fi
-  # Rule F's evidence is about one repo, so it keeps the last copy we know of. Listing what
-  # that floor spared, rather than passing over it in silence, is what stops the floor becoming
-  # a standing exemption for anyone who makes sure nobody else seeds their dump. Only repos
-  # nothing else prunes are listed, so the line can say they were kept.
+  # What a raised MEDIA_MIN_SEEDS spared, listed rather than passed over in silence, because a
+  # seed floor nobody sees is a standing exemption for anyone who makes sure nobody else seeds
+  # their dump. Empty at the default floor of 0, where nothing is spared for want of a seed.
+  # Only repos nothing else prunes are listed, so the line can say they were kept.
   if [ -z "$reason" ] && rule_on F && [ -n "${MEDIA[$rid]:-}" ] && [ "$origin" != 0 ] \
      && [ "$origin" -lt "$media_cut" ] && [ "$seeds" -lt "$MEDIA_MIN_SEEDS" ]; then
     printf '%s\t%s\t%s\n' "$rid" "${MEDIA[$rid]}" "$name" >> "$tmp/media-review"

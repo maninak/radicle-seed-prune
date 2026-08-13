@@ -53,65 +53,70 @@ RAD=/nix/store/.../bin/rad ./radicle-seed-prune         # a specific rad binary
 
 ### Example output
 
-A dry run against a seed of 11,201 repos:
+A dry run against a seed of 12,292 repos:
 
 ```
-# radicle-seed-prune 0.5.0  2026-08-12T04:40:21Z   mode=DRY-RUN
+# radicle-seed-prune 0.5.1  2026-08-13T04:16:49Z   mode=DRY-RUN
 # home=/var/lib/radicle
-# disk: 126.7GB free (47.0%)  pressure=0% [relax>=54GB crit<=2GB]
+# disk: 125.5GB free (46.5%)  pressure=0% [relax>=54GB crit<=2GB]
 # rules: A junk(>30d, seeds>=1; id-names seeds>=0)  B size(>500MB & >=P95, >90d, seeds>=3)  C stale(>730d, seeds>=3)  D spam(batch>=5 & desc>=80%, >7d, seeds>=0)
 # rule E link-farm(>=5 spam domains, each linked from >=0.4% of repos and from the code of <10% of them, >7d, seeds>=0)
-# rule F media-dump(>=64KB of media and <2048B of anything else, >7d, seeds>=1)  media-batch(that media held by >=5 repos, <65536B of anything else)
+# rule F media-dump(>=64KB of media and <2048B of anything else, >7d, seeds>=0)  media-batch(that media held by >=5 repos, <65536B of anything else)
 # rule G parasite-peer(one file of theirs in >=10 repos they do not own, >=1MB media, <16384B of anything else) [reports only; --block-peers asks per peer]
 # excluded: 9 pinned, 6 private, 0 own, 0 kept
-# spam batches: 10 template(s) matching 447 repos, before the age and seed checks:
-#      54  template-a-*-*
-#      51  template-b-*-*
-#      51  template-c-*-*
-#      46  template-d-*-*
-#      45  template-e-*-*
-#   ...and 5 more
-# spam domains: 94 domain(s) linked from >=44 repos, <10% from code;
-#   492 repo(s) link to >=5 of them, before the age and seed checks:
-#     424 repos  spam-host-1.example
-#     331 repos  spam-host-2.example
-#     307 repos  spam-host-3.example
-#     305 repos  spam-host-4.example
-#     295 repos  spam-host-5.example
-#   ...and 89 more
-# rule E: 43 repo(s) spared, the spam links were pushed by peers that are not their delegates
-# repos=11201  sizes P50=0M P90=10M P95=33M P99=197M rel-cut(P95)=33M  abs-cut=500M
-# skipped: 0 unreadable, 148 written in the last 2d, 1 with no readable refs
+# spam batches: 10 template(s) matching 999 repos, before the age and seed checks:
+#     111  template-a-*-*
+#     105  template-b-*-*
+#     104  template-c-*-*
+#     103  template-d-*-*
+#     102  template-e-*-*
+#   ...and 5 more (PLAN_FULL=1 lists them)
+# harvested 308659 repo/host pairs over 10963 repos
+# spam domains: 159 domain(s) linked from >=49 repos, <10% from code;
+#   893 repo(s) link to >=5 of them, before the age and seed checks:
+#     826 repos  spam-host-1.example
+#     707 repos  spam-host-2.example
+#     640 repos  spam-host-3.example
+#     616 repos  spam-host-4.example
+#     562 repos  spam-host-5.example
+#   ...and 154 more (PLAN_FULL=1 lists them)
+# rule E: 1 repo(s) spared, the spam links were pushed by peers that are not their delegates
+# repos=12292  sizes P50=0M P90=8M P95=28M P99=186M rel-cut(P95)=28M  abs-cut=500M
+# skipped: 0 unreadable, 1218 written in the last 2d, 0 with no readable refs
 
-RID                                     SIZE  SEEDS   AGE(d) REASON        NEAR        NAME
-zEXAMPLEREPOaaaaaaaaaaaaaaa          330.8MB     13      190 media-dump    -           example-repo-1
-zEXAMPLEREPObbbbbbbbbbbbbbb          192.7MB      8      190 media-dump    -           example-repo-2
-zEXAMPLEREPOccccccccccccccc           50.5MB     14      186 media-dump    -           example-repo-3
-zEXAMPLEREPOddddddddddddddd           44.5MB     15      190 media-dump    -           example-repo-4
-zEXAMPLEREPOeeeeeeeeeeeeeee           42.1MB     18      242 media-dump    -           example-repo-5
-zEXAMPLEREPOfffffffffffffff           30.8MB      5      190 media-dump    -           example-repo-6
-zEXAMPLEREPOggggggggggggggg           28.6MB      3      733 stale         seeds       example-repo-7
-zEXAMPLEREPOhhhhhhhhhhhhhhh           21.8MB      7      539 media-dump    -           example-repo-8
-zEXAMPLEREPOiiiiiiiiiiiiiii           12.3MB      9      183 media-dump    media       example-repo-9
-[... 18 more single-repo rows ...]
-zEXAMPLEREPOjjjjjjjjjjjjjjj           74.0KB      7       30 junk-name     age         example-demo-repo
-zEXAMPLEREPOkkkkkkkkkkkkkkk           73.9KB     12       30 junk-name     age         example-test
-(436 repos)                           49.8MB                 spam-batch    12 near     same pattern across many repos; PLAN_FULL=1 lists them
-(35 repos)                           413.7MB                 link-farm     2 near      same pattern across many repos; PLAN_FULL=1 lists them
-(23 repos)                             1.3GB                 media-batch   0 near      same pattern across many repos; PLAN_FULL=1 lists them
+RID                                     SIZE  SEEDS   AGE(d) REASON        NEAR            NAME
+zEXAMPLEREPOaaaaaaaaaaaaaaa          330.8MB     13      191 media-dump    -               example-media-repo-1
+zEXAMPLEREPObbbbbbbbbbbbbbb          192.7MB     12      191 media-dump    -               example-media-repo-2
+zEXAMPLEREPOccccccccccccccc           50.5MB      7      187 media-dump    -               example-media-repo-3
+zEXAMPLEREPOddddddddddddddd           44.5MB     10      191 media-dump    -               example-media-repo-4
+zEXAMPLEREPOeeeeeeeeeeeeeee           42.1MB     14      243 media-dump    -               example-media-repo-5
+zEXAMPLEREPOfffffffffffffff           30.8MB      7      191 media-dump    -               example-media-repo-6
+zEXAMPLEREPOggggggggggggggg           21.8MB     12      540 media-dump    -               example-media-repo-7
+zEXAMPLEREPOhhhhhhhhhhhhhhh           12.3MB      9      184 media-dump    -               example-media-repo-8
+zEXAMPLEREPOiiiiiiiiiiiiiii           11.2MB      5      730 stale         age             example-abandoned-repo
+zEXAMPLEREPOjjjjjjjjjjjjjjj            8.9MB     22      191 media-dump    -               example-media-repo-9
+[... 19 more single-repo rows ...]
+zEXAMPLEREPOxxxxxxxxxxxxxxx          128.9KB      9       30 junk-name     age             example-demo-repo
+zEXAMPLEREPOyyyyyyyyyyyyyyy           75.0KB     10       30 junk-name     age             example-hello-world
+zEXAMPLEREPOzzzzzzzzzzzzzzz           74.3KB      8      731 stale         age             example-test-1
+zEXAMPLEREPOwwwwwwwwwwwwwww           73.9KB     13       31 junk-name     age             example-test-2
+(440 repos)                           50.8MB                 spam-batch    0 near          same pattern across many repos; PLAN_FULL=1 lists them
+(35 repos)                           405.4MB                 link-farm     2 near          same pattern across many repos; PLAN_FULL=1 lists them
+(23 repos)                             1.3GB                 media-batch   0 near          same pattern across many repos; PLAN_FULL=1 lists them
 
-# PLAN: prune 523 repos, 2.52 GiB out of storage but still on disk for 7d, until a later --apply run deletes them
-#   junk-name         3 repos      0.00 GiB
+# PLAN: prune 531 repos, 2.49 GiB out of storage but still on disk for 7d, until a later --apply run deletes them
+#   junk-name         6 repos      0.00 GiB
 #   link-farm        35 repos      0.40 GiB
 #   media-batch      23 repos      1.29 GiB
 #   media-dump       23 repos      0.75 GiB
-#   spam-batch      436 repos      0.05 GiB
-#   stale             3 repos      0.03 GiB
-#   19 of them cleared a threshold by under 20%: see the NEAR column, which names the threshold that was close. Read those rows first.
-# DRY-RUN: nothing changed. Re-run with --apply to execute.
+#   spam-batch      440 repos      0.05 GiB
+#   stale             4 repos      0.01 GiB
+#   12 of them cleared a threshold by under 20%: see the NEAR column, which names the threshold that was close. Read those rows first.
+# the untrimmed plan and the evidence behind it: /var/lib/radicle/prune-audit/last-run/
+# DRY-RUN: nothing in storage changed. Re-run with --apply to execute.
 ```
 
-Corpus verdicts (`spam-batch`, `link-farm`, `media-batch`) fold to one summary line per group at `PLAN_COLLAPSE_ROWS` (20) rows; single-repo verdicts are always listed in full, and `PLAN_FULL=1` lists everything. The evidence tables above the plan (spam templates, spam domains, scan errors, kept media dumps) show their top few entries and say how many they left out; `PLAN_FULL=1` prints those whole too.
+Corpus verdicts (`spam-batch`, `link-farm`, `media-batch`) fold to one summary line per group at `PLAN_COLLAPSE_ROWS` (20) rows; single-repo verdicts are always listed in full, and `PLAN_FULL=1` lists everything. The evidence tables above the plan (spam templates, spam domains, scan errors, and any media dumps a raised `MEDIA_MIN_SEEDS` kept) show their top few entries and say how many they left out; `PLAN_FULL=1` prints those whole too.
 
 `AGE(d)` is the age the matching rule measured: days since last activity for A, B and C, days since creation for D, E and F.
 
@@ -159,8 +164,8 @@ Every rule has the same shape: **something about the repo**, *and* it is old eno
 | **C, stale**       | nothing in particular; the catch-all for whatever the other rules missed            | `STALE_YEARS_DAYS`, 730d  | ≥ `MIN_OTHER_SEEDS`, 3   |
 | **D, spam-batch**  | one of a batch stamped out from one template ([more](#rule-d-spam-batches))         | `SPAM_STALE_DAYS`, 7d     | ≥ `SPAM_MIN_SEEDS`, 0    |
 | **E, link-farm**   | published to carry links rather than code ([more](#rule-e-link-farms))              | `LINK_STALE_DAYS`, 7d     | ≥ `LINK_MIN_SEEDS`, 0    |
-| **F, media-dump**  | video, images or audio with no project around them ([more](#rule-f-media-dumps))    | `MEDIA_STALE_DAYS`, 7d    | ≥ `MEDIA_MIN_SEEDS`, 1   |
-| **F, media-batch** | the same media files, published across many repos ([more](#rule-f-media-dumps))     | `MEDIA_STALE_DAYS`, 7d    | ≥ `MEDIA_MIN_SEEDS`, 1   |
+| **F, media-dump**  | video, images or audio with no project around them ([more](#rule-f-media-dumps))    | `MEDIA_STALE_DAYS`, 7d    | ≥ `MEDIA_MIN_SEEDS`, 0   |
+| **F, media-batch** | the same media files, published across many repos ([more](#rule-f-media-dumps))     | `MEDIA_STALE_DAYS`, 7d    | ≥ `MEDIA_MIN_SEEDS`, 0   |
 
 Rule G is missing from the table because it judges a **peer**, not a repo, and prunes nothing: it names peers who use repos they do not own as file hosting of their own, and prints the `rad block` line for each such peer ([more](#rule-g-parasite-peers)).
 
@@ -172,7 +177,7 @@ D, E and F measure **creation** instead, because spam that comments on its own r
 
 #### Verdicts that may delete the last copy we know of
 
-Only `junk-id`, `spam-batch` and `link-farm`, which default to a seed floor of `0`. "Other seeds" counts the nodes our routing table says announce a repo, not proof a copy exists elsewhere; these three verdicts are why pruning [quarantines instead of deleting](#quarantine). `JUNK_ID_MIN_SEEDS=1 SPAM_MIN_SEEDS=1 LINK_MIN_SEEDS=1` restores a floor of 1 everywhere.
+`junk-id`, `spam-batch`, `link-farm`, `media-dump` and `media-batch`, which default to a seed floor of `0`. "Other seeds" counts the nodes our routing table says announce a repo, not proof a copy exists elsewhere; these verdicts are why pruning [quarantines instead of deleting](#quarantine). `JUNK_ID_MIN_SEEDS=1 SPAM_MIN_SEEDS=1 LINK_MIN_SEEDS=1 MEDIA_MIN_SEEDS=1` restores a floor of 1 everywhere.
 
 #### Names that count as disposable
 
@@ -320,7 +325,7 @@ Every knob is an environment variable. Defaults shown.
 | F    | `MEDIA_MIN_BYTES`     | `65536`   | Media bytes below which a repo is not worth judging                     |
 | F    | `MEDIA_TEXT_MAX_BYTES`| `2048`    | Everything that is not media, added up, must stay under this            |
 | F    | `MEDIA_STALE_DAYS`    | `7`       | Age since creation                                                      |
-| F    | `MEDIA_MIN_SEEDS`     | `1`       | Other seeds required; `1` keeps the last copy we know of                |
+| F    | `MEDIA_MIN_SEEDS`     | `0`       | Other seeds required; `0` may take the last copy we know of             |
 | F    | `MEDIA_MIN_BATCH`     | `5`       | Repos holding one media file, byte for byte, to call it a campaign      |
 | F    | `MEDIA_TEXT_CEIL_BYTES`| `65536`  | The batch path's wider budget for everything that is not media          |
 | F    | `MEDIA_MAX_REFS`      | `10000`   | Refs above which a repo is too costly to read, so it goes unjudged      |
@@ -451,7 +456,7 @@ A repo is flagged when all of:
 1. it carries at least `MEDIA_MIN_BYTES` (64 KiB) of media;
 2. everything that is *not* media adds up to less than `MEDIA_TEXT_MAX_BYTES` (2048);
 3. it is older than `MEDIA_STALE_DAYS` (7d, since creation);
-4. it has at least `MEDIA_MIN_SEEDS` (1) other seeds.
+4. it has at least `MEDIA_MIN_SEEDS` (0) other seeds, so by default the seed count does not spare it.
 
 What a file *is* decides, not what it is called. Extensions (`MEDIA_EXTS`, `MEDIA_TEXT_EXTS`, `MEDIA_TEXT_NAMES`) are only a fast path: an unrecognised file has its first 16 bytes matched against media signatures, so renaming a video to `.dat` does not hide it. Archives (zip, gzip, rar, 7z) count as media; a file matching no signature counts as text and spares the repo. Reading is capped at `MEDIA_SNIFF_MAX_FILES` (200) per repo, and files past the cap count as text.
 
@@ -464,7 +469,7 @@ A token README is enough to put a repo over the text budget above. The **batch p
 - at least `MEDIA_MIN_BYTES` of its media sits in files that `MEDIA_MIN_BATCH` (5) or more repos in storage also hold, byte for byte, and that this repo was not the first to hold (first by the creation-date ledger);
 - everything that is not media adds up to less than `MEDIA_TEXT_CEIL_BYTES` (64 KiB), the wider budget.
 
-A dump that no other node announces is listed under `# review:` for a human to look at, rather than pruned. `MEDIA_MIN_SEEDS=0` sets that floor to zero, which lets rule F take the last copy this seed knows of.
+`MEDIA_MIN_SEEDS=1` raises the floor, and a dump no other node announces is then listed under `# review:` for a human to look at rather than pruned. At the default floor of `0` that list is empty and rule F may take the last copy this seed knows of, like `spam-batch` and `link-farm` before it: the evidence is what the repo holds, and a dump nobody else seeds is still a dump.
 
 Rule F lists every file of every repo, which is another 4 minutes of that same 9-minute uncached dry run.
 

@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-08-13
+
+### Changed
+
+- **Rule F may now take the last copy this seed knows of.** `MEDIA_MIN_SEEDS` defaults to `0`, not `1`: a media dump no other node announces is pruned rather than kept and listed under `# review:`. The old floor made "make sure nobody else seeds it" the way to keep a dump. `MEDIA_MIN_SEEDS=1` restores it, review list included; pruning still quarantines for 7 days first.
+
 ## [0.5.0] - 2026-08-13
 
 Adds content moderation next to disk reclaim: rule E (link farms), rule F (media dumps) and rule G (parasite peers). Pruned repos are quarantined for 7 days instead of deleted, the plan folds repetitive rows, an unattended run measures its plan against its own history, and `RULES` is one switch over all rules.
