@@ -481,10 +481,15 @@ A `RULES` without `G` turns it off.
 ## Development
 
 ```sh
-bash tests/run.sh
+tests/run.sh                 # everything
+tests/run.sh -k quarantine   # only the sections that mention "quarantine"
 ```
 
-Needs only `bash`, `git` and coreutils. It builds a hermetic fixture and runs the real script against it, so it never reads or writes the real node. See [`CHANGELOG.md`](./CHANGELOG.md) for release history.
+Needs only `bash`, `git` and coreutils. It builds a hermetic fixture and runs the real script against it, so it never reads or writes the real node.
+
+The suite is cut into sections, one per fixture rebuild, and a section run on its own is the same run it gets in the whole suite. Whole runs take minutes and a single section takes seconds, so `-k` is the loop to be in while changing one rule. It takes a regular expression and runs every section whose text contains a match, so a test name, a repo id, a knob name or a rule letter all select one. The fixture is built once and kept under `TMPDIR` for an hour; `RSP_FIXTURE_CACHE=0` builds it fresh every time.
+
+See [`CHANGELOG.md`](./CHANGELOG.md) for release history.
 
 ## Support
 
