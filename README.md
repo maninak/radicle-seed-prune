@@ -494,9 +494,9 @@ If this kept your seed clean and saved you a few bucks on your VPS bill:
 - 🌱 Seed this repo on [Radicle](https://app.radicle.at/nodes/seed.radicle.at/rad:zxvTkxzouwrYFwycnsctrMT3iM2E) and ⭐ star it on [GitHub](https://github.com/maninak/radicle-seed-prune).
 - 🗣️ Tell a fellow seed operator, or open an issue with ideas and edge cases you hit.
 
-## Commercial use
+## License
 
-The license is noncommercial; the intent is to keep the script from being repackaged and sold, not to get in the way of anyone running a seed.
+[PolyForm Noncommercial License 1.0.0](./LICENSE). Free to use, modify, and share for any **noncommercial** purpose; you must preserve the copyright and required-notice lines (attribution). **Commercial use needs a separate license.** The intent is to keep the script from being repackaged and sold, not to get in the way of anyone running a seed.
 
 **Free, no need to ask:**
 
@@ -511,8 +511,6 @@ Running a public seed as an individual, a collective, or a nonprofit is free, an
 
 If that is you, or you are not sure which side of the line you land on, email [info@radicle.tools](mailto:info@radicle.tools).
 
-## License
+---
 
-[PolyForm Noncommercial License 1.0.0](./LICENSE). Free to use, modify, and share for any **noncommercial** purpose; you must preserve the copyright and required-notice lines (attribution). **Commercial use is not permitted** without a separate license. For commercial licensing, email [info@radicle.tools](mailto:info@radicle.tools).
-
-Built by [maninak](https://maninak.com). A [radicle.tools](https://radicle.tools) artifact: homegrown apps and tools for Radicle.
+[![A radicle.tools artifact — homegrown apps and tools for Radicle](https://radicle.tools/badge/artifact.svg)](https://radicle.tools)
