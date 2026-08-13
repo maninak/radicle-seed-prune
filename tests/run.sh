@@ -252,7 +252,7 @@ cached_template(){
   local key dir staging
   key=$( { sed -n '1,/^# ---- end of header/p' "$0"; cat "$HERE/rad-stub"; } \
          | sha1sum | cut -c1-12 )
-  dir="${TMPDIR:-/tmp}/rsp-fixture-$key"
+  dir="${TMPDIR:-/tmp}/rsp-fixture-$(id -u)-$key"      # never another user's, on a shared /tmp
   # An hour old is still today's dates; older than that and the day thresholds the tests sit
   # near have moved under it.
   if [ -d "$dir" ] && [ -z "$(find "$dir" -maxdepth 0 -mmin +60)" ]; then
@@ -267,7 +267,7 @@ cached_template(){
   mv -T "$staging" "$dir" 2>/dev/null || rm -rf "$staging"
   [ -d "$dir" ] || { echo "ABORT: could not cache the fixture at $dir" >&2; return 1; }
   # The key changes whenever the fixture does, so yesterday's templates are dead weight.
-  find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'rsp-fixture-*' -type d -mtime +0 \
+  find "${TMPDIR:-/tmp}" -maxdepth 1 -name "rsp-fixture-$(id -u)-*" -type d -mtime +0 \
     -exec rm -rf {} + 2>/dev/null
   printf '%s\n' "$dir"
 }
@@ -1403,6 +1403,76 @@ done
   && ok "PLAN_FULL prints the evidence tables whole, and the short form names the way there" \
   || no "a truncated evidence table gave a reviewer no way to see the rest of it"
 
+# What the terminal showed is trimmed and then scrolls away, so the lists behind it are written
+# out whole on every run, a dry one included. The point is not that the files exist: it is that
+# they hold the rows the screen left out, and that a reviewer is told where they are.
+build_fixture; assert_isolated
+L="$RSP_HOME/prune-audit/last-run"
+short=$(DISK_AWARE=0 PLAN_COLLAPSE_ROWS=2 PLAN_FULL=0 run)
+# Counted against the plan's own total, not against a number written here: a file holding
+# every row but one would pass any comparison with what the screen happened to print.
+planned=$(sed -n 's/^# PLAN: prune \([0-9]*\) repos.*/\1/p' <<<"$short")
+screenrows=$(grep -cE '^z[1-9A-HJ-NP-Za-km-z]+ ' <<<"$short")
+cols=$(printf '# rid\tsize_bytes\tother_seeds\tlast_activity_unix\treason')
+cols=$cols$(printf '\tname\tage_from_unix\tnear_threshold')
+# Read months later a file of repo ids says nothing about which run condemned them, so every
+# one of them opens with the same stamp naming that run.
+stamped=1
+for f in plan spam-batches spam-domains media-review parasite-peers; do
+  grep -qE '^# [0-9-]+T[0-9:]+Z  version=[0-9.]+  mode=DRY-RUN  rules=[A-G]+  storage=/' \
+       "$L/$f.tsv" || stamped=0
+done
+{ grep -q "the untrimmed plan and the evidence behind it: $L/" <<<"$short" \
+  && [ "$(sed -n '2p' "$L/plan.tsv")" = "$cols" ] \
+  && [ "$(grep -vc '^#' "$L/plan.tsv")" = "${planned:-0}" ] \
+  && [ "${planned:-0}" -gt "$screenrows" ] \
+  && [ "$stamped" = 1 ] \
+  && [ -e "$L/spam-batches.tsv" ] && [ -e "$L/spam-domains.tsv" ] \
+  && [ -e "$L/media-review.tsv" ] && [ -e "$L/parasite-peers.tsv" ] \
+  && [ -e "$L/scan-errors.txt" ] && [ ! -e "$L.new" ]; } \
+  && ok "a dry run writes the whole plan out and says where, however folded the screen was" \
+  || no "the rows the plan folded away were nowhere to be found after the run"
+
+# The evidence files must carry what the tables trimmed, not just the top few the screen got.
+# The fixture holds two media dumps and the screen shows five, so the table only truncates once
+# there are more of them than that: copies of one dump, each a repo in its own right to every
+# rule, take the count past the cut with no new fixture to maintain.
+build_fixture; assert_isolated
+L="$RSP_HOME/prune-audit/last-run"
+for i in 1 2 3 4 5 6; do cp -a "$STORAGE/zmediamd" "$STORAGE/zmediacopy$i"; done
+screen=$(DISK_AWARE=0 MEDIA_MIN_SEEDS=99 PLAN_FULL=0 run)
+kept=$(sed -n 's/^# review: \([0-9]*\) media dump.*/\1/p' <<<"$screen")
+full=$( DISK_AWARE=0 MEDIA_MIN_SEEDS=99 PLAN_FULL=1 run)
+# The rows the review table itself printed, which is what the cap acts on. The "...and N more"
+# line wears the same indent as a row and would otherwise count as one.
+reviewrows() { awk '/^# review:/ { inb = 1; next }
+                    inb && /^#   \.\.\.and/ { next }
+                    inb && /^#   / { n++; next }
+                    inb { inb = 0 }
+                    END { print n + 0 }'; }
+{ [ "${kept:-0}" -gt 5 ] \
+  && [ "$(grep -vc '^#' "$L/media-review.tsv")" = "$kept" ] \
+  && [ "$(sed -n '2p' "$L/media-review.tsv")" = "$(printf '# rid\tverdict\tname')" ] \
+  && [ "$(reviewrows <<<"$screen")" = 5 ] \
+  && grep -q "^#   ...and $((kept - 5)) more (PLAN_FULL=1 lists them)" <<<"$screen" \
+  && [ "$(reviewrows <<<"$full")" = "$kept" ] \
+  && ! grep -q 'more (PLAN_FULL=1 lists them)' <<<"$full"; } \
+  && ok "an evidence table the screen cut at five is written out in full" \
+  || no "the evidence file was cut down to the same rows the screen showed"
+
+# A read-only audit dir must cost the operator the files, not the run.
+build_fixture; assert_isolated
+mkdir -p "$RSP_HOME/prune-audit/last-run"
+echo "from the run before" > "$RSP_HOME/prune-audit/last-run/plan.tsv"
+chmod 500 "$RSP_HOME/prune-audit"
+out=$(DISK_AWARE=0 "$SCRIPT" 2>&1); rc=$?
+chmod 700 "$RSP_HOME/prune-audit"
+{ [ "$rc" = 0 ] && grep -q '# PLAN:' <<<"$out" \
+  && grep -q 'WARN: could not write .*last-run' <<<"$out" \
+  && [ "$(cat "$RSP_HOME/prune-audit/last-run/plan.tsv")" = "from the run before" ]; } \
+  && ok "an audit dir it cannot write costs the evidence files and says so, not the run" \
+  || no "a read-only audit dir took the run down, or lost the evidence in silence"
+
 # --- a scan that missed too much of storage refuses to report a plan at all --- Three
 # unreadable repos against a 1% limit, so the assertion does not ride on the fixture size.
 # Without this the run would report a plausible-looking small plan built from a partial scan.
@@ -1630,7 +1700,7 @@ after=$(ls "$STORAGE" | wc -l)
 # "reclaim" while the quarantine is on, and must say it when it is off.
 build_fixture; assert_isolated
 qplan=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 run)
-{ grep -q "still on disk for 7d, until a later run deletes them" <<<"$qplan" \
+{ grep -q "still on disk for 7d, until a later --apply run deletes them" <<<"$qplan" \
   && ! grep -q 'PLAN:.*reclaim' <<<"$qplan"; } \
   && ok "the plan does not promise disk the quarantine is still holding" \
   || no "the plan claimed to reclaim disk that quarantine keeps for a week"

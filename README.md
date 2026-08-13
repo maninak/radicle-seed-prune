@@ -100,7 +100,7 @@ zEXAMPLEREPOkkkkkkkkkkkkkkk           73.9KB     12       30 junk-name     age  
 (35 repos)                           413.7MB                 link-farm     2 near      same pattern across many repos; PLAN_FULL=1 lists them
 (23 repos)                             1.3GB                 media-batch   0 near      same pattern across many repos; PLAN_FULL=1 lists them
 
-# PLAN: prune 523 repos, 2.52 GiB out of storage but still on disk for 7d, until a later run deletes them
+# PLAN: prune 523 repos, 2.52 GiB out of storage but still on disk for 7d, until a later --apply run deletes them
 #   junk-name         3 repos      0.00 GiB
 #   link-farm        35 repos      0.40 GiB
 #   media-batch      23 repos      1.29 GiB
@@ -387,7 +387,7 @@ To have the same job act on rule G as well, add `--block-peers --yes`. That bloc
 
 ## Audit trail
 
-Anything this tool does is written to `$RAD_HOME/prune-audit/` (default `~/.radicle/prune-audit/`). A dry run writes only the creation-date ledger and the scan cache:
+Anything this tool does is written to `$RAD_HOME/prune-audit/` (default `~/.radicle/prune-audit/`). A dry run writes the last run's evidence, the creation-date ledger and the scan cache; the rest is written only by a run that acts:
 
 - **`prune-<UTC-timestamp>.log`**: one file per acting run: every repo removed, tab-separated (rid, size, other-seed count, last activity, reason, name, the date the matching rule measured, any threshold that repo only just cleared), plus peer blocks made under `--block-peers` with the evidence behind each.
 - **`quarantine/<rid>`**: every pruned repo, held for `QUARANTINE_DAYS` ([more](#quarantine)).
@@ -396,10 +396,18 @@ Anything this tool does is written to `$RAD_HOME/prune-audit/` (default `~/.radi
 - **`history.log`**: append-only, one line per applied run: timestamp, repos pruned, GiB moved out of storage, whether the quarantine was on, disk pressure. The history ratchet reads this file.
 - **`cron.log`**: with the cron recipe above, the full console output of every run.
 - **`first-seen.tsv`**: the creation-date ledger rules D, E and F read. Written on every run, dry or not.
+- **`last-run/`**: what the last run decided and what it decided it on, untrimmed and tab-separated, whether or not that run acted. The terminal folds repetitive rows and cuts each evidence table to its top few; these files hold all of it, for reading later or piping elsewhere. Every file opens with the same line naming the run that wrote it (time, version, dry or applying, rules, storage path), because a plan is only readable next to the rules it was made under. Replaced whole by the next run that gets far enough to write them: a run that aborts earlier leaves the previous run's files, which is what the stamp is for.
+  - `plan.tsv`: every repo the run planned to prune, one row each, same columns as the audit log above. It is the plan, not the outcome; what an applying run actually removed is in that run's `prune-*.log`.
+  - `spam-batches.tsv`: every rule D template, with how many repos matched it.
+  - `spam-domains.tsv`: every domain rule E condemned, with how many repos link to it.
+  - `media-review.tsv`: every dump rule F found and kept because no other node seeds it.
+  - `parasite-peers.tsv`: every peer rule G accused, with the evidence each accusation rests on.
+  - `scan-errors.txt`: everything the run could not read.
 
 ```sh
 tail ~/.radicle/prune-audit/history.log              # totals per run, newest last
 cat  ~/.radicle/prune-audit/prune-2026*.log          # exact repos removed, with reasons
+grep -v '^#' ~/.radicle/prune-audit/last-run/plan.tsv | cut -f5 | sort | uniq -c  # last plan, by reason
 ```
 
 ## Rule D: spam batches

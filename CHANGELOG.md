@@ -37,7 +37,7 @@ Rules E, F and G are new and on by default, so read one dry run before you apply
 
   The keep list is `$AUDIT_DIR/keep.txt`, one repo id per line and editable by hand, and a repo on it is excluded from every rule.
 
-- **The plan says when the disk actually comes back.** With the quarantine on, the plan says `prune N repos, X GiB out of storage but still on disk for 7d, until a later run deletes them` rather than `reclaim X GiB`, matching the completion line. `QUARANTINE=0` puts the reclaim wording back.
+- **The plan says when the disk actually comes back.** With the quarantine on, the plan says `prune N repos, X GiB out of storage but still on disk for 7d, until a later --apply run deletes them` rather than `reclaim X GiB`, matching the completion line. `QUARANTINE=0` puts the reclaim wording back.
 
 - **An unattended run refuses a plan far bigger than its own past runs.** It aborts when the plan is more than `RATCHET_FACTOR` (3) times the median of the last `RATCHET_RUNS` (8) applied runs, read from the history log; fewer than three past runs is not treated as a baseline. `--force` or an interactive confirmation gets past it.
 
@@ -60,6 +60,8 @@ Rules E, F and G are new and on by default, so read one dry run before you apply
 - **The plan's `AGE(d)` column shows the age the matching rule measured**: days since last activity for rules A to C, days since creation for D, E and F. Each per-run audit log gains a final `age_from_unix` column; the existing columns keep their positions.
 
 - **Repetitive plan rows fold into summary lines.** Corpus verdicts (`spam-batch`, `link-farm`, `media-batch`) fold to one line per group once the group reaches `PLAN_COLLAPSE_ROWS` (20), while verdicts on a single repo are always listed in full; `PLAN_FULL=1` lists everything, including the evidence tables above the plan, which otherwise show only their top few entries.
+
+- **Every run writes what it decided, untrimmed, to `$AUDIT_DIR/last-run/`.** The terminal folds repetitive rows and cuts each evidence table to its top few, so the full plan, the rule D templates, the rule E domains, the dumps rule F kept, the peers rule G accused and everything unreadable now go to six files, on dry runs as much as on applying ones. The run prints where they are, each file opens with a line naming the run that wrote it, and the next run replaces the set whole.
 
 - **`RULES=ABCDEFG`, one switch for every rule.** A letter absent from `RULES` disables that rule, and a repo it would have claimed falls through to the next rule; `RULES=`, set but empty, means no rules at all. This replaces the per-rule switches `LINK_SCAN`, `MEDIA_SCAN` and `PARASITE_SCAN`, which are gone.
 

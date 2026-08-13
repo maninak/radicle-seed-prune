@@ -495,6 +495,10 @@ CACHE_DIR="${CACHE_DIR:-$AUDIT_DIR/cache}"
 # listed in full, however many there are: those are the ones that want human eyes.
 PLAN_COLLAPSE_ROWS="${PLAN_COLLAPSE_ROWS:-20}"   # group size at which a corpus verdict folds
 PLAN_FULL="${PLAN_FULL:-0}"                      # 1 lists every row whatever the verdict
+# Read once here, because the shell below compares it to 1 while awk would take any non-empty
+# value as true: PLAN_FULL=true unfolded the rows and then told the reader to set PLAN_FULL=1
+# to see the rest. Every other knob in this file means on at 1 and off at anything else.
+case "$PLAN_FULL" in 1) ;; *) PLAN_FULL=0 ;; esac
 # The tables the header prints are the evidence a corpus verdict rests on, so a reviewer who
 # only ever sees the top five cannot check the other 153 spam domains that condemned a repo.
 # PLAN_FULL already means "list everything", so it lifts these caps too rather than earning a
@@ -1034,7 +1038,9 @@ for d; do
   # arithmetic comparison, which errors and leaves every age rule unable to judge the repo.
   # A ref without a date carries no age information, so skipping it loses nothing. --sort
   # keeps what is left in date order, so the first is still the oldest and the last the newest.
-  bl=$(awk '$1 ~ /^[0-9]+$/ { if (b == "") b = $1; l = $1 }
+  # The length bound is what makes the digit test enough: an all-decimal object id would pass
+  # /^[0-9]+$/ and become a date 30 digits long. Eleven digits reach the year 5138.
+  bl=$(awk '$1 ~ /^[0-9]+$/ && length($1) <= 11 { if (b == "") b = $1; l = $1 }
             END { if (b == "") printf "0\t0"; else printf "%s\t%s", b, l }' "$t")
   refhash=$(sha1sum < "$t" | cut -c1-40)
   printf '%s\t%s\t%s\n' "${d##*/}" "${bl:-0	0}" "$refhash"
@@ -1746,11 +1752,17 @@ while IFS=$'\t' read -r rid mt;   do MTIME[$rid]=${mt%.*}; done < "$tmp/mtimes"
 # unknown" and leaves the repo alone. The worker above already filters, so this is the second
 # lock on the one door through which a non-number could reach an arithmetic comparison and
 # leave a repo either unjudgeable or judged on nonsense.
+ncoerced=0
 while IFS=$'\t' read -r rid bt lf _; do
-  case $bt in ''|*[!0-9]*) bt=0 ;; esac
-  case $lf in ''|*[!0-9]*) lf=0 ;; esac
+  case $bt in ''|*[!0-9]*) bt=0; ncoerced=$((ncoerced + 1)) ;; esac
+  case $lf in ''|*[!0-9]*) lf=0; ncoerced=$((ncoerced + 1)) ;; esac
   BIRTH[$rid]=$bt; LIFE[$rid]=$lf
 done < "$tmp/lives"
+# Reaching this lock at all means the worker's filter let something through, and the repos it
+# fires on go unjudged by every age rule. Silence there reads exactly like a clean scan.
+[ "$ncoerced" = 0 ] \
+  || echo "# WARN: $ncoerced repo date(s) were not numbers and were read as unknown," \
+          "so those repos are outside the age rules; the ref scan may be broken" >&2
 while IFS=$'\t' read -r rid nm _; do NAME[$rid]=$nm; done < "$tmp/meta"
 while IFS=$'\t' read -r rid s;    do SEEDS[$rid]=$s; done < "$tmp/seeds"
 while read -r r; do [ -n "$r" ] && EXCL[$r]=1; done < "$tmp/excluded"
@@ -1897,6 +1909,14 @@ near_min() {   # $1 = the value measured, $2 = the minimum it had to reach, $3 =
     && [ $(( $1 * 100 )) -lt $(( $2 * (100 + NEAR_PCT) )) ] \
     && near="$near+$3"
   return 0
+}
+
+# The columns of a plan row, spelled once for the two files that carry those rows out of the
+# run. A reader of either file has to be able to tell field 4 from field 7, and a header that
+# said something different from the other file's would be worse than none.
+plan_header(){
+  printf '# rid\tsize_bytes\tother_seeds\tlast_activity_unix\treason\tname'
+  printf '\tage_from_unix\tnear_threshold\n'
 }
 
 # ---------------------- classify (map lookups + native bash regex; zero per-repo subprocesses)
@@ -2063,7 +2083,7 @@ echo
 # both when and from where.
 if [ "$QUARANTINE" = 1 ]; then
   echo "# PLAN: prune $nplan repos, ${gib} GiB out of storage but still on disk" \
-       "for ${QUARANTINE_DAYS}d, until a later run deletes them"
+       "for ${QUARANTINE_DAYS}d, until a later --apply run deletes them"
 else
   echo "# PLAN: prune $nplan repos, reclaim ${gib} GiB"
 fi
@@ -2099,10 +2119,76 @@ if [ "$nparasite" -gt 0 ]; then
   echo "#   Or --block-peers, which asks for each peer; add --yes to answer for them."
 fi
 
+# What the report above printed is trimmed to what a terminal can hold: corpus verdicts folded
+# to one line, five spam domains out of a hundred and fifty. The lists it was rendered from go
+# out whole here, so the evidence behind a verdict outlives the scroll buffer and can be read
+# by something other than a human. Written by a dry run as much as by an apply, since a dry run
+# is exactly when somebody is deciding whether the verdicts are right.
+#
+# Overwritten every run rather than kept per run: a directory of them grows without bound on a
+# weekly cron, and a run that changes anything already leaves a dated audit log behind.
+#
+# Every write here is checked and none of them is allowed to end the run. This directory sits
+# on the filesystem storage is on, and this tool is what runs when that filesystem is filling,
+# so a full disk must cost the report and not the reclaim it was written about.
+run_ts=$(date -u +%FT%TZ)
+lastrun="$AUDIT_DIR/last-run"
+staging="$lastrun.new"
+
+# Each file names the run that wrote it. Read on its own a month later, a plan.tsv is otherwise
+# a list of repo ids with no date, no mode and no way to tell which rules were even on; and a
+# run that aborts before this point leaves the previous run's files standing with nothing to
+# say they are old.
+lr_stamp() {
+  printf '# %s  version=%s  mode=%s  rules=%s  storage=%s\n' \
+         "$run_ts" "$VERSION" "$run_mode" "$RULES" "$STORAGE"
+}
+
+lr_ok=1
+rm -rf "$staging" 2>/dev/null
+mkdir -p "$staging" 2>/dev/null || lr_ok=0
+if [ "$lr_ok" = 1 ]; then
+  { lr_stamp
+    plan_header
+    cat "$tmp/plan.sorted"; } > "$staging/plan.tsv" 2>/dev/null || lr_ok=0
+  { lr_stamp
+    printf '# repos\ttemplate\n'
+    sort -k1,1nr "$tmp/spambatch"; } > "$staging/spam-batches.tsv" 2>/dev/null || lr_ok=0
+  { lr_stamp
+    printf '# repos\tdomain\n'
+    sort -k1,1nr "$tmp/linktop"; } > "$staging/spam-domains.tsv" 2>/dev/null || lr_ok=0
+  # The verdict, not a size: this column says which of rule F's two readings the repo matched.
+  { lr_stamp
+    printf '# rid\tverdict\tname\n'
+    cat "$tmp/media-review"; } > "$staging/media-review.tsv" 2>/dev/null || lr_ok=0
+  # A block is permanent and the peer is never told, so the evidence behind one has to be
+  # readable after the terminal that printed it has gone.
+  { lr_stamp
+    printf '# peer_nid\trepos_sharing_blob\trepos_touched\tmedia_bytes\ttext_bytes\tblob\n'
+    cat "$tmp/parasites"; } > "$staging/parasite-peers.tsv" 2>/dev/null || lr_ok=0
+  { lr_stamp
+    cat "$scanerr"; } > "$staging/scan-errors.txt" 2>/dev/null || lr_ok=0
+fi
+
+# Moved onto the old directory in one step, so a reader never finds three files from this run
+# beside three from the last one, and a run that dies half way through writing leaves the
+# previous run's evidence whole rather than a mixture nothing marks as mixed.
+if [ "$lr_ok" = 1 ]; then
+  rm -rf "$lastrun" 2>/dev/null
+  mv -T "$staging" "$lastrun" 2>/dev/null || lr_ok=0
+fi
+if [ "$lr_ok" = 1 ]; then
+  echo "# the untrimmed plan and the evidence behind it: $lastrun/"
+else
+  rm -rf "$staging" 2>/dev/null
+  # Losing this loses no verdict, but it does lose the only copy of the evidence for one, so it
+  # is said out loud rather than left for somebody to find the directory missing or stale.
+  echo "# WARN: could not write $lastrun; this run's evidence is only what is above." >&2
+fi
+
 # The audit log for this run, created by whichever act writes to it first. Pruning repos and
 # blocking peers are separate decisions that can each happen without the other, so neither of
 # them owns the file.
-run_ts=$(date -u +%FT%TZ)
 audit=""
 blocked=0
 open_audit() {
@@ -2177,7 +2263,7 @@ if [ "$APPLY" = 0 ]; then
   if [ "$blocked" -gt 0 ]; then
     echo "# DRY-RUN: no repos were pruned; $blocked peer(s) blocked, as answered above."
   else
-    echo "# DRY-RUN: nothing changed. Re-run with --apply to execute."
+    echo "# DRY-RUN: nothing in storage changed. Re-run with --apply to execute."
   fi
   exit 0
 fi
@@ -2269,8 +2355,7 @@ quar_purge_all_if_critical
 
 open_audit
 { printf '# plan=%s repos / %s GiB\n' "$nplan" "$gib"
-  printf '# rid\tsize_bytes\tother_seeds\tlast_activity_unix\treason\tname\tage_from_unix'
-  printf '\tnear_threshold\n'
+  plan_header
   cat "$tmp/plan.sorted"; } >> "$audit"
 
 if [ "$QUARANTINE" = 1 ]; then
