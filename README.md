@@ -56,7 +56,7 @@ RAD=/nix/store/.../bin/rad ./radicle-seed-prune         # a specific rad binary
 A dry run against a seed of 11,201 repos:
 
 ```
-# radicle-seed-prune 0.4.0  2026-08-12T04:40:21Z   mode=DRY-RUN
+# radicle-seed-prune 0.5.0  2026-08-12T04:40:21Z   mode=DRY-RUN
 # home=/var/lib/radicle
 # disk: 126.7GB free (47.0%)  pressure=0% [relax>=54GB crit<=2GB]
 # rules: A junk(>30d, seeds>=1; id-names seeds>=0)  B size(>500MB & >=P95, >90d, seeds>=3)  C stale(>730d, seeds>=3)  D spam(batch>=5 & desc>=80%, >7d, seeds>=0)
