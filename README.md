@@ -6,6 +6,8 @@
 [![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-orange.svg)](./LICENSE)
 [![Shell](https://img.shields.io/badge/shell-bash-121011.svg?logo=gnu-bash&logoColor=white)](./radicle-seed-prune)
 [![rad: - zxvTkxzouwrYFwycnsctrMT3iM2E](https://img.shields.io/static/v1?label=rad%3A&message=zxvTkxzouwrYFwycnsctrMT3iM2E&color=6666FF&cacheSeconds=64800)](https://app.radicle.at/nodes/seed.radicle.at/rad:zxvTkxzouwrYFwycnsctrMT3iM2E)
+[![Zulip: #radicle-seed-prune](https://img.shields.io/badge/Zulip-%23radicle--seed--prune-6492FE?logo=zulip&logoColor=white)](https://radicle.zulipchat.com/#narrow/channel/624837-radicle-seed-prune)
+[![radicle.tools artifact](https://img.shields.io/badge/radicle.tools-artifact-ff1aff?labelColor=15161c)](https://radicle.tools)
 
 **Automatically detect and prune lower-value repos, spam and abuse from a [Radicle](https://radicle.dev) node's storage.**
 
@@ -502,7 +504,7 @@ Needs only `bash`, `git` and coreutils. It builds a hermetic fixture and runs th
 
 The suite is cut into sections, one per fixture rebuild, and a section run on its own is the same run it gets in the whole suite. Whole runs take minutes and a single section takes seconds, so `-k` is the loop to be in while changing one rule. It takes a regular expression and runs every section whose text contains a match, so a test name, a repo id, a knob name or a rule letter all select one. The fixture is built once and kept under `TMPDIR` for an hour; `RSP_FIXTURE_CACHE=0` builds it fresh every time.
 
-See [`CHANGELOG.md`](./CHANGELOG.md) for release history.
+See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for where to report a repo the tool got wrong, what such a report needs to carry, and how to send a patch. See [`CHANGELOG.md`](./CHANGELOG.md) for release history.
 
 ## Support
 
@@ -510,7 +512,7 @@ If this kept your seed clean and saved you a few bucks on your VPS bill:
 
 - 💛 Chip in on [Liberapay](https://liberapay.com/maninak/donate) with a micro-donation, if you can comfortably spare it.
 - 🌱 Seed this repo on [Radicle](https://app.radicle.at/nodes/seed.radicle.at/rad:zxvTkxzouwrYFwycnsctrMT3iM2E) and ⭐ star it on [GitHub](https://github.com/maninak/radicle-seed-prune).
-- 🗣️ Tell a fellow seed operator, or open an issue with ideas and edge cases you hit.
+- 🗣️ Tell a fellow seed operator, and bring your ideas and the edge cases you hit to [#radicle-seed-prune on Zulip](https://radicle.zulipchat.com/#narrow/channel/624837-radicle-seed-prune).
 
 ## License
 
