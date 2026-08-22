@@ -249,18 +249,21 @@
 #   is cosmetic, the repos are gone from disk and blocked from re-seeding.
 #
 # USAGE
-#   radicle-seed-prune                        # preview (dry-run), print the plan
-#   radicle-seed-prune --apply                # apply; asks [y/N] first when run in a terminal
-#   radicle-seed-prune --apply --yes          # answer that prompt with y (scripts / cron)
-#   radicle-seed-prune --apply --force        # apply even if the plan trips the runaway caps
-#   radicle-seed-prune --apply --restart-node # ...and restart the node service afterwards
-#   radicle-seed-prune --block-peers          # block what rule G found, asking per peer
-#   radicle-seed-prune --block-peers --yes    # ...without asking (cron)
+#   Installed on PATH as rad-prune, `rad` runs this as one of its own subcommands, which is
+#   the spelling below. rad-prune and ./rad-prune take exactly the same arguments.
 #
-#   radicle-seed-prune quarantine list             # what a past run pruned and still holds
-#   radicle-seed-prune quarantine restore <rid>    # put it back in storage and re-seed it
-#   radicle-seed-prune quarantine delete <rid>     # or --all: delete now, for good
-#   radicle-seed-prune quarantine purge            # delete whatever is past its window
+#   rad prune                        # preview (dry-run), print the plan
+#   rad prune --apply                # apply; asks [y/N] first when run in a terminal
+#   rad prune --apply --yes          # answer that prompt with y (scripts / cron)
+#   rad prune --apply --force        # apply even if the plan trips the runaway caps
+#   rad prune --apply --restart-node # ...and restart the node service afterwards
+#   rad prune --block-peers          # block what rule G found, asking per peer
+#   rad prune --block-peers --yes    # ...without asking (cron)
+#
+#   rad prune quarantine list             # what a past run pruned and still holds
+#   rad prune quarantine restore <rid>    # put it back in storage and re-seed it
+#   rad prune quarantine delete <rid>     # or --all: delete now, for good
+#   rad prune quarantine purge            # delete whatever is past its window
 #
 # --apply scans ONCE, prints the plan, then in a terminal asks before deleting; run
 # non-interactively (cron, a pipe) it just applies. Confirming interactively also bypasses the
@@ -275,9 +278,9 @@
 #   the same variable heartwood itself reads, so this reads exactly like any other rad
 #   invocation:
 #
-#     RAD_HOME=/var/lib/radicle radicle-seed-prune            # a seed home that is not ours
-#     RAD=/nix/store/.../bin/rad RAD_HOME=/var/lib/radicle radicle-seed-prune
-#     JOBS=4 OUTLIER_STALE_DAYS=120 radicle-seed-prune        # any tunable in the config block
+#     RAD_HOME=/var/lib/radicle rad prune              # a seed home that is not ours
+#     RAD=/nix/store/.../bin/rad RAD_HOME=/var/lib/radicle rad-prune
+#     JOBS=4 OUTLIER_STALE_DAYS=120 rad prune          # any tunable in the config block
 #
 #   RAD (default: rad from PATH) and RAD_HOME (default: `rad path`, else ~/.radicle) locate the
 #   node; STORAGE, CONFIG and AUDIT_DIR derive from RAD_HOME. Every threshold in the config

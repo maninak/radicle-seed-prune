@@ -11,7 +11,7 @@ Issues and patches belong on Radicle, at [`rad:zxvTkxzouwrYFwycnsctrMT3iM2E`](ht
 Restore it first. Inside the quarantine window, 7 days by default, nothing is lost:
 
 ```sh
-radicle-seed-prune quarantine restore <rid>
+rad prune quarantine restore <rid>
 ```
 
 `restore` moves the repo back into storage, clears the block, re-seeds it, and adds it to `keep.txt`, so no later run touches that repo again.
@@ -19,7 +19,7 @@ radicle-seed-prune quarantine restore <rid>
 Then post in Zulip with:
 
 - the repo id, and the rule that caught it (the `reason` column)
-- the version, from `radicle-seed-prune --version`
+- the version, from `rad prune --version`
 - that repo's row from `$RAD_HOME/prune-audit/last-run/plan.tsv`
 - for rules D, E, F and G, the matching rows from the evidence file beside it: `spam-batches.tsv`, `spam-domains.tsv`, `media-review.tsv`, `parasite-peers.tsv`. Those rows are what the rule decided on, and without them a tuning can only be guessed at.
 

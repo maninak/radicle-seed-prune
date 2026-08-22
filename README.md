@@ -3,10 +3,10 @@
 [![Sponsor maninak on Liberapay](https://img.shields.io/badge/Liberapay-Donate-F6C915?logo=liberapay&logoColor=black)](https://liberapay.com/maninak/donate)
 
 [![version](https://img.shields.io/github/v/release/maninak/radicle-seed-prune?sort=semver&label=version&color=44CC11)](https://github.com/maninak/radicle-seed-prune/releases/latest)
-[![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-orange.svg)](./LICENSE)
-[![Shell](https://img.shields.io/badge/shell-bash-121011.svg?logo=gnu-bash&logoColor=white)](./radicle-seed-prune)
+[![license: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-orange.svg)](./LICENSE)
+[![shell](https://img.shields.io/badge/shell-bash-121011.svg?logo=gnu-bash&logoColor=white)](./rad-prune)
 [![rad: - zxvTkxzouwrYFwycnsctrMT3iM2E](https://img.shields.io/static/v1?label=rad%3A&message=zxvTkxzouwrYFwycnsctrMT3iM2E&color=6666FF&cacheSeconds=64800)](https://app.radicle.at/nodes/seed.radicle.at/rad:zxvTkxzouwrYFwycnsctrMT3iM2E)
-[![Zulip: #radicle-seed-prune](https://img.shields.io/badge/Zulip-%23radicle--seed--prune-6492FE?logo=zulip&logoColor=white)](https://radicle.zulipchat.com/#narrow/channel/624837-radicle-seed-prune)
+[![zulip: #radicle-seed-prune](https://img.shields.io/badge/Zulip-%23radicle--seed--prune-6492FE?logo=zulip&logoColor=white)](https://radicle.zulipchat.com/#narrow/channel/624837-radicle-seed-prune)
 [![radicle.tools artifact](https://img.shields.io/badge/radicle.tools-artifact-ff1aff?labelColor=15161c)](https://radicle.tools)
 
 **Automatically detect and prune lower-value repos, spam and abuse from a [Radicle](https://radicle.dev) node's storage.**
@@ -21,23 +21,26 @@ Tuned against and running in production for seed.radicle.at seeding the whole pu
 ## Install
 
 ```sh
-curl -O https://raw.githubusercontent.com/maninak/radicle-seed-prune/master/radicle-seed-prune
-chmod +x radicle-seed-prune
+curl -O https://raw.githubusercontent.com/maninak/radicle-seed-prune/master/rad-prune
+chmod +x rad-prune
+sudo mv rad-prune /usr/local/bin/
 ```
 
 Needs `bash`, `git`, `jq` and `rad` on `PATH`. Run it as the user that owns the Radicle home you want pruned, or set `RAD_HOME` to that home.
 
+Anywhere on `PATH` under the name `rad-prune`, `rad` runs it as one of its own subcommands, which is what the examples below use. `rad-prune ...` does the same thing, and so does `./rad-prune ...` from wherever you put it.
+
 ## Usage
 
 ```sh
-./radicle-seed-prune                  # preview: print the plan, change nothing
-./radicle-seed-prune --apply          # apply, asks [y/N] first when run in a terminal
-./radicle-seed-prune --apply --yes    # answer the confirmation with y (scripts, cron)
-./radicle-seed-prune --apply --force  # apply even if the plan trips a runaway cap or the ratchet
-./radicle-seed-prune --apply --restart-node  # ...and restart the node afterwards
-./radicle-seed-prune --block-peers    # block what rule G found, one [y/N] per peer; prunes nothing
-./radicle-seed-prune quarantine ...   # list, restore, delete, purge quarantined repos
-./radicle-seed-prune --version
+rad prune                    # preview: print the plan, change nothing
+rad prune --apply            # apply, asks [y/N] first when run in a terminal
+rad prune --apply --yes      # answer the confirmation with y (scripts, cron)
+rad prune --apply --force    # apply even if the plan trips a runaway cap or the ratchet
+rad prune --apply --restart-node  # ...and restart the node afterwards
+rad prune --block-peers      # block what rule G found, one [y/N] per peer; prunes nothing
+rad prune quarantine ...     # list, restore, delete, purge quarantined repos
+rad prune --version
 ```
 
 There is no `--dry-run` flag: running with no flags is the dry run. `--apply` scans once, prints that same plan, asks `[y/N]` in a terminal, and just applies when there is nobody to ask (cron, a pipe). `--yes` answers every prompt a run asks, including the per-peer block prompt.
@@ -49,8 +52,8 @@ The plan is sorted largest repo first and totals the disk the run would free. `-
 Every knob is an environment variable rather than a flag, so a run is configured the way `rad` itself is:
 
 ```sh
-RAD_HOME=/var/lib/radicle ./radicle-seed-prune          # a seed home that isn't yours
-RAD=/nix/store/.../bin/rad ./radicle-seed-prune         # a specific rad binary
+RAD_HOME=/var/lib/radicle rad prune          # a seed home that isn't yours
+RAD=/nix/store/.../bin/rad rad-prune         # a specific rad binary
 ```
 
 ### Example output
@@ -233,10 +236,10 @@ A pruned repo moves to `$AUDIT_DIR/quarantine/<rid>` rather than being deleted. 
 Every repo was unseeded and blocked before it was moved there, so nothing on the node points at the quarantine: deleting the directory by hand (`rm -rf`) is safe at any time and only costs the ability to restore.
 
 ```sh
-radicle-seed-prune quarantine list             # what is held, and for how long
-radicle-seed-prune quarantine restore <rid>    # put it back in storage and re-seed it
-radicle-seed-prune quarantine delete <rid>     # or --all: delete now, for good
-radicle-seed-prune quarantine purge            # delete whatever is past its window
+rad prune quarantine list             # what is held, and for how long
+rad prune quarantine restore <rid>    # put it back in storage and re-seed it
+rad prune quarantine delete <rid>     # or --all: delete now, for good
+rad prune quarantine purge            # delete whatever is past its window
 ```
 
 `restore` moves the repo back into storage, clears the block, re-seeds it, and adds it to the keep list, `$AUDIT_DIR/keep.txt`, so the next run leaves it alone. The keep list is one repo id per line, editable by hand; repos listed there are excluded from every rule.
@@ -246,7 +249,7 @@ radicle-seed-prune quarantine purge            # delete whatever is past its win
 Within the quarantine window:
 
 ```sh
-radicle-seed-prune quarantine restore <rid>
+rad prune quarantine restore <rid>
 ```
 
 After the window the local copy is gone; the repo is re-fetchable from the network as long as other nodes still hold it (what the minimum seed counts are for). Two commands, in this order:
@@ -373,7 +376,7 @@ Every knob is an environment variable. Defaults shown.
 
 ```sh
 # example: only chase the giants, leave everything else
-ABS_SIZE_FLOOR_MB=1000 STALE_YEARS_DAYS=99999 ./radicle-seed-prune
+ABS_SIZE_FLOOR_MB=1000 STALE_YEARS_DAYS=99999 rad prune
 ```
 
 ## Run it on a schedule
@@ -383,9 +386,9 @@ After a reviewed first run, a weekly cron keeps the seed trimmed; leaving out `-
 Cron runs with a minimal environment, so `HOME` and `PATH` have to be spelled out. Substitute the user your node runs as:
 
 ```cron
-# /etc/cron.d/radicle-seed-prune  Sundays 04:17
+# /etc/cron.d/rad-prune  Sundays 04:17
 SHELL=/bin/sh
-17 4 * * 0 radicle HOME=/home/radicle PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/radicle-seed-prune --apply >> /home/radicle/.radicle/prune-audit/cron.log 2>&1
+17 4 * * 0 radicle HOME=/home/radicle PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/rad-prune --apply >> /home/radicle/.radicle/prune-audit/cron.log 2>&1
 ```
 
 Point `RAD_HOME` at the node's home instead if it does not live at `$HOME/.radicle`.
