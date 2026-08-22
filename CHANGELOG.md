@@ -2,11 +2,11 @@
 
 All notable changes to this project are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] - 2026-08-22
 
 ### Upgrading
 
-The script is called `rad-prune` now, not `radicle-seed-prune`, so the download URL and the file it lands in have both changed. Nothing else has to change: put it anywhere on `PATH` and `rad prune` runs it. If your cron job names the old path, either point it at the new name or keep the old one, since the script does not care what it is called. Edit whatever cron file you already have rather than adding the one in the README beside it, or the job runs twice.
+The script is called `rad-prune` now, not `radicle-seed-prune`, so the download URL and the file it lands in have both changed. Nothing else has to change: put it anywhere on `PATH` and `rad prune` runs it. A cron job that names the old path keeps working as long as you leave that file where it is. If you install the new name instead, edit the cron job you already have rather than adding the README's new one beside it, or the job runs twice.
 
 ### Added
 
