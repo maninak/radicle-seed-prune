@@ -8,6 +8,10 @@ All notable changes to this project are documented here. The format is based on 
 
 The script is called `rad-prune` now, not `radicle-seed-prune`, so the download URL and the file it lands in have both changed. Nothing else has to change: put it anywhere on `PATH` and `rad prune` runs it. If your cron job names the old path, either point it at the new name or keep the old one, since the script does not care what it is called. Edit whatever cron file you already have rather than adding the one in the README beside it, or the job runs twice.
 
+### Added
+
+- **A run says how far it has progressed.** Each phase that walks repos keeps a line in the terminal with the repos read so far, the share of the phase done and the time left, and closes with what that phase cost. Until now a run on a large seed printed nothing for minutes at a stretch, so there was no telling a slow walk from a hung one. Where the output is a log or a pipe rather than a terminal, the same reading is printed as an ordinary line every 60 seconds; that cadence is `PROGRESS_SECS`, and `PROGRESS_SECS=0` turns off progress reporting entirely.
+
 ### Changed
 
 - **`rad prune` runs it.** The script is called `rad-prune`, and `rad` runs anything on `PATH` named that way as one of its own subcommands, so the whole tool can be typed as though heartwood shipped it.

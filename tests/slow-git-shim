@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Test double for `git`: waits a moment, then forwards to the real one. Put its dir first on
+# PATH to make a walk over the fixture outlast a progress tick. Without it every phase finishes
+# inside one second on a fixture this size, and a progress test would pass whether or not the
+# ticker works.
+set -uo pipefail
+real=$(PATH="$(getconf PATH)" command -v git)
+sleep 0.01
+exec "$real" "$@"

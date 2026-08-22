@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Test double for `rad`: waits a moment on the one call the delegate re-check makes, then
+# forwards to the fixture's own stub named by RSP_REAL_RAD. Only that walk asks for
+# --delegates, so this slows it alone and leaves the rest of the run at fixture speed. Without
+# it the walk finishes inside one tick and a progress test would pass whether or not the
+# worker marks the repos it has read.
+set -uo pipefail
+for a in "$@"; do
+  if [ "$a" = --delegates ]; then sleep 1.5; break; fi
+done
+exec "$RSP_REAL_RAD" "$@"

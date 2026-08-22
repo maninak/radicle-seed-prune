@@ -535,6 +535,16 @@ cd /
 _cores=$(nproc 2>/dev/null || echo 4)
 JOBS="${JOBS:-$(( _cores > 1 ? _cores - 1 : 1 ))}"
 
+# Seconds between progress lines when the output is NOT a terminal, which is what a cron run
+# appending to a log gets. Sparse on purpose: a weekly run leaves about a line a minute, enough
+# to see where a run stopped and few enough to read a week later. A terminal ignores this and
+# redraws one line instead. 0 turns off all progress reporting, the terminal line included.
+PROGRESS_SECS="${PROGRESS_SECS:-60}"
+# Read as a plain count of seconds, because a value the shell cannot compare numerically raises
+# the ERR trap and ends the run: a knob about printing must not be able to stop a prune.
+# Anything that is not a number means off, which is the direction that loses only the printing.
+case "$PROGRESS_SECS" in ''|*[!0-9]*) PROGRESS_SECS=0 ;; esac
+
 # Disposable-name patterns. The generic tokens foo/bar/baz match only as a WHOLE name (so
 # "BAR_widget" is safe); everything else matches as a boundary-delimited word. JUNK_ID_MIN_LEN
 # also treats a name that is NOTHING BUT a random hex id (both letters and digits, so
@@ -846,8 +856,150 @@ rule_on G         || rule_g="$rule_g [DISABLED: not in RULES]"
 [ "$BLOCK_PEERS" = 1 ] || rule_g="$rule_g [reports only; --block-peers asks per peer]"
 echo "# rule $rule_g"
 
+# ------------------------------------------------------------------------------------ progress
+# Each phase that reads every repo hands its workers to xargs and waits, printing nothing until
+# it is done. On a seed of this size that is minutes of stillness, which looks the same whether
+# the walk is slow or hung, so operators kill runs that were working. The workers already
+# append a row per repo they finish, so a ticker counting those rows says how far along the
+# phase is without the workers having to report anything.
+#
+# On a terminal one line is redrawn in place, often enough to look alive and leaving nothing
+# behind when the phase ends. Anywhere else (cron, a pipe, a log file) the same reading is
+# printed as an ordinary line, sparsely enough to still be worth reading a week later. Both go
+# to stderr, where the rest of the running commentary goes, so the plan on stdout stays a
+# document.
+#
+# The count is against the phase's OWN repos, not storage's: a phase the run cache answers most
+# of has little left to read, and a bar measured against all 11k would sit near zero and read
+# as stuck.
+
+# Redraw interval for a terminal. A plain constant rather than a knob: it is picked to look
+# alive to a person watching, and nobody has a wish to state about it.
+progress_redraw_secs=1
+# The bar drawn on a terminal, at full width. A slice of it as wide as the percentage is drawn
+# inside a field of the whole width, so the printf truncates it and pads the rest with spaces.
+progress_bar_full='===================='
+progress_bar_cells=${#progress_bar_full}
+# How many walks this run will do, so a line can say which one is being watched. The two scan
+# walks always run; the three content rules run only when RULES holds them.
+progress_phases=2
+for _r in E F G; do rule_on "$_r" && progress_phases=$((progress_phases + 1)); done
+# Rule E walks a second time, over the repos that scored, to see whose links they were. That
+# walk is skipped on a run where nothing scored, so this total is the most walks a run can do,
+# and the last line of such a run reads one short of it.
+if rule_on E && [ "$LINK_DELEGATE_CHECK" = 1 ]; then
+  progress_phases=$((progress_phases + 1))
+fi
+
+# Seconds as a short duration, so a progress line reads at a glance rather than being counted.
+duration() {
+  local s=$1
+  if [ "$s" -lt 60 ]; then printf '%ds' "$s"
+  else                     printf '%dm%02ds' "$((s / 60))" "$((s % 60))"
+  fi
+}
+
+progress_pid=""
+progress_phase=""
+progress_total=0
+progress_started=0
+progress_n=0
+# $1 = what to call the phase, $2 = repos it will read, $3... = the files its workers append a
+# row to per finished repo.
+progress_start() {
+  local phase=$1 total=$2
+  shift 2
+  progress_phase=$phase; progress_total=$total; progress_started=$SECONDS
+  progress_n=$((progress_n + 1))
+  progress_pid=""
+  [ "$PROGRESS_SECS" -gt 0 ] || return 0
+  [ "$total" -gt 0 ] || return 0
+  local files=("$@") parent=$$ started=$SECONDS n=$progress_n
+  local every=$PROGRESS_SECS live=0 cols=80
+  if [ -t 2 ]; then
+    every=$progress_redraw_secs; live=1
+    # Held to the terminal's width, because a line that wraps cannot be redrawn: the carriage
+    # return goes to the start of the LAST physical line, leaving the first one on screen.
+    cols=$(tput cols 2>/dev/null) || cols=80
+    case "$cols" in ''|*[!0-9]*) cols=80 ;; esac
+  fi
+  (
+    # The wait between readings is a child process of this subshell, and it inherits the run's
+    # stdout and stderr. Killed only through this trap, because killing the subshell alone
+    # leaves it holding those open until it wakes on its own, and anything reading the run's
+    # output as a pipe waits for it long after the run itself has ended.
+    # ${napper:-} rather than $napper: the signal can arrive before the first wait has one to
+    # name, and an unset variable under `set -u` would reach the error trap and print into a
+    # run that is merely ending a phase.
+    trap 'kill "${napper:-}" 2>/dev/null || true; exit 0' TERM
+    local done_n elapsed pct rest line napper=""
+    while :; do
+      sleep "$every" & napper=$!
+      wait "$napper" || exit 0
+      # The run is gone: killed, or ended by a signal its EXIT trap did not survive. Without
+      # this the ticker outlives it and prints into a terminal that has moved on.
+      kill -0 "$parent" 2>/dev/null || exit 0
+      # cat's own status is dropped rather than tested: a phase whose stream file the shell has
+      # not opened yet is the normal state at the first tick, and counting what it did read is
+      # the right answer for a progress line either way.
+      done_n=$( { cat "${files[@]}" 2>/dev/null || true; } | wc -l )
+      # A count over the total would print past 100% and a negative estimate. The workers write
+      # one row per repo, so it takes a bug to get here, and a wrong bar is not worth an abort.
+      [ "$done_n" -le "$total" ] || done_n=$total
+      elapsed=$(( SECONDS - started ))
+      pct=$(( done_n * 100 / total ))
+      # Nothing has finished yet, so there is no rate to project from: a phase whose first
+      # chunk holds a repo with 152k refs waits here a while. Say it is starting rather than
+      # project from one repo and print an estimate of hours that halves a second later.
+      if [ "$done_n" -gt 0 ]; then
+        rest="~$(duration "$(( elapsed * (total - done_n) / done_n ))") left"
+      else
+        rest="starting"
+      fi
+      if [ "$live" = 1 ]; then
+        line=$(printf '  [%d/%d] %-9s [%-*.*s] %3d%% %d/%d repos %s %s' \
+               "$n" "$progress_phases" "$phase" \
+               "$progress_bar_cells" "$(( pct * progress_bar_cells / 100 ))" \
+               "$progress_bar_full" "$pct" "$done_n" "$total" \
+               "$(duration "$elapsed")" "$rest")
+        printf '\r\033[K%.*s' "$cols" "$line" >&2
+      else
+        printf '#   [%d/%d] %s: %d of %d repos (%d%%), %s elapsed, %s\n' \
+               "$n" "$progress_phases" "$phase" "$done_n" "$total" "$pct" \
+               "$(duration "$elapsed")" "$rest" >&2
+      fi
+    done
+  ) &
+  progress_pid=$!
+}
+
+# Ends the ticker without saying anything. Safe to call when none is running, which is what
+# the EXIT trap needs: a run aborting mid-phase must neither leave a ticker printing into a
+# terminal whose script has gone, nor claim the phase it died in was finished.
+progress_kill() {
+  [ -n "$progress_pid" ] || return 0
+  kill "$progress_pid" 2>/dev/null || true
+  wait "$progress_pid" 2>/dev/null || true
+  progress_pid=""
+  # Take the redrawn line off the terminal, so what stays on screen is whatever is printed
+  # next rather than a bar frozen at the last reading.
+  if [ -t 2 ]; then printf '\r\033[K' >&2; fi
+}
+
+# Ends the phase progress_start opened, and says what it cost. That is the one number an
+# operator tuning JOBS or RULES wants, and on a terminal it is the only trace the redrawn line
+# leaves behind.
+progress_stop() {
+  progress_kill
+  if [ "$PROGRESS_SECS" -gt 0 ] && [ "$progress_total" -gt 0 ]; then
+    echo "# $progress_phase: $progress_total repos in" \
+         "$(duration $(( SECONDS - progress_started )))" >&2
+  fi
+  progress_phase=""; progress_total=0
+}
+
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+trap 'progress_kill; rm -rf "$tmp"' EXIT
 
 # ------------------------------------------------------------------------------ exclusion sets
 jq -r '.web.pinned.repositories[]?' "$CONFIG" 2>/dev/null \
@@ -1002,8 +1154,10 @@ scanerr="$tmp/scan-errors"; : > "$scanerr"; : > "$tmp/hosts-fail"
 nrepos=$(find "$STORAGE" -mindepth 1 -maxdepth 1 -type d 2>>"$scanerr" | wc -l) || true
 echo "# scanning $nrepos repos (size + activity), $JOBS parallel workers..." >&2
 
+progress_start "sizes" "$nrepos" "$tmp/du"
 find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -print0 2>>"$scanerr" \
   | xargs -0r -P "$JOBS" -n 64 du -sb --apparent-size 2>>"$scanerr" > "$tmp/du" || true
+progress_stop
 find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -printf '%f\t%T@\n' 2>>"$scanerr" \
   > "$tmp/mtimes" || true
 
@@ -1049,8 +1203,10 @@ for d; do
   printf '%s\t%s\t%s\n' "${d##*/}" "${bl:-0	0}" "$refhash"
 done
 LIFE
+progress_start "activity" "$nrepos" "$tmp/lives"
 find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -print0 2>>"$scanerr" \
   | xargs -0r -P "$JOBS" -n 64 bash "$tmp/life.sh" > "$tmp/lives" || true
+progress_stop
 
 # ------------------------------------------------------------------------------- the run cache
 # Rules E and F walk the contents of every repo, which is most of a run. On a seed that has
@@ -1079,9 +1235,9 @@ awk -F'\t' -v du="$tmp/du" \
 # cold on any variable the CALLER happened to differ on: systemd stamps a fresh INVOCATION_ID
 # on every start, so a hand run and a cron run invalidated each other's cache in both
 # directions, which on an 11k-repo seed is a full uncached run every time. The names below are
-# left out because none of them can change a verdict: two are about how the work is done and
-# three about how it is printed or which service gets restarted.
-skip='JOBS|CACHE|PLAN_FULL|PLAN_COLLAPSE_ROWS|SERVICE'
+# left out because none of them can change a verdict: they say how the work is done, how it is
+# printed, and which service gets restarted.
+skip='JOBS|CACHE|PLAN_FULL|PLAN_COLLAPSE_ROWS|SERVICE|PROGRESS_SECS'
 knobs=$(grep -oE '\$\{[A-Z_][A-Z0-9_]*[:-]' "$SELF" 2>/dev/null \
         | tr -d '${:-' | grep -vxE "$skip" | sort -u)
 fingerprint=$( { sha1sum < "$SELF"
@@ -1119,6 +1275,10 @@ cache_hits() {                      # $1 = rule's cache name; writes the rids it
       'FILENAME == old { k[$1] = $2; next } ($1 in k) && k[$1] == $2 { print $1 }' \
       "$CACHE_DIR/keys-$1" "$tmp/keys" > "$tmp/cached-$1" 2>/dev/null || : > "$tmp/cached-$1"
   echo "# cache: $1 reuses $(wc -l < "$tmp/cached-$1") of $(wc -l < "$tmp/keys") repos" >&2
+}
+# What is left for the rule to read, which is what its progress line counts against.
+repos_left() {                      # $1 = rule's cache name, after cache_hits has run for it
+  echo $(( $(wc -l < "$tmp/keys") - $(wc -l < "$tmp/cached-$1") ))
 }
 cache_reuse() {   # $1 = stream name, $2 = field holding the rid, $3 = rule whose hits to use
   [ "$cache_ok" = 1 ] && [ -s "$CACHE_DIR/$1" ] || return 0
@@ -1348,9 +1508,13 @@ for d; do
 done
 MEDIA
   cache_hits media
+  # Both files, because a repo the worker could not read writes only to the failure one, and a
+  # phase full of unreadable repos would otherwise look stalled.
+  progress_start "rule F" "$(repos_left media)" "$tmp/media" "$tmp/media-fail"
   repos_to_read "$tmp/cached-media" \
     | xargs -0r -P "$JOBS" -n 32 bash "$tmp/media.sh" \
         > "$tmp/media" 4> "$tmp/media-fail" || true
+  progress_stop
   # The reused rows go back beside the ones just measured, so everything downstream (the
   # media-batch corpus above all) sees every repo, not only the ones this run read. A repo
   # that has since left storage is absent from this run's keys, so its rows cannot come back.
@@ -1488,12 +1652,17 @@ for d; do
   # reads the repo again next week instead of banking totals that stopped short of some of
   # its bytes. Rows this repo already printed are harmless: the next run reprints them, and
   # nothing reuses the rows of a repo that has no key.
-  walk_repo "$d" "${d##*/}" && printf 'x\t%s\n' "${d##*/}"
+  # The marker goes to the plan stream, which the run cache reads alongside the other row
+  # kinds, and to fd 3, where one line means one repo and the progress ticker can just count.
+  walk_repo "$d" "${d##*/}" \
+    && { printf 'x\t%s\n' "${d##*/}"; printf '%s\n' "${d##*/}" >&3; }
 done
 PEER
   cache_hits peer
+  progress_start "rule G" "$(repos_left peer)" "$tmp/peer-done"
   repos_to_read "$tmp/cached-peer" \
-    | xargs -0r -P "$JOBS" -n 32 bash "$tmp/peer.sh" > "$tmp/peer" || true
+    | xargs -0r -P "$JOBS" -n 32 bash "$tmp/peer.sh" > "$tmp/peer" 3> "$tmp/peer-done" || true
+  progress_stop
   # The reused rows go back beside the ones just walked, because the verdict is corpus-wide:
   # a peer's spread is counted across all of storage, and a delegate row from any repo is what
   # keeps that peer from ever being accused.
@@ -1568,9 +1737,15 @@ for d; do
 done
 HOSTS
   cache_hits hosts
+  # The done stream alone: the worker writes it for every repo it finishes, a repo it could
+  # not read included, so adding the failure stream would count those repos twice. The host
+  # stream holds one line per LINK, which would race ahead and then stall on a repo that
+  # links nowhere.
+  progress_start "rule E" "$(repos_left hosts)" "$tmp/hosts-done"
   repos_to_read "$tmp/cached-hosts" \
     | xargs -0r -P "$JOBS" -n 32 bash "$tmp/hosts.sh" \
         > "$tmp/hosts" 3> "$tmp/hosts-code" 4> "$tmp/hosts-fail" 5> "$tmp/hosts-done" || true
+  progress_stop
   cache_reuse "hosts" 1 hosts      >> "$tmp/hosts"
   # The consumer counts a repo per line, so a duplicated line would count that repo twice and
   # lower the bar a domain has to clear to be called spam. Enforced here rather than assumed.
@@ -1697,7 +1872,9 @@ for rid in "$@"; do
   # the one that errs toward sparing.
   nids=$("$RAD" inspect "rad:$rid" --delegates 2>/dev/null \
          | grep -oE 'z[1-9A-HJ-NP-Za-km-z]{40,}' | tr '\n' ' ')
-  [ -n "$nids" ] || { echo "$rid" >&3; continue; }   # no delegate list: ownership unknown
+  # No delegate list: ownership unknown. The done marker goes out on this path too, so the
+  # progress count below is repos finished rather than repos that turned out to be readable.
+  [ -n "$nids" ] || { echo "$rid" >&3; printf '%s\n' "$rid" >&4; continue; }
   # The blob filter keeps trees out of the reader below, which only ever wanted blobs.
   GIT_DIR="$d" git for-each-ref --format='%(objectname) %(refname)' 2>/dev/null \
     | awk -v ok="$nids" '
@@ -1713,11 +1890,21 @@ for rid in "$@"; do
     | head -c "$budget" \
     | grep -aoE 'https?://[A-Za-z0-9._-]+' \
     | sed -E 's#^https?://##' | tr '[:upper:]' '[:lower:]' | sort -u | sed "s#^#$rid\t#"
+  # This repo has been re-read to the end. One line per repo, which is what the progress
+  # ticker counts; the stream above holds one line per repo/host pair instead.
+  printf '%s\n' "$rid" >&4
 done
 OWNED
+  # Every flagged repo is read again here, in full, so this walk is slow whenever rule E
+  # flagged many of them. It announces itself and reports progress rather than going quiet.
+  nflagged=$(wc -l < "$tmp/linkfarm")
+  echo "# re-reading $nflagged flagged repo(s) across their delegates' refs" \
+       "($JOBS workers)..." >&2
+  progress_start "delegates" "$nflagged" "$tmp/owned-done"
   cut -f1 "$tmp/linkfarm" | tr '\n' '\0' \
     | xargs -0r -P "$JOBS" -n 8 bash "$tmp/owned.sh" \
-        > "$tmp/owned" 3> "$tmp/owned-fail" || true
+        > "$tmp/owned" 3> "$tmp/owned-fail" 4> "$tmp/owned-done" || true
+  progress_stop
   # reg() below must fold exactly as the harvest pass does, or a domain counted there would
   # score differently here. Kept as its own copy so each awk program reads on its own.
   awk -F'\t' -v MINSCORE="$LINK_MIN_SCORE" '

@@ -127,7 +127,30 @@ Corpus verdicts (`spam-batch`, `link-farm`, `media-batch`) fold to one summary l
 
 `NEAR` names any threshold the row cleared by less than `NEAR_PCT` (20%), and is `-` when the row cleared every one of them comfortably. It reports the numbers the matching rule actually tested: `age` for every rule, `seeds` where the rule has a seed floor above zero, plus `size` for rule B, `media` for rule F and `score` for rule E. Those are the rows to read first, and the summary under the plan counts them. `NEAR_PCT=0` marks nothing.
 
-Progress lines go to stderr, the plan to stdout, so `> plan.txt` keeps them apart.
+Everything a run says about itself, the progress below included, goes to stderr, and the plan to stdout, so `> plan.txt` keeps them apart.
+
+### Progress
+
+Every rule reads every repo in storage, which on a large seed is minutes per phase. In a terminal one line is kept up to date with the phase, the repos read so far and how much longer it has:
+
+```
+  [5/6] rule E    [==========          ]  52% 5820/11184 repos 2m14s ~2m03s left
+```
+
+It is redrawn in place and wiped when the phase ends, leaving a line per phase saying what that phase cost:
+
+```
+# sizes: 11184 repos in 41s
+# activity: 11184 repos in 1m12s
+# rule F: 11184 repos in 4m38s
+# rule G: 11184 repos in 2m11s
+# rule E: 11184 repos in 6m02s
+# delegates: 893 repos in 1m47s
+```
+
+Where the output is not a terminal (cron, a pipe, a log file) the same reading is printed as an ordinary line every `PROGRESS_SECS` (60) instead of being redrawn. `PROGRESS_SECS=0` turns all of it off.
+
+A phase counts the repos it has to read this run, not everything in storage, so a run that reuses the cache measures itself against the handful of repos that changed, and `delegates` (rule E re-reading what it flagged, to check whose links they are) against those flagged repos.
 
 ### Exit codes
 
@@ -364,6 +387,7 @@ Every knob is an environment variable. Defaults shown.
 | `PLAN_COLLAPSE_ROWS` | `20`    | Group size at which a corpus verdict folds to one summary line             |
 | `PLAN_FULL`          | `0`     | `1` lists every plan row and every evidence table entry, untruncated       |
 | `NEAR_PCT`           | `20`    | A row's `NEAR` column names any threshold it cleared by less than this share of the threshold; `0` marks nothing |
+| `PROGRESS_SECS`      | `60`    | Seconds between progress lines when the output is not a terminal; `0` turns off all progress reporting ([what it looks like](#progress)) |
 
 **Disk pressure** ([what it does](#disk-pressure))
 

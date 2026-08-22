@@ -1864,6 +1864,13 @@ grep -q 'cache: media reuses' <<<"$out" \
   && ok "a variable this script never reads leaves the cache warm" \
   || no "an unrelated environment variable dropped the whole cache"
 
+# A knob that only changes what is printed is in the fingerprint's skip list, because dropping
+# the cache over it would re-read every repo on a seed of this size to no effect on the plan.
+out=$(DISK_AWARE=0 PROGRESS_SECS=5 "${NOTTY[@]}" "$SCRIPT" </dev/null 2>&1)
+grep -q 'cache: media reuses' <<<"$out" \
+  && ok "changing the progress cadence leaves the cache warm" \
+  || no "PROGRESS_SECS dropped the whole cache"
+
 # STORAGE is an operator-supplied path, and the list of already-answered repos is built from
 # it. A '#' in it used to end sed's own delimiter, which both re-walked every repo and pasted
 # its cached rows in beside the fresh ones.
@@ -2080,6 +2087,96 @@ out=$(cd "$ROOT" && env RAD_HOME="./rad-home" STORAGE="./rad-home/storage" \
 { [ "$rc" = 0 ] && grep -qE '^zjunk1 ' <<<"$out" && grep -q '# PLAN:' <<<"$out"; } \
   && ok "relative RAD_HOME/STORAGE/RAD survive the cwd anchor" \
   || no "relative paths survive cd / (rc=$rc)"
+
+# A phase that reads every repo runs for minutes on a real seed, and a terminal that says
+# nothing looks the same whether the walk is slow or hung, so operators kill runs that were
+# working. The shim makes rule E's walk outlast a tick on any machine.
+build_fixture; assert_isolated
+shimdir="$ROOT/shim"; mkdir -p "$shimdir"
+cp "$HERE/slow-git-shim" "$shimdir/git"; chmod +x "$shimdir/git"
+slow=(env "PATH=$shimdir:$PATH" DISK_AWARE=0 CACHE=0 JOBS=1 RULES=E)
+out=$("${slow[@]}" PROGRESS_SECS=1 "$SCRIPT" 2>&1)
+grep -qE '^#   \[[0-9]+/[0-9]+\] rule E: [0-9]+ of [0-9]+ repos \([0-9]+%\), [0-9]' <<<"$out" \
+  && ok "a slow walk says how many repos it has read and how long is left" \
+  || no "rule E printed no progress during a walk long enough to need it"
+
+# What a phase cost is the number an operator tuning JOBS or RULES reaches for, and on a
+# terminal it is the only trace the redrawn line leaves behind.
+grep -qE "^# rule E: $NREPOS repos in [0-9]" <<<"$out" \
+  && ok "a finished phase says how many repos it read and how long it took" \
+  || no "rule E never reported what the phase cost"
+
+# The same run with the reporting off, so the two checks above cannot pass on a line that some
+# other part of the script prints anyway.
+out=$("${slow[@]}" PROGRESS_SECS=0 "$SCRIPT" 2>&1)
+{ grep -qE '^#   \[[0-9]+/[0-9]+\] rule E:' <<<"$out" \
+    || grep -qE "^# rule E: $NREPOS repos in " <<<"$out"; } \
+  && no "PROGRESS_SECS=0 reported progress anyway" \
+  || ok "PROGRESS_SECS=0 prints no progress at all"
+
+# On a terminal the reading is redrawn in place instead, so a run that takes minutes never
+# scrolls its own output away, and the line is wiped when the phase ends rather than left
+# frozen at whatever it last read.
+if command -v script >/dev/null 2>&1; then
+  script -qec "env 'PATH=$shimdir:$PATH' DISK_AWARE=0 CACHE=0 JOBS=1 RULES=E '$SCRIPT'" \
+    /dev/null >"$ROOT/tty.out" 2>&1
+  { grep -qE $'\r''.*\[=* *\] +[0-9]+%' "$ROOT/tty.out" \
+      && ! grep -qE '^#   \[[0-9]+/[0-9]+\] rule E:' "$ROOT/tty.out"; } \
+    && ok "a terminal gets one line redrawn in place, not a line per tick" \
+    || no "the terminal progress line was not drawn, or the log form was used instead"
+else
+  skip "terminal progress line (no util-linux 'script' for a pty)"
+fi
+
+# The ticker is a background process holding the run's own stderr. One left behind keeps
+# printing into a terminal whose run has ended, so the phase that started it stops it. It is
+# caught by watching whether the run's stderr keeps growing after the run has exited.
+tickerlog="$ROOT/ticker.err"
+"${slow[@]}" PROGRESS_SECS=1 "$SCRIPT" >/dev/null 2>"$tickerlog"
+settled=$(wc -c < "$tickerlog"); sleep 2; grown=$(wc -c < "$tickerlog")
+[ "$settled" = "$grown" ] \
+  && ok "a finished run leaves no ticker printing behind it" \
+  || no "a ticker outlived the run and kept writing to its stderr"
+
+# The output of a run has to end when the run does. The ticker waits between readings in a
+# child process of its own, which inherits the run's stdout and stderr, so one left behind
+# holds the pipe open and `rad prune | anything` waits out the whole interval after the plan
+# is already printed. Read through a pipe here, since a file cannot show the difference.
+started=$SECONDS
+DISK_AWARE=0 PROGRESS_SECS=60 "${NOTTY[@]}" "$SCRIPT" </dev/null 2>&1 | cat >/dev/null
+took=$(( SECONDS - started ))
+[ "$took" -lt 30 ] \
+  && ok "the output of a run ends when the run does" \
+  || no "reading the run's output waited ${took}s for something left behind"
+
+# Rule E reads every repo it flagged a second time, to see whose links they are. That walk is
+# as slow as the harvest that fed it, it is the one walk a run can skip entirely, and it
+# counts flagged repos rather than storage, so it reports on its own terms.
+build_fixture; assert_isolated
+shimdir="$ROOT/shim"; mkdir -p "$shimdir"
+cp "$HERE/slow-rad-shim" "$shimdir/rad"; chmod +x "$shimdir/rad"
+flagged=(env RSP_REAL_RAD="$RAD" RAD="$shimdir/rad" LINK_MIN_REPOS=3 LINK_MIN_SCORE=2 \
+         DISK_AWARE=0 CACHE=0 RULES=E)
+out=$("${flagged[@]}" PROGRESS_SECS=1 "$SCRIPT" 2>&1)
+nflagged=$(grep -oE '^# re-reading [0-9]+ flagged' <<<"$out" | grep -oE '[0-9]+' || true)
+{ [ -n "$nflagged" ] && [ "$nflagged" -gt 0 ] && [ "$nflagged" -lt "$NREPOS" ]; } \
+  && ok "the delegate re-check says how many flagged repos it is about to read" \
+  || no "the delegate re-check started without saying what it was reading"
+
+# A count that never moves is what a missing per-repo marker looks like, and it reads as a
+# hung walk, which is the thing this reporting exists to rule out.
+grep -qE "^#   \[[0-9]+/[0-9]+\] delegates: [1-9][0-9]* of $nflagged repos" <<<"$out" \
+  && ok "the delegate re-check counts up as it finishes repos" \
+  || no "the delegate re-check never counted a repo it had finished"
+grep -qE "^# delegates: $nflagged repos in [0-9]" <<<"$out" \
+  && ok "the delegate re-check reports what it cost, over its own repos" \
+  || no "the delegate re-check never reported what it cost"
+
+# Nothing flagged means no second walk, and a phase that did not happen may not report itself.
+out=$("${flagged[@]/LINK_MIN_SCORE=2/LINK_MIN_SCORE=99}" PROGRESS_SECS=1 "$SCRIPT" 2>&1)
+{ grep -q '^# re-reading' <<<"$out" || grep -q '^# delegates: ' <<<"$out"; } \
+  && no "a run that flagged nothing reported a delegate walk anyway" \
+  || ok "a run with nothing to re-check reports no delegate walk"
 
 # ---- end of sections -------------------------------------------------------
 summary
