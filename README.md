@@ -21,6 +21,16 @@ Tuned against and running in production for seed.radicle.at seeding the whole pu
 ## Install
 
 ```sh
+src=$(mktemp -d)
+rad clone rad:zxvTkxzouwrYFwycnsctrMT3iM2E "$src"
+sudo install -m 755 "$src/rad-prune" /usr/local/bin/rad-prune
+```
+
+Cloning ensures you're installing the unaltered script as signed by the repo's owner. Re-run those lines later to install a newer version.
+
+Alternatively, fetch it over HTTPS and trust GitHub for the transfer:
+
+```sh
 curl -O https://raw.githubusercontent.com/maninak/radicle-seed-prune/master/rad-prune
 chmod +x rad-prune
 sudo mv rad-prune /usr/local/bin/
