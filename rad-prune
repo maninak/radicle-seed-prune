@@ -56,11 +56,12 @@
 #   "Other-seeds" is how many OTHER nodes our routing table says announce the repo. It
 #   is NOT proof a copy exists elsewhere (gossip is incomplete, and the author almost
 #   certainly still has theirs), so a floor of 0 is licence to take the last copy WE
-#   KNOW OF. Only junk-id, spam-batch and link-farm get it, the three verdicts backed
-#   by conclusive evidence, on the reasoning that for machine-generated bulk and for a
-#   repo whose whole purpose is to advertise a link, "nobody else seeds it" measures
-#   worthlessness rather than rarity. Rules B and C keep a floor: a big or
-#   long-abandoned UNIQUE repo is the very thing a seed exists to preserve.
+#   KNOW OF. junk-id, spam-batch, link-farm, media-dump and media-batch get it, on
+#   the reasoning that for machine-generated bulk, for a repo whose whole purpose is
+#   to advertise a link, and for a pile of media with no project around it, "nobody
+#   else seeds it" measures worthlessness rather than rarity. Rules B and C keep a
+#   floor: a big or long-abandoned UNIQUE repo is the very thing a seed exists to
+#   preserve.
 #
 #   Rule C - long-abandoned, replicated (catch-all for whatever the other rules missed):
 #       no new commit/COB for > STALE_YEARS_DAYS
@@ -193,9 +194,10 @@
 #   own batch, or reposting somebody's photos into five repos of your own would put their repo
 #   in the plan instead of yours. README "Rule F: media dumps" has the known limit this leaves.
 #
-#   A DUMP NO OTHER NODE SEEDS is listed for a human rather than pruned, because rule F's
-#   evidence is about one repo and the last copy is not ours to take on it. Listing rather than
-#   silently sparing is what keeps that floor from becoming a standing exemption.
+#   A DUMP NO OTHER NODE SEEDS is pruned like any other: the evidence is what the repo holds,
+#   and a dump nobody else seeds is still a dump. MEDIA_MIN_SEEDS=1 keeps that copy, and rule F
+#   then LISTS what the floor spared rather than passing over it in silence, because a floor
+#   nobody sees is a standing exemption for anyone who makes sure nobody else seeds their dump.
 #
 # RULE G JUDGES A PEER, NOT A REPO, and nothing it finds is ever deleted or pruned. A peer
 #   who pushes into repos it does not own is normally a contributor, so the only evidence that
@@ -375,7 +377,8 @@ LINK_REPO_BUDGET="${LINK_REPO_BUDGET:-8000000}"  # max bytes read per repo, per 
 # extension missing from this list counts as text, so an unfamiliar file spares a repo instead
 # of condemning it. SVG is deliberately absent: it is markup, and real projects commit it as an
 # asset. Archives are here because zipping a video is a one-command evasion; the cost is that a
-# repo holding a release tarball and nothing else reads as a dump, which the seed floor bounds.
+# repo holding a release tarball and nothing else reads as a dump. That is the intended
+# reading: MEDIA_TEXT_MAX_BYTES spares a tarball that has a project around it.
 MEDIA_EXTS="${MEDIA_EXTS:-\
 jpg|jpeg|png|gif|webp|avif|bmp|tif|tiff|heic|heif|ico|psd|\
 mp4|m4v|mkv|avi|mov|webm|wmv|flv|mpg|mpeg|3gp|\

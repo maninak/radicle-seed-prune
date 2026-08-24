@@ -243,7 +243,7 @@ The header prints the live pressure and the effective thresholds every run. On o
 
 - **Dry run by default.** Nothing is pruned without `--apply`, and no peer is blocked without `--block-peers`.
 - **Quarantine instead of deletion.** A pruned repo stays on disk for `QUARANTINE_DAYS` (7) and is restorable with one command ([details](#quarantine)).
-- **Minimum seed counts** keep the last copy we know of, except under `junk-id`, `spam-batch` and `link-farm` ([why](#verdicts-that-may-delete-the-last-copy-we-know-of)).
+- **Minimum seed counts** keep the last copy we know of, except under `junk-id`, `spam-batch`, `link-farm` and rule F's two media verdicts ([why](#verdicts-that-may-delete-the-last-copy-we-know-of)).
 - **Runaway caps** (`MAX_PRUNE_COUNT`, `MAX_PRUNE_GB`) abort a plan bigger than either cap. Two things get past them: `--force`, or a person answering `y` at the prompt, which is a human signing off on the numbers just printed. `--yes` is not one of them, so an unattended run still stops.
 - **History ratchet.** An unattended run aborts when the plan is more than `RATCHET_FACTOR` (3) times the median of the last `RATCHET_RUNS` (8) applied runs; `--force` or an interactive confirmation gets past it.
 - **Freshness guard** skips any repo whose storage directory was written within `FRESH_GUARD_DAYS` (2), which is what a fetch still arriving looks like.
