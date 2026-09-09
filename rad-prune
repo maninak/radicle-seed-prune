@@ -1610,6 +1610,8 @@ MEDIA
   cut -f1 "$tmp/media" "$tmp/media-fail" | sort -u > "$tmp/answered-media"
   cache_save_keys media "$tmp/answered-media"
   nmediafail=$(sort -u "$tmp/media-fail" | wc -l)
+  # Which repos these are is said where the file holding them is written, near the end of the
+  # run. Naming it here would name a path that a run aborting in between never creates.
   [ "$nmediafail" = 0 ] \
     || echo "# WARN: rule F left $nmediafail repo(s) unjudged: unreadable, or over" \
             "MEDIA_MAX_REFS ($MEDIA_MAX_REFS) refs." >&2
@@ -2445,6 +2447,11 @@ if [ "$lr_ok" = 1 ]; then
   { lr_stamp
     printf '# peer_nid\trepos_sharing_blob\trepos_touched\tmedia_bytes\ttext_bytes\tblob\n'
     cat "$tmp/parasites"; } > "$staging/parasite-peers.tsv" 2>/dev/null || lr_ok=0
+  # The repos rule F could not read. Without them the run's own warning names a count and
+  # nothing to go and look at.
+  { lr_stamp
+    printf '# rid\n'
+    sort -u "$tmp/media-fail"; } > "$staging/media-unjudged.tsv" 2>/dev/null || lr_ok=0
   { lr_stamp
     cat "$scanerr"; } > "$staging/scan-errors.txt" 2>/dev/null || lr_ok=0
 fi
@@ -2458,6 +2465,10 @@ if [ "$lr_ok" = 1 ]; then
 fi
 if [ "$lr_ok" = 1 ]; then
   echo "# the untrimmed plan and the evidence behind it: $lastrun/"
+  # Printed here rather than beside rule F's count, because this is where the file holding
+  # them is known to have been written: a run aborting in between never creates it.
+  [ "${nmediafail:-0}" = 0 ] \
+    || echo "#   the $nmediafail repo(s) rule F left unjudged: $lastrun/media-unjudged.tsv"
 else
   rm -rf "$staging" 2>/dev/null
   # Losing this loses no verdict, but it does lose the only copy of the evidence for one, so it

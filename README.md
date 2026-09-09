@@ -449,6 +449,7 @@ Anything this tool does is written to `$RAD_HOME/prune-audit/` (default `~/.radi
   - `spam-domains.tsv`: every domain rule E condemned, with how many repos link to it.
   - `media-review.tsv`: every dump rule F found and kept because no other node seeds it.
   - `parasite-peers.tsv`: every peer rule G accused, with the evidence each accusation rests on.
+  - `media-unjudged.tsv`: every repo rule F could not read, or gave up on for holding more than `MEDIA_MAX_REFS` refs. These are the repos its warning counts.
   - `scan-errors.txt`: everything the run could not read.
 
 ```sh

@@ -8,6 +8,7 @@ All notable changes to this project are documented here. The format is based on 
 
 - **A run says where it writes.** The output header names the audit directory next to the home it read, so the plan, the per-run log and the quarantine can be found without waiting for the run to end.
 - **A prune that quarantined something says how to get the disk back.** Quarantined repos still occupy disk, so the closing lines name the command that deletes them now, and say that it empties what earlier runs left in there too.
+- **The repos the media rule could not judge are named, not just counted.** Any run that gets as far as a plan writes them to `last-run/media-unjudged.tsv`, beside the other evidence files, so the warning's count is something you can go and look at.
 
 ### Fixed
 

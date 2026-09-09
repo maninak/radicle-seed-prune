@@ -1487,6 +1487,17 @@ reviewrows() { awk '/^# review:/ { inb = 1; next }
   && ok "an evidence table the screen cut at five is written out in full" \
   || no "the evidence file was cut down to the same rows the screen showed"
 
+# A count of repos rule F gave up on is a warning nobody can act on until it names them. Every
+# repo in the fixture is over the ref ceiling below, so the walk gives up on all of them.
+unj=$(DISK_AWARE=0 MEDIA_MAX_REFS=0 CACHE=0 run)
+nunj=$(sed -n 's/^# WARN: rule F left \([0-9]*\) repo(s) unjudged.*/\1/p' <<<"$unj")
+{ [ "${nunj:-0}" -gt 0 ] \
+  && grep -q "^#   the $nunj repo(s) rule F left unjudged: $L/media-unjudged.tsv$" <<<"$unj" \
+  && [ "$(grep -vc '^#' "$L/media-unjudged.tsv")" = "$nunj" ] \
+  && grep -qx 'zmediamd' "$L/media-unjudged.tsv"; } \
+  && ok "the repos rule F gave up on are named, not only counted" \
+  || no "rule F warned about $nunj unjudged repos and named none of them"
+
 
 # A read-only audit dir must cost the operator the files, not the run.
 build_fixture; assert_isolated
