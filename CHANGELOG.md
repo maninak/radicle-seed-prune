@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **A run says where it writes.** The output header names the audit directory next to the home it read, so the plan, the per-run log and the quarantine can be found without waiting for the run to end.
+- **A prune that quarantined something says how to get the disk back.** Quarantined repos still occupy disk, so the closing lines name the command that deletes them now, and say that it empties what earlier runs left in there too.
+
+### Fixed
+
+- **`--apply` reports its progress too.** 0.6.0 gave every scanning phase a progress line but left the pruning stage silent, so a large plan announced how many repos it was about to take and then said nothing for minutes, which reads like a hang. It now shows repos pruned, the share of the plan done and the time left while it unseeds, blocks and removes each one.
+- **A run that could not read a single repo date no longer reports an empty plan.** Every rule needs a repo's age, so a run that could not read any dates skips every repo, and it used to print `prune 0 repos` and exit cleanly over a seed it had in fact read nothing from. It now stops and breaks down what it could not read. `MAX_SCAN_FAIL_PCT` (default=10%) is the failsafe that sets how much of a storage may be unreadable before that happens.
+- **A phase no longer reports repos it never read.** It closes with `activity: 0 of 12000 repos` where it used to close with its own total whatever it had actually read.
+- **The per-repo workers no longer need `bash` on `PATH`.** They run under the same shell as the script. On a `PATH` without `bash`, which is easy to build by hand for a NixOS or systemd wrapper, every worker used to die while each phase reported repos nothing had read.
+- **A command missing from `PATH` is named before the run reads anything.** `rad`, `git`, `jq`, `awk` and the coreutils the rules call are all checked up front. A missing `git` used to fail once per repo, quietly, and the run then blamed storage it could not read.
+- **`quarantine restore` stops when a command it needs is missing.** It is checked against the shorter list of commands the quarantine verbs actually use. A missing `dirname` used to put the repo back on disk, warn that it could not write the keep file, and carry on, leaving the next run free to prune it again.
+
 ## [0.6.0] - 2026-08-22
 
 ### Upgrading

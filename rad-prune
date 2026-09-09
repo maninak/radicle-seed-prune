@@ -35,7 +35,9 @@
 #     - private repos       (rad ls --private)
 #     - our own repos       (rad ls: repos we initialized or forked / delegate)
 #     - freshly written     (storage dir mtime within FRESH_GUARD_DAYS; in-flight fetch)
-#     - unknown age         (no readable refs; left alone out of caution)
+#     - unknown age         (no readable refs; left alone out of caution, and counted
+#                            against MAX_SCAN_FAIL_PCT: a whole storage of it is a
+#                            broken scan, not an exclusion)
 #     - kept                (one rid per line in AUDIT_DIR/keep.txt; a verdict a human has
 #                            already overruled, written there by "quarantine restore")
 #
@@ -531,6 +533,11 @@ SELF=$(_abs "$0")   # the run cache hashes this file, and cd would break a relat
 
 cd /
 
+# The shell the per-repo workers below are run with. `bash` need not be on PATH, and a run
+# started as `/nix/store/.../bash rad-prune` loses every `xargs ... bash worker.sh` worker
+# while the phases still report repos nothing read. $BASH is the shell running this script.
+BASH_BIN=${BASH:-bash}
+
 # Parallel workers for the per-repo activity scan. Dynamic default: one per core, less one, so
 # the running node keeps a core free. Note the scan is largely IO-bound, so raising this mostly
 # helps on seeds with ref-heavy (COB-heavy) repos: measured on an 11k-repo seed, 8 workers came
@@ -575,7 +582,9 @@ fi
 # not an answer. The paths and RULES are shown resolved, since the commonest question help is
 # asked is "which home is it about to read".
 usage() {
-  local me; me=$(basename "$SELF")
+  # The path's last segment, done in the shell: --help is answered before the check that names
+  # a missing command, so it cannot be the thing that needs one.
+  local me=${SELF##*/}
   cat <<HELPTEXT
 $me $VERSION
 Automatically detect and prune lower-value repos, spam and abuse from a Radicle node's storage.
@@ -627,6 +636,41 @@ for a in "$@"; do
     *) echo "unknown arg: $a (try --help)" >&2; exit 2 ;;
   esac
 done
+
+# Answered before the preflight below, the same as the main --help is answered before it: a
+# reader asking what the verbs are gets an answer rather than a list of what is not installed.
+case "$QVERB" in
+  --help|-h) usage; exit 0 ;;
+esac
+
+# A per-repo command that fails is ordinary here - a repo can vanish or turn unreadable under
+# a live node - so the calls below discard their own errors and carry on. A command that is not
+# installed fails in that same shape for every repo at once, and the run then reports storage
+# as unreadable when one binary is missing from PATH. Name it here, before a repo is read.
+# What the quarantine verbs call, checked whatever the command is. `restore` reaches dirname
+# through the keep file it writes.
+need="basename cut date dirname du grep mkdir mv rm stat"
+# What a scan adds on top. `nproc` is left out of both: its one call has a fallback value.
+if [ "$CMD" != quarantine ]; then
+  need="$need awk cat df find git head jq mktemp od sed sha1sum sort tail touch tr"
+  need="$need uniq wc xargs"
+fi
+missing=
+for c in $need; do
+  command -v "$c" >/dev/null 2>&1 || missing="$missing $c"
+done
+[ -z "$missing" ] || {
+  echo "missing required command(s):$missing" >&2
+  echo "PATH=$PATH" >&2
+  exit 1
+}
+# rad answers for what this seed holds, who else seeds it, and what is pinned or private. With
+# no rad the routing table comes back empty, and the abort that follows names seed counts
+# rather than the binary that never ran. `restore` needs it too: it re-seeds what it puts back.
+if [ "$CMD" != quarantine ] || [ "$QVERB" = restore ]; then
+  command -v "$RAD" >/dev/null 2>&1 \
+    || { echo "no rad at '$RAD' (set RAD=/path/to/rad)" >&2; exit 1; }
+fi
 
 # `quarantine list|delete|purge` read and write the quarantine alone, and an operator most
 # wants to look at what is held when storage is unmounted, so only a run that scans storage is
@@ -773,8 +817,6 @@ if [ "$CMD" = quarantine ]; then
       done < <(quar_expired)
       echo "# purged $npurge repo(s) past the ${QUARANTINE_DAYS}d window."
       ;;
-    --help|-h)
-      usage; exit 0 ;;
     *)
       [ -n "$QVERB" ] && echo "unknown quarantine verb: $QVERB" >&2
       usage >&2
@@ -814,7 +856,9 @@ media_cut=$(( now - MEDIA_STALE_DAYS*86400 ))
 
 run_mode=$([ "$APPLY" = 1 ] && echo APPLY || echo DRY-RUN)
 echo "# radicle-seed-prune $VERSION  $(date -u +%FT%TZ)   mode=$run_mode"
-echo "# home=$RAD_HOME"
+# Named at the top and not only at the end: the plan, the per-run log and the quarantine are
+# all under it, and they are what an operator goes looking for while the run is still going.
+echo "# home=$RAD_HOME  audit=$AUDIT_DIR"
 
 # The header is what a reader checks the run against, so every threshold it acted on is printed
 # at its effective (post-pressure) value.
@@ -893,6 +937,12 @@ for _r in E F G; do rule_on "$_r" && progress_phases=$((progress_phases + 1)); d
 if rule_on E && [ "$LINK_DELEGATE_CHECK" = 1 ]; then
   progress_phases=$((progress_phases + 1))
 fi
+# The prune is a walk too, and the only one that changes anything, so it reports like the scans
+# do: silence between the confirmation and the DONE line is indistinguishable from a hang.
+# A run that aborts before the prune, or answers "n", reads one phase short.
+if [ "$APPLY" = 1 ]; then
+  progress_phases=$((progress_phases + 1))
+fi
 
 # Seconds as a short duration, so a progress line reads at a glance rather than being counted.
 duration() {
@@ -907,12 +957,15 @@ progress_phase=""
 progress_total=0
 progress_started=0
 progress_n=0
+progress_files=()
 # $1 = what to call the phase, $2 = repos it will read, $3... = the files its workers append a
 # row to per finished repo.
 progress_start() {
   local phase=$1 total=$2
   shift 2
   progress_phase=$phase; progress_total=$total; progress_started=$SECONDS
+  # Kept for progress_stop, which counts the same rows once more to say what the phase read.
+  progress_files=("$@")
   progress_n=$((progress_n + 1))
   progress_pid=""
   [ "$PROGRESS_SECS" -gt 0 ] || return 0
@@ -989,16 +1042,37 @@ progress_kill() {
   if [ -t 2 ]; then printf '\r\033[K' >&2; fi
 }
 
+# A phase that prints while its ticker redraws gets its message written into the middle of the
+# bar. Take the bar off first, so the message starts at column 0 and the next redraw follows
+# it.
+progress_warn() {
+  if [ -t 2 ]; then printf '\r\033[K' >&2; fi
+  echo "$@" >&2
+}
+
 # Ends the phase progress_start opened, and says what it cost. That is the one number an
 # operator tuning JOBS or RULES wants, and on a terminal it is the only trace the redrawn line
 # leaves behind.
 progress_stop() {
   progress_kill
+  local read_n cost
   if [ "$PROGRESS_SECS" -gt 0 ] && [ "$progress_total" -gt 0 ]; then
-    echo "# $progress_phase: $progress_total repos in" \
-         "$(duration $(( SECONDS - progress_started )))" >&2
+    cost=$(duration $(( SECONDS - progress_started )))
+    # Counted from the rows the workers appended, not the repos the phase set out to read: a
+    # phase whose workers all died still reaches its end, and its own total then reads as a
+    # walk that worked. -1 when the phase named no file, which keeps the plain line below,
+    # because a bare `cat` would read stdin and hang.
+    read_n=-1
+    if [ "${#progress_files[@]}" -gt 0 ]; then
+      read_n=$( { cat "${progress_files[@]}" 2>/dev/null || true; } | wc -l )
+    fi
+    if [ "$read_n" -ge 0 ] && [ "$read_n" -lt "$progress_total" ]; then
+      echo "# $progress_phase: $read_n of $progress_total repos in $cost" >&2
+    else
+      echo "# $progress_phase: $progress_total repos in $cost" >&2
+    fi
   fi
-  progress_phase=""; progress_total=0
+  progress_phase=""; progress_total=0; progress_files=()
 }
 
 tmp=$(mktemp -d)
@@ -1208,7 +1282,7 @@ done
 LIFE
 progress_start "activity" "$nrepos" "$tmp/lives"
 find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -print0 2>>"$scanerr" \
-  | xargs -0r -P "$JOBS" -n 64 bash "$tmp/life.sh" > "$tmp/lives" || true
+  | xargs -0r -P "$JOBS" -n 64 "$BASH_BIN" "$tmp/life.sh" > "$tmp/lives" || true
 progress_stop
 
 # ------------------------------------------------------------------------------- the run cache
@@ -1515,7 +1589,7 @@ MEDIA
   # phase full of unreadable repos would otherwise look stalled.
   progress_start "rule F" "$(repos_left media)" "$tmp/media" "$tmp/media-fail"
   repos_to_read "$tmp/cached-media" \
-    | xargs -0r -P "$JOBS" -n 32 bash "$tmp/media.sh" \
+    | xargs -0r -P "$JOBS" -n 32 "$BASH_BIN" "$tmp/media.sh" \
         > "$tmp/media" 4> "$tmp/media-fail" || true
   progress_stop
   # The reused rows go back beside the ones just measured, so everything downstream (the
@@ -1664,7 +1738,8 @@ PEER
   cache_hits peer
   progress_start "rule G" "$(repos_left peer)" "$tmp/peer-done"
   repos_to_read "$tmp/cached-peer" \
-    | xargs -0r -P "$JOBS" -n 32 bash "$tmp/peer.sh" > "$tmp/peer" 3> "$tmp/peer-done" || true
+    | xargs -0r -P "$JOBS" -n 32 "$BASH_BIN" "$tmp/peer.sh" \
+        > "$tmp/peer" 3> "$tmp/peer-done" || true
   progress_stop
   # The reused rows go back beside the ones just walked, because the verdict is corpus-wide:
   # a peer's spread is counted across all of storage, and a delegate row from any repo is what
@@ -1746,7 +1821,7 @@ HOSTS
   # links nowhere.
   progress_start "rule E" "$(repos_left hosts)" "$tmp/hosts-done"
   repos_to_read "$tmp/cached-hosts" \
-    | xargs -0r -P "$JOBS" -n 32 bash "$tmp/hosts.sh" \
+    | xargs -0r -P "$JOBS" -n 32 "$BASH_BIN" "$tmp/hosts.sh" \
         > "$tmp/hosts" 3> "$tmp/hosts-code" 4> "$tmp/hosts-fail" 5> "$tmp/hosts-done" || true
   progress_stop
   cache_reuse "hosts" 1 hosts      >> "$tmp/hosts"
@@ -1905,7 +1980,7 @@ OWNED
        "($JOBS workers)..." >&2
   progress_start "delegates" "$nflagged" "$tmp/owned-done"
   cut -f1 "$tmp/linkfarm" | tr '\n' '\0' \
-    | xargs -0r -P "$JOBS" -n 8 bash "$tmp/owned.sh" \
+    | xargs -0r -P "$JOBS" -n 8 "$BASH_BIN" "$tmp/owned.sh" \
         > "$tmp/owned" 3> "$tmp/owned-fail" 4> "$tmp/owned-done" || true
   progress_stop
   # reg() below must fold exactly as the harvest pass does, or a domain counted there would
@@ -2119,8 +2194,10 @@ nblind=0; nfresh=0; nnoage=0
 while IFS=$'\t' read -r rid sz mt life birth; do
   [ -n "${SCANFAIL[$rid]:-}" ] && { nblind=$((nblind+1)); continue; }  # size and age unusable
   [ -n "${EXCL[$rid]:-}" ] && continue                # pinned / private / own
-  [ "$life" = 0 ] && { nnoage=$((nnoage+1)); continue; }               # unknown age: leave it
+  # Freshness is read before age, because a repo whose fetch is still in flight has no refs
+  # yet and would otherwise count as ageless against the scan guard below.
   [ "$mt" -ge "$fresh_cut" ] && { nfresh=$((nfresh+1)); continue; }     # in-flight fetch
+  [ "$life" = 0 ] && { nnoage=$((nnoage+1)); continue; }               # unknown age: leave it
 
   # Rules D, E and F measure age from here: the older of the repo's own oldest ref date and
   # the day this seed first saw it. A pusher controls the first and cannot reach the second.
@@ -2211,16 +2288,25 @@ while IFS=$'\t' read -r rid sz mt life birth; do
 done < "$tmp/repos"
 
 # A scan that missed a big share of storage produces a small plan, not an accurate one, and a
-# small plan reads like good news. Refuse to report one. Repos that vanished mid-walk never
-# reached $tmp/repos at all, unreadable ones did but with untrustworthy numbers; both are blind
-# spots.
+# small plan reads like good news. Refuse to report one. Three ways to miss a repo, equally
+# blind: it vanished mid-walk and never reached $tmp/repos, find or du failed on it so its
+# numbers are untrustworthy, or its refs would not list, which leaves it ageless and outside
+# every age rule. Ageless belongs in this sum at the same limit as the other two: it is not a
+# background rate, and four weekly runs over a 12.5k-repo seed each reported zero of it.
 echo "# skipped: $nblind unreadable, $nfresh written in the last ${FRESH_GUARD_DAYS}d," \
      "$nnoage with no readable refs"
-blind=$(( nrepos - total_repos + nblind ))
+# A repo can reach $tmp/repos without being one of the directories counted at the top of the
+# walk, so this subtraction can come out below zero and must not then credit the scan.
+vanished=$(( nrepos - total_repos )); [ "$vanished" -lt 0 ] && vanished=0
+blind=$(( vanished + nblind + nnoage ))
 [ "$blind" -le $(( nrepos * MAX_SCAN_FAIL_PCT / 100 )) ] || {
-  echo "# ABORT($mode): could not read $blind of $nrepos repos" \
-       "(limit ${MAX_SCAN_FAIL_PCT}%)." >&2
+  echo "# ABORT($mode): could not judge $blind of $nrepos repos" \
+       "(limit ${MAX_SCAN_FAIL_PCT}%):" \
+       "$vanished vanished, $nblind unreadable," \
+       "$nnoage with no readable refs." >&2
   echo "# A plan from a scan this blind would look small for the wrong reason." >&2
+  echo "# The three counts come from find, du and git, so check those first. To let a run go" \
+       "ahead over a storage that is genuinely like this: MAX_SCAN_FAIL_PCT=<percent>." >&2
   exit 5
 }
 
@@ -2557,10 +2643,20 @@ else
   echo "# unseed + block + delete $nplan repos..."
 fi
 deleted=0
+undated=0
+# One line per repo that is really gone from storage, which is what the ticker counts and what
+# its closing line reports. Repos attempted would print a full count above the WARN below.
+: > "$tmp/pruned"
+ticks_ok=1
+progress_start "pruning" "$nplan" "$tmp/pruned"
 while IFS=$'\t' read -r rid _; do
+  # Emptied per repo, so a failure below that says nothing is not reported with the last
+  # repo's message. A $tmp this cannot write is a $tmp the redirections below cannot write
+  # either, and then no repo is touched at all.
+  : > "$tmp/prune-err" 2>/dev/null || true
   "$RAD" unseed "rad:$rid" >/dev/null 2>&1 || true     # clear any policy FIRST
   "$RAD" block  "rad:$rid" >/dev/null 2>&1 \
-    || { echo "#   WARN block failed, skipping delete: $rid" >&2; continue; }
+    || { progress_warn "#   WARN block failed, skipping delete: $rid"; continue; }
   d="$STORAGE/$rid"
   case "$d" in
     "$STORAGE"/z*)
@@ -2568,18 +2664,42 @@ while IFS=$'\t' read -r rid _; do
         # A repo pruned twice (re-fetched, pruned again) would otherwise fail to move onto
         # its own older copy, so the older copy goes first.
         rm -rf -- "$quar/$rid" 2>/dev/null
-        # touch, because the purge measures the window by directory mtime and mv keeps the
-        # old one. Rules B and C select repos nothing has touched for 90 to 730 days, so
-        # without this their recovery copy would be past its window the moment it arrived.
-        mv -- "$d" "$quar/$rid" 2>/dev/null && touch "$quar/$rid" && deleted=$((deleted+1)) \
-          || echo "#   WARN quarantine failed: $d" >&2
+        if mv -- "$d" "$quar/$rid" 2>"$tmp/prune-err"; then
+          deleted=$((deleted+1))
+          printf '%s\n' "$rid" >> "$tmp/pruned" || ticks_ok=0
+          # The purge measures the window by directory mtime and mv keeps the old one, so a
+          # copy that could not be re-dated counts its window from a date this run did not
+          # choose and may already be past it. Rules B and C select repos nothing has touched
+          # for 90 to 730 days, and they read ref dates rather than mtime, so how much window
+          # is left is not something this loop can work out. The repo has left storage either
+          # way, which makes this a shortened undo and not a failed prune.
+          touch "$quar/$rid" 2>/dev/null \
+            || { undated=$((undated+1))
+                 progress_warn "#   WARN $rid kept its own date in quarantine, so its window" \
+                               "runs from that date and may already have passed"; }
+        else
+          # The tool's own message names the path, so the rid is only the fallback for a
+          # failure that said nothing.
+          err=$(head -1 "$tmp/prune-err" 2>/dev/null) || true
+          progress_warn "#   WARN quarantine failed: ${err:-$rid}"
+        fi
       else
-        rm -rf -- "$d" && deleted=$((deleted+1)) \
-          || echo "#   WARN delete failed: $d" >&2
+        if rm -rf -- "$d" 2>"$tmp/prune-err"; then
+          deleted=$((deleted+1))
+          printf '%s\n' "$rid" >> "$tmp/pruned" || ticks_ok=0
+        else
+          err=$(head -1 "$tmp/prune-err" 2>/dev/null) || true
+          progress_warn "#   WARN delete failed: ${err:-$rid}"
+        fi
       fi ;;
-    *) echo "#   SKIP unsafe path: $d" >&2 ;;
+    *) progress_warn "#   SKIP unsafe path: $d" ;;
   esac
 done < "$tmp/plan.sorted"
+progress_stop
+# $deleted below is counted in this shell and stands whatever happened here, so this costs the
+# progress line alone. Said out loud so the short count above is not read as failed prunes.
+[ "$ticks_ok" = 1 ] \
+  || echo "# WARN: could not write $tmp/pruned; the pruning line above undercounts." >&2
 
 # The audit log and the GiB total were both written from the PLAN. If deletions failed, saying
 # nothing here would leave a record claiming disk was reclaimed that never was.
@@ -2606,8 +2726,22 @@ printf '%s\tdeleted=%s\treclaimed_gib=%s\tquarantine=%s\tpressure=%s%%\taudit=%s
 if [ "$QUARANTINE" = 1 ]; then
   echo "# DONE: quarantined $deleted repos, ~${gib} GiB out of storage but still on disk" \
        "for ${QUARANTINE_DAYS}d."
-  echo "# See them with: $(basename "$0") quarantine list" \
-       "   put one back with: $(basename "$0") quarantine restore <rid>"
+  # The line above is what an operator reads before deciding whether they still have an undo,
+  # so the repos it is not true of are named right under it rather than 20 warnings back.
+  [ "$undated" = 0 ] \
+    || echo "# $undated of them kept their own date, so their window runs from it and may" \
+            "already have passed."
+  # Both lines are about what this run just put there, so neither is printed when it put
+  # nothing there and the quarantine holds only what earlier runs left.
+  if [ "$deleted" -gt 0 ]; then
+    echo "# See them with: $(basename "$0") quarantine list" \
+         "   put one back with: $(basename "$0") quarantine restore <rid>"
+    # The GiB above are still occupied until the window passes, and where the disk went is the
+    # next question a big prune is asked. --all empties the whole quarantine, which is more
+    # than this run put in it, so the line says so rather than reading as "finish up here".
+    echo "# To free the disk now, giving up the undo for this run and every earlier one:" \
+         "$(basename "$0") quarantine delete --all"
+  fi
   echo "# Audit: $audit"
 else
   echo "# DONE: deleted $deleted repos, reclaimed ~${gib} GiB. Audit: $audit"

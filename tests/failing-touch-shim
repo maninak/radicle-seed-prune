@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Test double for `touch`: refuses any path inside a quarantine and forwards everything else.
+# Put its dir first on PATH to make the prune's re-dating step fail while the move itself
+# works, which is the shape of a quarantine on a filesystem that will not take a timestamp.
+set -uo pipefail
+real=$(PATH="$(getconf PATH)" command -v touch)
+for a in "$@"; do
+  case "$a" in
+    */quarantine/*) exit 1 ;;
+  esac
+done
+exec "$real" "$@"

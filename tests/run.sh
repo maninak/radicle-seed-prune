@@ -249,7 +249,7 @@ build_fixture(){
 # relative to the moment it was built, so it is thrown away after an hour rather than left to
 # drift towards the day thresholds the tests sit near. RSP_FIXTURE_CACHE=0 turns it off.
 cached_template(){
-  local key dir staging
+  local key dir staging old
   key=$( { sed -n '1,/^# ---- end of header/p' "$0"; cat "$HERE/rad-stub"; } \
          | sha1sum | cut -c1-12 )
   dir="${TMPDIR:-/tmp}/rsp-fixture-$(id -u)-$key"      # never another user's, on a shared /tmp
@@ -259,12 +259,21 @@ cached_template(){
     printf '%s\n' "$dir"; return 0
   fi
   _build_fixture >&2
-  # Filled beside the target and renamed onto it, which is one atomic step: a second suite
-  # running at the same time sees either no template or a whole one, never half of one.
+  # Filled beside the target and renamed onto it, so a second suite running at the same time
+  # sees either the old template or the new one, never half of one. The old one is renamed away
+  # rather than deleted where it stands: `rm -rf` on a whole fixture leaves the path missing
+  # for as long as the walk takes, and a suite copying from it in that window gets a fixture
+  # with no storage in it, which fails as a handful of unrelated tests.
   staging=$(mktemp -d -p "$(dirname "$dir")")
   cp -a --reflink=auto "$ROOT/." "$staging/"
-  rm -rf "$dir" 2>/dev/null
-  mv -T "$staging" "$dir" 2>/dev/null || rm -rf "$staging"
+  old="$dir.old.$$"
+  mv -T "$dir" "$old" 2>/dev/null || old=""
+  if mv -T "$staging" "$dir" 2>/dev/null; then
+    [ -n "$old" ] && rm -rf "$old"
+  else
+    rm -rf "$staging"
+    [ -n "$old" ] && mv -T "$old" "$dir" 2>/dev/null
+  fi
   [ -d "$dir" ] || { echo "ABORT: could not cache the fixture at $dir" >&2; return 1; }
   # The key changes whenever the fixture does, so yesterday's templates are dead weight.
   find "${TMPDIR:-/tmp}" -maxdepth 1 -name "rsp-fixture-$(id -u)-*" -type d -mtime +0 \
@@ -565,6 +574,23 @@ run(){ local out; out=$("$SCRIPT" "$@" 2>&1); RC=$?; printf '%s' "$out"; }
 
 # drop the tty for the non-interactive --apply test
 NOTTY=(); command -v setsid >/dev/null && NOTTY=(setsid)
+
+# $1 = a dir to fill with symlinks to everything on the real PATH except the commands named
+# after it, for the tests that run the script against a PATH short of something.
+# Mirrored rather than listed, because a hand-written list of what the tool needs goes stale
+# and then fails as "the tool needs git" when it means "the test forgot cut".
+path_without(){
+  local dir=$1 d gone
+  shift
+  mkdir -p "$dir"
+  # One PATH entry per line, because a directory with a space in its name is one entry.
+  while IFS= read -r d; do
+    [ -d "$d" ] || continue
+    find "$d" -maxdepth 1 \( -type f -o -type l \) -print0 2>/dev/null \
+      | xargs -0r ln -sn -t "$dir" 2>/dev/null
+  done < <(printf '%s\n' "${PATH//:/$'\n'}")
+  for gone in "$@"; do rm -f "$dir/$gone"; done
+}
 
 # The three peers the rule G fixture pushes with: the parasite, the one who also wrote
 # something, and the one who delegates a repo of its own. Named here rather than in the
@@ -1461,6 +1487,7 @@ reviewrows() { awk '/^# review:/ { inb = 1; next }
   && ok "an evidence table the screen cut at five is written out in full" \
   || no "the evidence file was cut down to the same rows the screen showed"
 
+
 # A read-only audit dir must cost the operator the files, not the run.
 build_fixture; assert_isolated
 mkdir -p "$RSP_HOME/prune-audit/last-run"
@@ -1480,7 +1507,8 @@ chmod 700 "$RSP_HOME/prune-audit"
 for r in zjunk1 zbig2 zbar8; do chmod 000 "$STORAGE/$r"; done
 out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 MAX_SCAN_FAIL_PCT=1 "$SCRIPT" 2>&1); rc=$?
 for r in zjunk1 zbig2 zbar8; do chmod 755 "$STORAGE/$r"; done
-{ [ "$rc" = 5 ] && grep -q "could not read 3 of $NREPOS repos" <<<"$out" \
+{ [ "$rc" = 5 ] && grep -q "could not judge 3 of $NREPOS repos" <<<"$out" \
+    && grep -q "0 vanished, 3 unreadable, 0 with no readable refs\." <<<"$out" \
     && ! grep -q '# PLAN:' <<<"$out"; } \
   && ok "blind scan aborts instead of reporting a small plan" \
   || no "blind scan aborts (got exit $rc)"
@@ -1509,6 +1537,71 @@ chmod 755 "$STORAGE"
   && ok "unreadable storage dir aborts (no empty plan)" \
   || no "unreadable storage aborts (got exit $rc)"
 
+# --- a dependency missing from PATH is named, not read as unreadable storage --- Without the
+# preflight, every per-repo git call fails the way one unreadable repo does, and the run blames
+# storage for a binary that is not installed.
+nogit="$ROOT/nogit"; path_without "$nogit" git
+out=$(PATH="$nogit" "$SCRIPT" 2>&1); rc=$?
+{ [ "$rc" = 1 ] && grep -q 'missing required command(s): git$' <<<"$out" \
+    && grep -q "^PATH=$nogit$" <<<"$out"; } \
+  && ok "a git missing from PATH is named, with the PATH that was searched" \
+  || no "missing git named (got exit $rc)"
+
+# A quarantine verb is checked against what it calls, not against what a scan calls, so the
+# list it is checked against has to be right: restore reaches dirname through the keep file it
+# writes, and without dirname it puts a repo back that the next run prunes again.
+nodirname="$ROOT/nodirname"; path_without "$nodirname" dirname
+out=$(PATH="$nodirname" "$SCRIPT" quarantine restore zjunk1 2>&1); rc=$?
+{ [ "$rc" = 1 ] && grep -q 'missing required command(s): dirname$' <<<"$out"; } \
+  && ok "a quarantine verb names the command it needs and does not half-run" \
+  || no "quarantine restore ran without dirname (got exit $rc)"
+
+# rad is looked up through $RAD and not through the list above, so it gets its own check: a
+# seed whose rad is a Nix store path is exactly where this is typed wrong.
+out=$(RAD="$ROOT/no-such-rad" "$SCRIPT" 2>&1); rc=$?
+{ [ "$rc" = 1 ] && grep -q "no rad at '$ROOT/no-such-rad'" <<<"$out"; } \
+  && ok "a rad that is not there is named, with the path that was tried" \
+  || no "missing rad named (got exit $rc)"
+
+# --- the per-repo workers do not need bash on PATH --- A run started as
+# `/nix/store/.../bash rad-prune` has the shell by absolute path and not through PATH.
+# The stub's shebang is rewritten because `env bash` cannot find bash here either, and the stub
+# is not what this test is about.
+nobash="$ROOT/nobash"; path_without "$nobash" bash sh rad
+realbash=$(command -v bash)
+sed "1s|.*|#!$realbash|" "$HERE/rad-stub" > "$nobash/rad"; chmod +x "$nobash/rad"
+out=$(PATH="$nobash" RAD="$nobash/rad" DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 \
+      "$realbash" "$SCRIPT" 2>&1); rc=$?
+{ [ "$rc" = 0 ] && has "$out" "zjunk1" \
+    && ! grep -q 'No such file or directory' <<<"$out"; } \
+  && ok "the workers run with bash off PATH" \
+  || no "workers need bash on PATH (got exit $rc)"
+
+# --- a walk that read nothing is refused, not reported as an empty plan --- A ref walk that
+# dies wholesale leaves every repo ageless, every age rule then skips it, and the plan comes
+# out empty from a scan that read no dates at all.
+nolife="$ROOT/nolife"; mkdir -p "$nolife"
+cp "$HERE/no-life-xargs-shim" "$nolife/xargs"; chmod +x "$nolife/xargs"
+out=$(PATH="$nolife:$PATH" DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" 2>&1); rc=$?
+{ [ "$rc" = 5 ] && grep -q 'with no readable refs\.' <<<"$out" \
+    && ! grep -q '# PLAN:' <<<"$out"; } \
+  && ok "a scan with no ref dates aborts (no empty plan)" \
+  || no "ref-less scan aborts (got exit $rc)"
+grep -q "# activity: 0 of $NREPOS repos in" <<<"$out" \
+  && ok "a phase reports what it read, not the total it set out to read" \
+  || no "phase that read nothing still reported its own total"
+
+# --- a fetch still arriving is fresh, not ageless --- A repo whose directory exists before its
+# refs do has no age, and counting it against the blind-scan limit would abort a run over
+# nothing worse than a busy node.
+git init -q --bare "$STORAGE/zinflightfetch"
+touch "$STORAGE/zinflightfetch"
+out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" 2>&1); rc=$?
+rm -rf "$STORAGE/zinflightfetch"
+{ [ "$rc" = 0 ] && grep -q '^# skipped: .*, 0 with no readable refs$' <<<"$out"; } \
+  && ok "a repo with no refs yet counts as freshly written, not as ageless" \
+  || no "an in-flight fetch counted against the blind-scan limit (got exit $rc)"
+
 # --- fail-safe: node down aborts --apply before touching anything ---
 RSP_NODE_DOWN=1 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" --apply >/dev/null 2>&1; rc=$?
 [ "$rc" = 5 ] \
@@ -1518,7 +1611,9 @@ RSP_NODE_DOWN=1 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" --apply >/dev/null 2>
 # --- apply: non-interactive (cron path) applies; interactive prompt (pty) obeys y/N ---
 # non-interactive --apply (no controlling tty): applies directly, no prompt.
 build_fixture; assert_isolated                    # fresh fixture before the tests that delete
-DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null >/dev/null 2>&1
+DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null \
+  >"$ROOT/apply.out" 2>&1
+aout=$(cat "$ROOT/apply.out")
 gone=1
 for r in zjunk1 zbig2 ztwoyr3 zbar8 zspam1 zspam9; do
   [ -e "$STORAGE/$r" ] && gone=0
@@ -1533,6 +1628,76 @@ done
 { [ -s "$RSP_HOME/.stub_block" ] && [ -s "$RSP_HOME/.stub_unseed" ]; } \
   && ok "apply calls rad unseed + block" \
   || no "apply calls unseed+block"
+
+# The prune is the one phase that changes anything, and it reports over the whole plan, so
+# these two numbers are read out of the run's own output rather than counted here.
+planned=$(sed -n 's/^# PLAN: prune \([0-9]*\) repos.*/\1/p' <<<"$aout")
+pruning=$(sed -n 's/^# pruning: \([0-9]*\) repos in.*/\1/p' <<<"$aout")
+{ [ -n "$planned" ] && [ "$pruning" = "$planned" ]; } \
+  && ok "the prune reports its progress over every repo in the plan" \
+  || no "prune progress covered $pruning of $planned planned repos"
+
+# What a run that has just moved GiB out of storage is asked next is how to get the disk back.
+grep -q 'quarantine delete --all' <<<"$aout" \
+  && ok "the DONE line says how to reclaim the disk now" \
+  || no "DONE line does not name the reclaim command"
+
+# Where a run writes is asked before it finishes, so the answer is in the header.
+grep -q "audit=$AUDIT_DIR" <<<"$aout" \
+  && ok "the header names the audit dir" \
+  || no "header does not name the audit dir"
+
+# --- an apply that could block nothing --- The block is what stops a deleted repo being
+# fetched straight back, so a repo it failed on stays in storage. Every line the run then
+# prints has to agree with the disk: a progress phase that counted repos attempted would close
+# with the full plan directly above the warning that none of it happened.
+build_fixture; assert_isolated
+RSP_BLOCK_FAIL=1 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null \
+  >"$ROOT/blockfail.out" 2>&1
+bout=$(cat "$ROOT/blockfail.out")
+planned=$(sed -n 's/^# PLAN: prune \([0-9]*\) repos.*/\1/p' <<<"$bout")
+kept=1
+for r in zjunk1 zbig2 ztwoyr3; do [ -e "$STORAGE/$r" ] || kept=0; done
+{ [ -n "$planned" ] && [ "$kept" = 1 ] \
+  && grep -q "^# pruning: 0 of $planned repos in" <<<"$bout" \
+  && grep -q "^# WARN: $planned of $planned deletions failed" <<<"$bout" \
+  && grep -q '^#   WARN block failed, skipping delete: ' <<<"$bout"; } \
+  && ok "an apply that blocked nothing deletes nothing and reports 0 of the plan pruned" \
+  || no "a failed apply deleted repos or reported the whole plan as pruned"
+
+# The quarantine advice is about what THIS run put there, so a run that put nothing there does
+# not print it and does not point at a delete --all that would take earlier runs' repos.
+{ grep -q '^# DONE: quarantined 0 repos' <<<"$bout" \
+  && ! grep -q 'quarantine delete --all' <<<"$bout"; } \
+  && ok "a run that quarantined nothing leaves out the quarantine advice" \
+  || no "quarantine advice printed after a run that quarantined nothing"
+
+# The progress line is redrawn in place on a terminal, and its warnings clear it first. Into a
+# log there is no line to clear, and an escape sequence written there is not readable later.
+grep -q $'\033' <<<"$bout" \
+  && no "the run wrote terminal escapes into output that is not a terminal" \
+  || ok "no terminal escapes reach output that is not a terminal"
+
+# --- a quarantine copy that could not be dated --- The purge measures the window from the
+# directory's date, so a copy that kept the repo's own date counts its window from a date this
+# run did not choose. The repo did leave storage, so it counts as pruned; what it may not have
+# is the full undo the closing line promises, and that line is the one an operator reads
+# before walking away.
+build_fixture; assert_isolated
+notouch="$ROOT/notouch"; mkdir -p "$notouch"
+cp "$HERE/failing-touch-shim" "$notouch/touch"; chmod +x "$notouch/touch"
+PATH="$notouch:$PATH" DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply \
+  </dev/null >"$ROOT/undated.out" 2>&1
+uout=$(cat "$ROOT/undated.out")
+uplanned=$(sed -n 's/^# PLAN: prune \([0-9]*\) repos.*/\1/p' <<<"$uout")
+{ [ -n "$uplanned" ] \
+  && grep -q "^# DONE: quarantined $uplanned repos" <<<"$uout" \
+  && grep -q "^# $uplanned of them kept their own date, so their window runs from it and may" \
+       <<<"$uout" \
+  && grep -q 'kept its own date in quarantine' <<<"$uout" \
+  && ! grep -q 'deletions failed' <<<"$uout"; } \
+  && ok "a quarantine copy that kept its own date is pruned, and its short undo is reported" \
+  || no "a copy that kept its own date was reported as recoverable for the full window"
 
 # --- rule G's act, the only thing in the tool that judges a PERSON --- Blocking is permanent
 # and the peer never hears about it, so it needs a human in the room every time: --apply alone
@@ -1966,6 +2131,17 @@ mv "$ROOT/storage-away" "$STORAGE"
 { [ "$rc" = 0 ] && ! grep -q 'no storage dir' <<<"$qout"; } \
   && ok "quarantine list works with storage unmounted" \
   || no "quarantine list refused to run without storage (rc=$rc)"
+
+# They must also work when the tools a SCAN needs are missing, for the same reason: the
+# quarantine holds repos that are already out of storage and none of those tools reads it.
+Q="$RSP_HOME/prune-audit/quarantine"
+mkdir -p "$Q/zheldrepo"; : > "$Q/zheldrepo/some-file"
+noscan="$ROOT/noscan"; path_without "$noscan" git jq awk sed find xargs sort sha1sum od df
+qout=$(PATH="$noscan" RAD="$ROOT/no-such-rad" "$SCRIPT" quarantine list 2>&1); rc=$?
+rm -rf "$Q/zheldrepo"
+{ [ "$rc" = 0 ] && grep -q '^zheldrepo ' <<<"$qout"; } \
+  && ok "quarantine list works without the tools a scan needs" \
+  || no "quarantine list needs the scan's dependencies (rc=$rc)"
 
 # At the critical watermark a recovery copy is a luxury the disk cannot buy.
 build_fixture; assert_isolated

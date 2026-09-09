@@ -64,7 +64,10 @@ Every knob is an environment variable rather than a flag, so a run is configured
 ```sh
 RAD_HOME=/var/lib/radicle rad prune          # a seed home that isn't yours
 RAD=/nix/store/.../bin/rad rad-prune         # a specific rad binary
+sudo -u <node-user> env RAD_HOME=/var/lib/radicle rad-prune   # as the user the node runs as
 ```
+
+Run it as the user that owns storage, or it stops rather than scanning nothing. It needs `rad`, `git`, `jq`, `awk`, `sed`, `grep`, `find` and coreutils on the `PATH` you hand it, and a run missing one of them names it and stops. That is worth checking whenever the `PATH` is not your own login one: a systemd unit, a Nix wrapper, and `sudo`, which replaces `PATH` with its own `secure_path` wherever sudoers sets one. If a run names a command you know is installed, hand it the `PATH` you meant: `sudo -u <node-user> env PATH="$PATH" RAD_HOME=/var/lib/radicle rad-prune`.
 
 ### Example output
 
@@ -72,7 +75,7 @@ A dry run against a seed of 12,292 repos:
 
 ```
 # radicle-seed-prune 0.6.0  2026-08-22T04:16:49Z   mode=DRY-RUN
-# home=/var/lib/radicle
+# home=/var/lib/radicle  audit=/var/lib/radicle/prune-audit
 # disk: 125.5GB free (46.5%)  pressure=0% [relax>=54GB crit<=2GB]
 # rules: A junk(>30d, seeds>=1; id-names seeds>=0)  B size(>500MB & >=P95, >90d, seeds>=3)  C stale(>730d, seeds>=3)  D spam(batch>=5 & desc>=80%, >7d, seeds>=0)
 # rule E link-farm(>=5 spam domains, each linked from >=0.4% of repos and from the code of <10% of them, >7d, seeds>=0)
@@ -187,7 +190,7 @@ A repo is pruned if it is **not excluded** and matches **at least one rule**. `R
 | Your own repos  | `rad ls` (repos you initialized or forked / delegate) |
 | Kept repos      | `$AUDIT_DIR/keep.txt`, one repo id per line ([more](#quarantine)) |
 | Freshly written | storage dir modified within `FRESH_GUARD_DAYS`        |
-| Unknown age     | no readable refs                                      |
+| Unknown age     | no readable refs (also counted against `MAX_SCAN_FAIL_PCT`) |
 | Unreadable      | hit an error when reading the repo                    |
 
 ### Rules
@@ -248,7 +251,7 @@ The header prints the live pressure and the effective thresholds every run. On o
 - **History ratchet.** An unattended run aborts when the plan is more than `RATCHET_FACTOR` (3) times the median of the last `RATCHET_RUNS` (8) applied runs; `--force` or an interactive confirmation gets past it.
 - **Freshness guard** skips any repo whose storage directory was written within `FRESH_GUARD_DAYS` (2), which is what a fetch still arriving looks like.
 - **Apply preflight** aborts if the node is down or exclusions cannot be read.
-- **Blind scans abort.** More than `MAX_SCAN_FAIL_PCT` of the repos in storage unreadable is exit 5, not a small plausible plan.
+- **Blind scans abort.** More than `MAX_SCAN_FAIL_PCT` (10%) of the repos in storage missed is exit 5, not a small plausible plan. Three ways to miss one, counted together: it vanished mid-scan, reading it failed, or its refs would not list, which leaves it ageless and outside every rule.
 - **Blocking a peer takes two opt-ins:** `--block-peers`, and then a `y` to the prompt it raises for that peer. Without `--block-peers` the run only prints the `rad block` line for each peer rule G named. An unattended run has nobody to give the second opt-in, so it blocks nobody unless `--yes` gives it ([more](#rule-g-parasite-peers)).
 - **Audit log** records every prune and every block, with the evidence behind it.
 
@@ -383,7 +386,7 @@ Every knob is an environment variable. Defaults shown.
 | `MAX_PRUNE_GB`      | `80`    | Runaway guard: abort over this much disk                            |
 | `RATCHET_FACTOR`    | `3`     | Abort an unattended plan over this multiple of the recent median    |
 | `RATCHET_RUNS`      | `8`     | Applied runs the median is taken over; fewer than 3 is no baseline  |
-| `MAX_SCAN_FAIL_PCT` | `10`    | Abort if more than this share of storage could not be read          |
+| `MAX_SCAN_FAIL_PCT` | `10`    | Abort if more than this share of storage was vanished, unreadable or ageless |
 
 **Quarantine and plan output**
 

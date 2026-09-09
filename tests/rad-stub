@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Test double for `rad`, driven by env: RSP_HOME, RSP_NID, RSP_MANIFEST, RSP_NODE_DOWN,
-# RSP_NO_ROUTING, RSP_NO_LS, RSP_DELEGATES. Manifest columns: rid name seeds vis own days size
-# desc
+# RSP_NO_ROUTING, RSP_NO_LS, RSP_DELEGATES, RSP_BLOCK_FAIL. Manifest columns: rid name seeds
+# vis own days size desc
 set -uo pipefail
 # Real rad takes its home from the ENVIRONMENT, so record what we were actually handed: that is
 # the only way a test can tell an exported RAD_HOME from one the script merely set as a shell
@@ -51,7 +51,10 @@ case "$sub" in
     { [ "$want" = 1 ] && [ -n "$rid" ] && [ -r "${RSP_DELEGATES:-}" ]; } || exit 0
     awk -F'\t' -v r="$rid" '$1==r {printf "did:key:%s (test)\n", $2}' "$RSP_DELEGATES"
     ;;
-  block)  echo "${1:-}" >> "$RSP_HOME/.stub_block" ;;
+  # A block that fails is what an apply against a node that has gone away looks like, and the
+  # script must not delete a repo it could not block.
+  block)  [ "${RSP_BLOCK_FAIL:-0}" = 1 ] && exit 1
+          echo "${1:-}" >> "$RSP_HOME/.stub_block" ;;
   unseed) echo "${1:-}" >> "$RSP_HOME/.stub_unseed" ;;
   seed)   echo "${1:-}" >> "$RSP_HOME/.stub_seed" ;;
   *) : ;;
