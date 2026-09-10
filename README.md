@@ -3,7 +3,7 @@
 [![Sponsor maninak on Liberapay](https://img.shields.io/badge/Liberapay-Donate-F6C915?logo=liberapay&logoColor=black)](https://liberapay.com/maninak/donate)
 
 [![version](https://img.shields.io/github/v/release/maninak/radicle-seed-prune?sort=semver&label=version&color=44CC11)](https://github.com/maninak/radicle-seed-prune/releases/latest)
-[![license: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-orange.svg)](./LICENSE)
+[![license: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](./LICENSE)
 [![shell](https://img.shields.io/badge/shell-bash-121011.svg?logo=gnu-bash&logoColor=white)](./rad-prune)
 [![rad: - zxvTkxzouwrYFwycnsctrMT3iM2E](https://img.shields.io/static/v1?label=rad%3A&message=zxvTkxzouwrYFwycnsctrMT3iM2E&color=6666FF&cacheSeconds=64800)](https://app.radicle.at/nodes/seed.radicle.at/rad:zxvTkxzouwrYFwycnsctrMT3iM2E)
 [![zulip: #radicle-seed-prune](https://img.shields.io/badge/Zulip-%23radicle--seed--prune-6492FE?logo=zulip&logoColor=white)](https://radicle.zulipchat.com/#narrow/channel/624837-radicle-seed-prune)
@@ -557,20 +557,9 @@ If this kept your seed clean and saved you a few bucks on your VPS bill:
 
 ## License
 
-[PolyForm Noncommercial License 1.0.0](./LICENSE). Free to use, modify, and share for any **noncommercial** purpose; you must preserve the copyright and required-notice lines (attribution). **Commercial use needs a separate license.** The intent is to keep the script from being repackaged and sold, not to get in the way of anyone running a seed.
+[Apache License 2.0](./LICENSE). Use it, fork it, vendor it.
 
-**Free, no need to ask:**
-
-- Personal use, hobby projects, research, experiments, and testing.
-- Charitable organizations, educational institutions, public research organizations, public safety or health organizations, environmental protection organizations, and government institutions, regardless of how they are funded.
-
-Running a public seed as an individual, a collective, or a nonprofit is free, and always will be.
-
-**Needs a separate license:**
-
-- For-profit companies, including purely internal use on your own infrastructure. Smaller storage bills and the review hours the script saves you are both commercial value; nothing has to be sold for the use to count.
-
-If that is you, or you are not sure which side of the line you land on, email [info@radicle.tools](mailto:info@radicle.tools).
+Copyright (c) 2026 Konstantinos Maninakis ([maninak.com](https://maninak.com)).
 
 ---
 
