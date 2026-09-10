@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format is based on 
 
 ## [0.7.0] - 2026-09-10
 
+### Upgrading
+
+Replace the script. Nothing else has to change.
+
 ### Changed
 
 - **The license is Apache 2.0 from this release on.** Use it, fork it, vendor it, run it commercially.
