@@ -306,7 +306,7 @@ set -euo pipefail
 # also fixes sort to byte order, so a plan does not reorder itself between machines.
 export LC_ALL=C
 
-VERSION="0.6.0"
+VERSION="0.7.0"
 
 # `set -e` on its own exits mute: a command failing anywhere below would end the run with a
 # bare non-zero status and nothing to debug from. Name the line, the command, and the status
