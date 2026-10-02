@@ -15,12 +15,12 @@ Replace the script. Nothing else has to change.
 ### Changed
 
 - **When an unattended run plans over three times a rule's usual count, only that rule is held back.** Its repos stay in storage for a person to check, the rest of the plan is pruned, and the run exits `4`. Such a jump used to stop the whole run. `last-run/held.tsv` lists what was held.
-- **A rule is never held back for pruning 20 repos or fewer.** A rule that usually prunes nothing can still take a single repo. `RATCHET_FLOOR` sets the number.
+- **A rule is never held back for pruning 20 repos or fewer.** A rule that usually prunes nothing can still prune a single repo. `RATCHET_FLOOR` sets the number.
 - **Old projects named like `foo-test` are no longer pruned as junk.** A repo whose history starts more than 14 days before it was created on Radicle was imported, not thrown away. `last-run/imports.tsv` lists the ones kept.
 
 ### Fixed
 
-- **The media and peer rules no longer take an identity named in a repo's description for one of its owners.** The media rule counted that identity's uploads as the repo's own, and the peer rule never flagged it.
+- **The media and peer rules no longer mistake an identity named in a repo's description for one of its owners.** The media rule counted that identity's uploads as the repo's own, and the peer rule never flagged it.
 - **A stopped run no longer deletes expired repos from quarantine.** Stopping at the runaway caps or with an `n` at the prompt used to delete them first.
 - **`MAX_PRUNE_COUNT` and the `RATCHET_*` settings must be whole numbers.** Anything else now exits `2`. A typo used to switch the check off without a word.
 - **An unexpected failure always exits `1`.** It used to pass on the failed command's status, which could look like exit `3`, `4` or `5`.

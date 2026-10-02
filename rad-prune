@@ -24,7 +24,7 @@
 #   commands: rad seed on its own rewrites only an existing policy row's scope, so on a
 #   blocked repo it prints success and leaves the block standing. That re-fetch is why the
 #   size/age rules keep a minimum other-seed count. Three verdicts (junk-id, spam-batch,
-#   link-farm) ship with a floor of 0 and may take the last copy the network is known to
+#   link-farm) ship with a floor of 0 and may prune the last copy the network is known to
 #   hold, which is what the quarantine is for. Every prune is recorded in an audit log.
 #
 # SELECTION  (a repo is pruned if it is denied, see below, or if it is NOT excluded AND matches
@@ -51,12 +51,12 @@
 #   Rule A - junk-named & abandoned, in two branches that differ in how sure we are:
 #     A/junk-name: name contains a disposable WORD (test, tmp, old, demo, ...)
 #       AND no new commit/COB for > JUNK_STALE_DAYS
-#       AND other-seeds >= JUNK_MIN_SEEDS   (default 1: never take the last copy on a guess)
+#       AND other-seeds >= JUNK_MIN_SEEDS   (default 1: never prune the last copy on a guess)
 #       AND its history starts no more than IMPORT_SPARE_DAYS before its `rad init`
 #           (a repo whose commit dates do not read counts as not imported, with a WARN)
 #     A/junk-id:   the name is NOTHING BUT a random hex id (08a25d0f666d)
 #       AND no new commit/COB for > JUNK_STALE_DAYS
-#       AND other-seeds >= JUNK_ID_MIN_SEEDS  (default 0: may take the last copy we know of)
+#       AND other-seeds >= JUNK_ID_MIN_SEEDS  (default 0: may prune the last copy we know of)
 #
 #   Rule B - size outlier, stale, replicated:
 #       size > ABS_SIZE_FLOOR_MB           (absolute outlier)
@@ -66,7 +66,7 @@
 #
 #   "Other-seeds" is how many OTHER nodes our routing table says announce the repo. It
 #   is NOT proof a copy exists elsewhere (gossip is incomplete, and the author almost
-#   certainly still has theirs), so a floor of 0 is licence to take the last copy WE
+#   certainly still has theirs), so a floor of 0 is licence to prune the last copy WE
 #   KNOW OF. junk-id, spam-batch, link-farm, media-dump and media-batch get it, on
 #   the reasoning that for machine-generated bulk, for a repo whose whole purpose is
 #   to advertise a link, and for a pile of media with no project around it, "nobody
@@ -86,7 +86,7 @@
 #       AND >= SPAM_MIN_BATCH repos share that name skeleton
 #       AND >= SPAM_DESC_AGREE_PCT% of them share ONE description skeleton
 #       AND the repo is older than SPAM_STALE_DAYS
-#       AND other-seeds >= SPAM_MIN_SEEDS  (default 0: may take the last copy we know of)
+#       AND other-seeds >= SPAM_MIN_SEEDS  (default 0: may prune the last copy we know of)
 #
 #   Names and descriptions are skeletonised - digit runs become #, random-id tokens become % -
 #   and rule D looks for a template that repeats. TWO INDEPENDENT SIGNALS are required, the
@@ -102,7 +102,7 @@
 #   Rule E - link farms, decided by the CORPUS like rule D:
 #       the repo's DELEGATES link it to >= LINK_MIN_SCORE spam domains
 #       AND it is older than LINK_STALE_DAYS
-#       AND other-seeds >= LINK_MIN_SEEDS  (default 0: may take the last copy we know of)
+#       AND other-seeds >= LINK_MIN_SEEDS  (default 0: may prune the last copy we know of)
 #
 #   A SPAM DOMAIN is a registrable domain meeting BOTH conditions:
 #     (a) enough repos link to it: LINK_MIN_REPOS_PCT% of storage, at least LINK_MIN_REPOS
@@ -138,8 +138,8 @@
 #   Within a repo's own refs, where a link sits does not matter: issues, patches, comments and
 #   committed files all count. Only (b) cares, and it reads the canonical branches alone.
 #
-#   LINK_STALE_DAYS does not tighten under disk pressure: rule E may take the last copy we know
-#   of, and a full disk is not a reason to lower that bar.
+#   LINK_STALE_DAYS does not tighten under disk pressure: rule E may prune the last copy we
+#   know of, and a full disk is not a reason to lower that bar.
 #
 #   A MEDIA DUMP is a repo whose tracked files are video, images or audio with no project
 #   around them. Radicle storage is for collaborating on code; a repo holding one .mp4 and
@@ -149,7 +149,7 @@
 #       >= MEDIA_MIN_BYTES of media files on the refs this repo's own delegates control
 #       AND everything that is NOT media adds up to < MEDIA_TEXT_MAX_BYTES
 #       AND the repo is older than MEDIA_STALE_DAYS
-#       AND other-seeds >= MEDIA_MIN_SEEDS  (default 0: may take the last copy we know of)
+#       AND other-seeds >= MEDIA_MIN_SEEDS  (default 0: may prune the last copy we know of)
 #
 #   Rule F, batch path - the same dump published again and again, decided by the CORPUS:
 #       >= MEDIA_MIN_BYTES of media, of which >= MEDIA_MIN_BYTES sits in blobs that
@@ -349,18 +349,18 @@ STALE_YEARS_DAYS="${STALE_YEARS_DAYS:-730}"      # rule C staleness  (~2 years)
 MIN_OTHER_SEEDS="${MIN_OTHER_SEEDS:-3}"          # rules B & C: > 2 other seeds
 JUNK_MIN_SEEDS="${JUNK_MIN_SEEDS:-1}"            # rule A word branch: keeps the last copy
 # A repo whose oldest commit is this much older than its `rad init` is a project somebody kept
-# before publishing it, whatever its name says. Over the 55 repos rule A took by name, the 11
+# before publishing it, whatever its name says. Over the 55 repos rule A pruned by name, the 11
 # restored by hand were 29.5 to 4748 days apart; the disposable ones 0 to 7.1.
 IMPORT_SPARE_DAYS=14                             # rule A word branch: days before rad init
-# The id branch (a name that is NOTHING but a random hex id) may take the last copy we
+# The id branch (a name that is NOTHING but a random hex id) may prune the last copy we
 # know of: for machine-generated bulk "nobody else seeds it" measures worthlessness, not
 # rarity. The word branch keeps its floor, since "my-old-thesis" is a guess, not proof.
-JUNK_ID_MIN_SEEDS="${JUNK_ID_MIN_SEEDS:-0}"      # rule A id branch: 0 may take the last copy
+JUNK_ID_MIN_SEEDS="${JUNK_ID_MIN_SEEDS:-0}"      # rule A id branch: 0 may prune the last copy
 FRESH_GUARD_DAYS="${FRESH_GUARD_DAYS:-2}"        # never delete a dir touched this recently
 
 SPAM_MIN_BATCH="${SPAM_MIN_BATCH:-5}"            # repos on one name skeleton to be a batch
 SPAM_DESC_AGREE_PCT="${SPAM_DESC_AGREE_PCT:-80}" # % of a batch on ONE description skeleton
-SPAM_MIN_SEEDS="${SPAM_MIN_SEEDS:-0}"            # 0 may take the last copy we know of
+SPAM_MIN_SEEDS="${SPAM_MIN_SEEDS:-0}"            # 0 may prune the last copy we know of
 # Rule D's evidence is not time-based, so this is only a grace period for a batch that turns
 # out to be real.
 SPAM_STALE_DAYS="${SPAM_STALE_DAYS:-7}"          # about a week
@@ -382,7 +382,7 @@ LINK_CODE_LOOSE_PCT="${LINK_CODE_LOOSE_PCT:-50}" # the looser cap of pass 1, dec
                                                  # code links count at all
 LINK_MIN_SCORE="${LINK_MIN_SCORE:-5}"            # spam domains a repo must link to
 LINK_STALE_DAYS="${LINK_STALE_DAYS:-7}"          # minimum age, from creation like rule D
-LINK_MIN_SEEDS="${LINK_MIN_SEEDS:-0}"            # 0 may take the last copy we know of
+LINK_MIN_SEEDS="${LINK_MIN_SEEDS:-0}"            # 0 may prune the last copy we know of
 # How much of each repo to read. These truncate a blob rather than skipping it, so a link
 # sitting near the start of a large file is still seen. A link the file itself encodes (base64,
 # an escaped string) is missed either way: the regex below matches plain text only.
@@ -430,7 +430,7 @@ MEDIA_TEXT_MAX_BYTES="${MEDIA_TEXT_MAX_BYTES:-2048}"
 MEDIA_TEXT_CEIL_BYTES="${MEDIA_TEXT_CEIL_BYTES:-65536}"
 MEDIA_MIN_BATCH="${MEDIA_MIN_BATCH:-5}"          # repos holding one blob to call it a campaign
 MEDIA_STALE_DAYS="${MEDIA_STALE_DAYS:-7}"        # minimum age, from creation like D and E
-MEDIA_MIN_SEEDS="${MEDIA_MIN_SEEDS:-0}"          # 0 may take the last copy; 1 keeps it
+MEDIA_MIN_SEEDS="${MEDIA_MIN_SEEDS:-0}"          # 0 may prune the last copy; 1 keeps it
 # How much of each repo to look at. Only the first bytes of a file are ever read, and only
 # while the repo could still be a dump, so these bound an already small cost. A file past
 # either bound counts as text, which spares the repo.
@@ -505,7 +505,7 @@ MIN_OTHER_SEEDS_AGG="${MIN_OTHER_SEEDS_AGG:-1}"  # hard floor 1: B and C keep th
 
 AUDIT_DIR="${AUDIT_DIR:-$RAD_HOME/prune-audit}"
 # A pruned repo is moved here first and deleted for real once its window passes. Three verdicts
-# may take the last copy the network is known to hold, and for exactly those the documented
+# may prune the last copy the network is known to hold, and for exactly those the documented
 # undo ("re-fetch it") cannot work, so the only real undo is a copy on this disk.
 # A week is long enough for a weekly cron run to be looked at once before its repos go, and
 # short enough that the parked disk stays small.
@@ -657,7 +657,7 @@ OPTIONS
 QUARANTINE VERBS
   list             what is held, how long it has been held, and when each entry goes
   restore <rid>... put it back in storage, clear the block, re-seed it, and keep it after
-  delete <rid>...  delete it now instead of waiting; --all takes everything held
+  delete <rid>...  delete it now instead of waiting; --all deletes everything held
   purge            delete everything already past its window
 
 CONFIGURATION
@@ -2386,7 +2386,7 @@ while IFS=$'\t' read -r rid sz mt life birth; do
   # not logic. Adding a hex-spellable word to that list (dead, beef, cafe) would break the
   # assumption.
   is_junk=0     # a disposable WORD in the name: a guess, so it keeps the last-copy floor
-  is_junkid=0   # the name is ONLY a random hex id: generated, so it may take the last copy
+  is_junkid=0   # the name is ONLY a random hex id: generated, so it may prune the last copy
   if [[ $lname =~ $JUNK_WORD_REGEX ]] || [[ $lname =~ $JUNK_EXACT_REGEX ]]; then is_junk=1; fi
   if [ "$JUNK_ID_MIN_LEN" -gt 0 ] && [ "${#lname}" -ge "$JUNK_ID_MIN_LEN" ] \
      && [[ $lname =~ ^[0-9a-f]+$ ]] && [[ $lname =~ [a-f] ]] && [[ $lname =~ [0-9] ]]; then
@@ -2394,7 +2394,7 @@ while IFS=$'\t' read -r rid sz mt life birth; do
   fi
   # A disposable word in the name of a project that predates its `rad init` is no evidence it
   # was thrown away. Asked of every repo the word branch's other tests would let through, since
-  # it reads the repo's history; rules D, E and F below may still take some of them first.
+  # it reads the repo's history; rules D, E and F below may still prune some of them first.
   gap=""; is_import=0
   if [ "$is_junk" = 1 ] && rule_on A && [ "$life" -lt "$junk_cut" ] \
      && [ "$seeds" -ge "$JUNK_MIN_SEEDS" ]; then
@@ -2464,7 +2464,7 @@ while IFS=$'\t' read -r rid sz mt life birth; do
      && [ "$origin" -lt "$media_cut" ] && [ "$seeds" -lt "$MEDIA_MIN_SEEDS" ]; then
     printf '%s\t%s\t%s\n' "$rid" "${MEDIA[$rid]}" "$name" >> "$tmp/media-review"
   fi
-  # Listed only when no other rule took the repo, so the list can say it was kept.
+  # Listed only when no other rule matched the repo, so the list can say it was kept.
   if [ -z "$reason" ] && [ "$is_import" = 1 ]; then
     printf '%s\t%s\n' "$rid" "$name" >> "$tmp/imports"
   fi
@@ -2784,7 +2784,8 @@ if [ "$lr_ok" = 1 ]; then
   { lr_stamp
     printf '# rule\tplanned\tusual\tlimit\n'
     cat "$tmp/held"; } > "$staging/held.tsv" 2>/dev/null || lr_ok=0
-  # Which deny-list entry took each denied repo, so a dry run can trace a row to its line.
+  # Which deny-list entry each denied repo was pruned for, so a dry run can trace a row to its
+  # line.
   { lr_stamp
     printf '# rid\tcause\n'
     cat "$tmp/deny-why"; } > "$staging/denied.tsv" 2>/dev/null || lr_ok=0
@@ -3042,7 +3043,7 @@ open_audit
              "$letter" "$planned" "$usual" "$limit"
     done < "$tmp/held"
   fi
-  # Which line of the deny list took each denied repo, so one bad line can be traced.
+  # Which line of the deny list each denied repo was pruned for, so one bad line can be traced.
   sed 's/^/# denied: /; s/\t/ /' "$tmp/deny-why"
   plan_header
   cat "$tmp/plan.sorted"; } >> "$audit"

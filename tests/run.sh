@@ -754,11 +754,11 @@ has "$plan" "zhexid23" && grep -qE "^zhexid23 .*junk-id" <<<"$plan" \
   && ok "an actively-used repo is still spared by the activity rules" \
   || no "activity rules unaffected"
 
-# --- taking the last copy WE KNOW OF, but only where the evidence is conclusive --- "No other
+# --- pruning the last copy WE KNOW OF, but only where the evidence is conclusive --- "No other
 # seed has it" is worthlessness for machine-generated bulk and preservation value for anything
 # else, so the two rule-A branches are gated apart and rule C is not in this game at all.
 has "$plan" "zhexzero27" && grep -qE "^zhexzero27 .*junk-id" <<<"$plan" \
-  && ok "zero-seed random-id name is pruned (junk-id takes the last copy)" \
+  && ok "zero-seed random-id name is pruned (junk-id prunes the last copy)" \
   || no "zero-seed junk-id pruned"
 ! has "$plan" "zwordzero28" \
   && ok "zero-seed 'test-orphan' is kept (a word in a name is a guess, not proof)" \
@@ -1167,7 +1167,7 @@ plan_fo=$(RULES=ABCDEG run)
   && ok "a RULES without F turns rule F off, says so, and still finishes" \
   || no "a RULES without F disables rule F"
 
-# Rule F may take the last copy we know of, like rules D and E. Its evidence is what the repo
+# Rule F may prune the last copy we know of, like rules D and E. Its evidence is what the repo
 # itself holds, and a dump nobody else seeds is still a dump.
 grep -qE "^zmediazero .*media-dump" <<<"$plan" \
   && ok "a media dump no other node seeds is pruned by default" \
@@ -1218,7 +1218,7 @@ nof=$(RULES=ABCDE run)
   && ok "a rule left out of RULES does not even run its scan" \
   || no "RULES=ABCDE still ran or planned rule F"
 
-# Turning a rule off must not SPARE a repo the remaining rules would have taken. Rule D is the
+# Turning a rule off must not SPARE a repo the remaining rules would have pruned. Rule D is the
 # case that matters: its corpus scan runs whatever RULES says, because rule E reads its suspect
 # list, so a dropped D verdict could shadow the rule C verdict underneath it.
 withd=$(STALE_YEARS_DAYS=30 RULES=ABCDEFG run)
@@ -1742,7 +1742,7 @@ for r in zjunk1 zbig2 ztwoyr3; do [ -e "$STORAGE/$r" ] || kept=0; done
   || no "a failed apply deleted repos or reported the whole plan as pruned"
 
 # The quarantine advice is about what THIS run put there, so a run that put nothing there does
-# not print it and does not point at a delete --all that would take earlier runs' repos.
+# not print it and does not point at a delete --all that would delete earlier runs' repos.
 { grep -q '^# DONE: quarantined 0 repos' <<<"$bout" \
   && ! grep -q 'quarantine delete --all' <<<"$bout"; } \
   && ok "a run that quarantined nothing leaves out the quarantine advice" \
@@ -1935,7 +1935,7 @@ after=$(ls "$STORAGE" | wc -l)
   && ok "failed deletions are reported, not counted as reclaimed" \
   || no "failed deletions reported (rc=$rc)"
 
-# --- quarantine --- The three floor-0 verdicts may take the last copy the network is known to
+# --- quarantine --- The three floor-0 verdicts may prune the last copy the network is known to
 # hold, so "re-fetch it" is not an undo for exactly the repos that most need one.
 
 # A dry run promises disk it will not free for a month, so the plan line must not say
@@ -2004,7 +2004,7 @@ mkdir -p "$Q/zdead1" "$Q/zdead2"
 "$SCRIPT" quarantine delete zdead1 >/dev/null 2>&1
 { [ ! -e "$Q/zdead1" ] && [ -d "$Q/zdead2" ]; } \
   && ok "quarantine delete removes exactly the repo it was given" \
-  || no "quarantine delete took the wrong repo, or none"
+  || no "quarantine delete deleted the wrong repo, or none"
 
 "$SCRIPT" quarantine delete --all >/dev/null 2>&1
 [ ! -e "$Q/zdead2" ] \
@@ -2027,8 +2027,8 @@ Q="$RSP_HOME/prune-audit/quarantine"
 mkdir -p "$Q/zexpq1" "$Q/zfreshq1"; touch -d "40 days ago" "$Q/zexpq1"
 out=$("$SCRIPT" quarantine purge 2>&1)
 { [ ! -e "$Q/zexpq1" ] && [ -d "$Q/zfreshq1" ] && grep -q 'purged 1 repo' <<<"$out"; } \
-  && ok "quarantine purge takes what is past its window and nothing else" \
-  || no "quarantine purge took the wrong repos"
+  && ok "quarantine purge deletes what is past its window and nothing else" \
+  || no "quarantine purge deleted the wrong repos"
 
 # --- the run cache --- Rules E and F read every repo's contents, and almost nothing changes
 # between weekly runs, so their per-repo output is kept and reused. The danger is not a slow
@@ -2231,8 +2231,8 @@ out=$(DISK_AWARE=1 PRESSURE_CRIT_PCT=100 PRESSURE_CRIT_GB=999999 ABS_SIZE_FLOOR_
 
 # --- the deny list: a person's verdict, acted on wherever it turns up ---
 # zcode4 is listed by id. zfarm1 is listed through its delegate. The stranger who pushed into
-# zmediapeer, and whom its identity document thanks by did:key, is listed too and must not
-# take that repo with them: only the document's delegates list counts. zpin6 is listed, and so
+# zmediapeer, and whom its identity document thanks by did:key, is listed too, and the listing
+# must not prune that repo: only the document's delegates list counts. zpin6 is listed, and so
 # is its delegate; the pin wins, and the delegate is not blocked, since that would stop the
 # pinned repo's updates. One id names a repo this node has not fetched, which is blocked ahead
 # of it. This node's own identity is listed and must be ignored. zcode4 was just written, as a
@@ -2260,7 +2260,7 @@ out=$(RATCHET_FLOOR=0 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
   && ok "a repo on the deny list, or one its listed delegate owns, is pruned as denied" \
   || no "the deny list did not prune what it names (rc=$rc)"
 ! grep -qE $'^zmediapeer\t.*\tdenied\t' "$AUDIT_DIR"/prune-2*Z.log \
-  && ok "a listed stranger takes no repo it is only named in or pushed into" \
+  && ok "a listed stranger condemns no repo it is only named in or pushed into" \
   || no "a listed stranger condemned a repo they are not a delegate of"
 { [ -e "$STORAGE/zpin6" ] && grep -q 'kept anyway' <<<"$out" && grep -q 'zpin6' <<<"$out" \
   && ! grep -qx "$(dlg zpin6)" "$RSP_HOME/.stub_block"; } \

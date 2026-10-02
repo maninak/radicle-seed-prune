@@ -180,7 +180,7 @@ Exit 5 means the tool could not see enough to be trusted; nothing was touched.
 
 ## What gets pruned
 
-A repo is pruned if it is **not excluded** and matches **at least one rule**, or if the [deny list](#deny-list) takes it and it is neither pinned, private, your own nor in `keep.txt`. `RULES` (default `ABCDEFG`) selects which rules run: a letter absent from it means that rule neither scans nor puts anything in the plan, and a repo a disabled rule would have claimed falls through to the next rule.
+A repo is pruned if it is **not excluded** and matches **at least one rule**, or if the [deny list](#deny-list) names it or one of its delegates, and it is neither pinned, private, your own nor in `keep.txt`. `RULES` (default `ABCDEFG`) selects which rules run: a letter absent from it means that rule neither scans nor puts anything in the plan, and a repo a disabled rule would have claimed falls through to the next rule.
 
 ### Exclusions (never touched by a rule)
 
@@ -196,20 +196,16 @@ A repo is pruned if it is **not excluded** and matches **at least one rule**, or
 
 ### Deny list
 
-Repos and identities that you, or someone you trust, have already judged go in `$AUDIT_DIR/deny.txt`. A list another seed operator shares works as is. It holds one id per line, with or without its `rad:` or `did:key:` prefix, and `#` starts a comment. To use several lists, concatenate them into this one file.
-
-For example:
+Repos and identities you, or someone you trust, have already judged go in `$AUDIT_DIR/deny.txt`, one per line, with or without the `rad:` or `did:key:` prefix. `#` starts a comment. A list another operator shares works as is. To use several, concatenate them into this one file.
 
 ```
 rad:z<rid>          # a repo: pruned and blocked, even before it arrives
 did:key:z6Mk<nid>   # an identity: blocked, and every repo it is a delegate of is pruned
 ```
 
-An `--apply` run prunes and blocks every listed repo, and blocks a listed repo this node has not fetched so it never arrives. It blocks a listed identity, and prunes and blocks every repo whose identity document names that identity as a delegate. A repo the identity is not a delegate of is left alone, even if the identity pushed patches or comments into that repo. Age, size, seed count and a fetch still arriving make no difference. Denied repos are not counted against the runaway caps and are never held back, but a run the caps stop acts on none of them.
+`--apply` prunes and blocks as the lines above say, regardless of age, size, seed count or an unfinished fetch. An identity's patches or comments in a repo it is not a delegate of do not count. Pinned, private, your own and `keep.txt` repos are never pruned, and an identity that delegates one of them is not blocked. Denied repos skip the runaway caps and the hold-back, but a run the caps stop acts on none of them.
 
-Pinned, private, your own and `keep.txt` repos are never pruned. The run names any denied repo it spared for one of those reasons, and does not block an identity that is a delegate of a spared repo. A dry run lists what `--apply` would block, and `last-run/denied.tsv` names the entry (the repo id, or the delegate identity) that took each repo.
-
-Removing a line does not undo its blocks. Run `rad unblock rad:z<rid>` for a repo, or `rad unblock z6Mk<nid>` for an identity.
+Removing a line does not undo its blocks. Run `rad unblock rad:z<rid>` or `rad unblock z6Mk<nid>`.
 
 ### Rules
 
@@ -230,7 +226,7 @@ Rule G is missing from the table because it judges a **peer**, not a repo, and p
 
 #### How age is measured
 
-A, B and C measure **last activity**. Activity is any signed change, however small: a commit, an issue, a comment, a reaction, a label. The tool takes the newest `creatordate` across every peer's refs.
+A, B and C measure **last activity**. Activity is any signed change, however small: a commit, an issue, a comment, a reaction, a label. The tool uses the newest `creatordate` across every peer's refs.
 
 D, E and F measure **creation** instead, because spam that comments on its own repos would reset a last-activity clock. Creation is the older of the repo's oldest ref date and the day this seed first saw it (`$RAD_HOME/prune-audit/first-seen.tsv`, appended on every run, dry or not). A pusher controls the first date and cannot reach the second.
 
@@ -268,10 +264,10 @@ The header prints the live pressure and the effective thresholds every run. On o
 - **Runaway caps** (`MAX_PRUNE_COUNT`, `MAX_PRUNE_GB`) abort a plan whose rules picked more than either cap; repos on the deny list are not counted. Two things get past them: `--force`, or a person answering `y` at the prompt, which is a human signing off on the numbers just printed. `--yes` is not one of them, so an unattended run still stops.
 - **A rule that jumps is held back.** An unattended run compares each rule's part of the plan with the median that rule pruned over the last `RATCHET_RUNS` (8) applied runs. A rule that plans more than `RATCHET_FACTOR` (3) times its median, and more than `RATCHET_FLOOR` (20) repos, is held back. Its repos stay in storage, the other rules go ahead, and the run exits 4. A dry run lists what would be held, and every run writes it to `last-run/held.tsv`. `--force` or a `y` at the prompt gets past it. The median comes from the audit logs `history.log` names. A run that held a rule back, or ran without it, does not count for that rule. A rule with fewer than 3 runs that count has `RATCHET_FLOOR` as its limit, and with fewer than 3 readable logs nothing is held. The spam, link-farm and media rules usually prune nothing, so a sudden batch of more than 20 repos from one of them waits for `--force` or a `y`.
 - **A stopped run deletes nothing from quarantine.** A run the runaway caps stop, or an `n` at the prompt, leaves expired repos there ([more](#quarantine)).
-- **Freshness guard** skips any repo the [deny list](#deny-list) does not take whose storage directory was written within `FRESH_GUARD_DAYS` (2), which is what a fetch still arriving looks like.
+- **Freshness guard** skips any repo the [deny list](#deny-list) does not prune whose storage directory was written within `FRESH_GUARD_DAYS` (2), which is what a fetch still arriving looks like.
 - **Apply preflight** aborts if the node is down or exclusions cannot be read.
 - **Blind scans abort.** More than `MAX_SCAN_FAIL_PCT` (10%) of the repos in storage missed is exit 5, not a small plausible plan. Three ways to miss one, counted together: it vanished mid-scan, reading it failed, or its refs would not list, which leaves it ageless and outside every rule.
-- **Blocking a peer that rule G named takes two opt-ins:** `--block-peers`, and then a `y` to the prompt it raises for that peer. Without `--block-peers` the run only prints the `rad block` line for each peer rule G named. An unattended run has nobody to give the second opt-in, so it blocks nobody unless `--yes` gives it ([more](#rule-g-parasite-peers)).
+- **Blocking a peer that rule G named needs two opt-ins:** `--block-peers`, and then a `y` to the prompt it raises for that peer. Without `--block-peers` the run only prints the `rad block` line for each peer rule G named. An unattended run has nobody to give the second opt-in, so it blocks nobody unless `--yes` gives it ([more](#rule-g-parasite-peers)).
 - **Audit log** records every prune and every block, with the evidence behind it.
 
 For each selected repo, in this order:
@@ -362,7 +358,7 @@ Every knob is an environment variable. Defaults shown.
 | ---- | --------------------- | --------- | ----------------------------------------------------------------------- |
 | A    | `JUNK_STALE_DAYS`     | `30`      | Staleness required                                                      |
 | A    | `JUNK_MIN_SEEDS`      | `1`       | Other seeds for the *word* branch; keeps the last copy we know of       |
-| A    | `JUNK_ID_MIN_SEEDS`   | `0`       | Other seeds for the *random-id* branch; `0` may take the last copy      |
+| A    | `JUNK_ID_MIN_SEEDS`   | `0`       | Other seeds for the *random-id* branch; `0` may prune the last copy     |
 | A    | `JUNK_ID_MIN_LEN`     | `8`       | Length at which an all-hex name counts as a random id (`0` disables it) |
 | B    | `ABS_SIZE_FLOOR_MB`   | `500`     | Absolute size floor                                                     |
 | B    | `REL_PCTL`            | `95`      | Size percentile, across all repos on the seed                           |
@@ -373,7 +369,7 @@ Every knob is an environment variable. Defaults shown.
 | D    | `SPAM_DESC_AGREE_PCT` | `80`      | Share of that batch that must agree on one description skeleton        |
 | D    | `SPAM_REQUIRE_ID`     | `1`       | Demand a random-id slot in the name skeleton (`0` is looser)            |
 | D    | `SPAM_STALE_DAYS`     | `7`       | Age since creation                                                      |
-| D    | `SPAM_MIN_SEEDS`      | `0`       | Other seeds required; `0` may take the last copy we know of             |
+| D    | `SPAM_MIN_SEEDS`      | `0`       | Other seeds required; `0` may prune the last copy we know of            |
 | E    | `LINK_MIN_REPOS_PCT`  | `0.4`     | Share of storage that must link to a host before it can be a spam host  |
 | E    | `LINK_MIN_REPOS`      | `8`       | Absolute floor under that share                                         |
 | E    | `LINK_CODE_MAX_PCT`   | `10`      | Share of a host's linkers that may link from their own code             |
@@ -381,11 +377,11 @@ Every knob is an environment variable. Defaults shown.
 | E    | `LINK_MIN_SCORE`      | `5`       | Spam domains a repo must link to before it is flagged                   |
 | E    | `LINK_DELEGATE_CHECK` | `1`       | Count only links from the repo's own delegates (`0` is faster, unsafe)  |
 | E    | `LINK_STALE_DAYS`     | `7`       | Age since creation                                                      |
-| E    | `LINK_MIN_SEEDS`      | `0`       | Other seeds required; `0` may take the last copy we know of             |
+| E    | `LINK_MIN_SEEDS`      | `0`       | Other seeds required; `0` may prune the last copy we know of            |
 | F    | `MEDIA_MIN_BYTES`     | `65536`   | Media bytes below which a repo is not worth judging                     |
 | F    | `MEDIA_TEXT_MAX_BYTES`| `2048`    | Everything that is not media, added up, must stay under this            |
 | F    | `MEDIA_STALE_DAYS`    | `7`       | Age since creation                                                      |
-| F    | `MEDIA_MIN_SEEDS`     | `0`       | Other seeds required; `0` may take the last copy we know of             |
+| F    | `MEDIA_MIN_SEEDS`     | `0`       | Other seeds required; `0` may prune the last copy we know of            |
 | F    | `MEDIA_MIN_BATCH`     | `5`       | Repos holding one media file, byte for byte, to call it a campaign      |
 | F    | `MEDIA_TEXT_CEIL_BYTES`| `65536`  | The batch path's wider budget for everything that is not media          |
 | F    | `MEDIA_MAX_REFS`      | `10000`   | Refs above which a repo is too costly to read, so it goes unjudged      |
@@ -459,7 +455,7 @@ Anything this tool does is written to `$RAD_HOME/prune-audit/` (default `~/.radi
 - **`prune-<UTC-timestamp>.log`**: one file per acting run: every repo removed, tab-separated (rid, size, other-seed count, last activity, reason, name, the date the matching rule measured, any threshold that repo only just cleared), plus peer blocks made under `--block-peers` with the evidence behind each.
 - **`quarantine/<rid>`**: every pruned repo, held for `QUARANTINE_DAYS` ([more](#quarantine)).
 - **`keep.txt`**: repos excluded from every rule, one id per line, editable by hand; `quarantine restore` appends to it.
-- **`deny.txt`**: repos and identities to prune and block on sight ([more](#deny-list)). The tool only reads it. The audit log names the entry that took each repo on a `# denied:` line, and records each new block of an identity, or of a repo not yet fetched, on a `blocked-denied` line.
+- **`deny.txt`**: repos and identities to prune and block on sight ([more](#deny-list)). The tool only reads it. The audit log names the entry each repo was pruned for on a `# denied:` line, and records each new block of an identity, or of a repo not yet fetched, on a `blocked-denied` line.
 - **`cache/`**: what rules E, F and G last read out of each repo. Safe to delete at any time; the next run reads everything again.
 - **`history.log`**: append-only, one line per applied run: timestamp, repos pruned, GiB moved out of storage, whether the quarantine was on, disk pressure, and the run's audit log. An unattended run reads the audit logs named here to learn what each rule usually prunes.
 - **`cron.log`**: with the cron recipe above, the full console output of every run.
@@ -472,7 +468,7 @@ Anything this tool does is written to `$RAD_HOME/prune-audit/` (default `~/.radi
   - `imports.tsv`: every junk-named repo rule A kept because its history starts more than 14 days before its `rad init`.
   - `parasite-peers.tsv`: every peer rule G accused, with the evidence each accusation rests on.
   - `media-unjudged.tsv`: every repo rule F could not read, or gave up on for holding more than `MEDIA_MAX_REFS` refs. These are the repos its warning counts.
-  - `denied.tsv`: every repo the deny list took, with the entry that took it: `listed`, or `delegate` and the identity.
+  - `denied.tsv`: every repo pruned for the deny list, with the entry that named it: `listed`, or `delegate` and the identity.
   - `held.tsv`: every rule an unattended run would hold back for planning far more than usual, with its planned count, its usual and its limit. Its repos are still listed in `plan.tsv`, since `--force` or a yes would prune them.
   - `scan-errors.txt`: everything the run could not read.
 
@@ -536,7 +532,7 @@ A token README is enough to put a repo over the text budget above. The **batch p
 - at least `MEDIA_MIN_BYTES` of its media sits in files that `MEDIA_MIN_BATCH` (5) or more repos in storage also hold, byte for byte, and that this repo was not the first to hold (first by the creation-date ledger);
 - everything that is not media adds up to less than `MEDIA_TEXT_CEIL_BYTES` (64 KiB), the wider budget.
 
-`MEDIA_MIN_SEEDS=1` raises the floor, and a dump no other node announces is then listed under `# review:` for a human to look at rather than pruned. At the default floor of `0` that list is empty and rule F may take the last copy this seed knows of, like `spam-batch` and `link-farm` before it: the evidence is what the repo holds, and a dump nobody else seeds is still a dump.
+`MEDIA_MIN_SEEDS=1` raises the floor, and a dump no other node announces is then listed under `# review:` for a human to look at rather than pruned. At the default floor of `0` that list is empty and rule F may prune the last copy this seed knows of, like `spam-batch` and `link-farm` before it: the evidence is what the repo holds, and a dump nobody else seeds is still a dump.
 
 Rule F lists every file of every repo, which is another 4 minutes of that same 9-minute uncached dry run.
 
