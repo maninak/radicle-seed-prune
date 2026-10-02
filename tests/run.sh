@@ -156,6 +156,8 @@ e_push(){
   rm -rf "$w"
   touch -d "10 days ago" "$STORAGE/$rid"
 }
+# A peer that pushes into zmediapeer and zvictimten without being a delegate of either.
+STRANGER_NID=zSTRANGERxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 # The node id this fixture hands out as a delegate of $1. It has to survive the script's base58
 # filter, so the rid's own characters are mapped into the alphabet and the rest is padding.
 dlg(){
@@ -346,13 +348,22 @@ _build_fixture(){
     GIT_AUTHOR_DATE="@$ts +0000" GIT_COMMITTER_DATE="@$ts +0000" git -C "$w" commit -q -m c
     git -C "$w" push -q "$d" master:master 2>/dev/null
     rm -rf "$w"
-    # refs/rad/id is where rule F learns who the repo's delegates are. Real storage keeps the
-    # identity document there and only the local node writes it, so a stranger's push cannot
-    # move it. Committed at the repo's own date so it does not disturb the activity clocks.
+    # refs/rad/id is where the script learns who the repo's delegates are. Real storage keeps
+    # the identity document there, at embeds/radicle.json, and only the local node writes it,
+    # so a stranger's push cannot move it. Committed at the repo's own date so it does not
+    # disturb the activity clocks. zmediapeer's description thanks the stranger who pushed
+    # into it by their did:key, which a delegate is free to write and which does not make that
+    # stranger a delegate.
     w=$(mktemp -d -p "$ROOT")
     git -C "$w" -c init.defaultBranch=master init -q
     git -C "$w" config user.email a@b; git -C "$w" config user.name a
-    printf '{"delegates":["did:key:%s"]}\n' "$(dlg "$rid")" > "$w/id.json"
+    local iddesc=$desc
+    [ "$rid" = zmediapeer ] && iddesc="$desc, thanks did:key:$STRANGER_NID"
+    mkdir -p "$w/embeds"
+    printf '{"delegates":["did:key:%s"],"payload":{"xyz.radicle.project":%s},"threshold":1}\n' \
+           "$(dlg "$rid")" \
+           "{\"defaultBranch\":\"master\",\"description\":\"$iddesc\",\"name\":\"$name\"}" \
+           > "$w/embeds/radicle.json"
     git -C "$w" add -A
     GIT_AUTHOR_DATE="@$ts +0000" GIT_COMMITTER_DATE="@$ts +0000" git -C "$w" commit -q -m id
     git -C "$w" push -q "$d" master:refs/rad/id 2>/dev/null
@@ -402,7 +413,7 @@ _build_fixture(){
   e_code zpoison9 'mirror at https://spamhost-b.example/y'
   # A stranger, not a delegate of zvictimten, files two spam links as an issue on it. Only
   # spamhost-b and -c, so the linker counts the other assertions rest on do not move.
-  e_cob  zvictimten zSTRANGERxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
+  e_cob  zvictimten "$STRANGER_NID" \
                   '[gallery](https://spamhost-b.example/v)' \
                   '[![thumb](https://spamhost-c.example/v.jpg)](https://spamhost-c.example/v)'
   e_cob  zrot1 "$(dlg zrot1)" '[gallery](https://a1.rotate.example/x)'
@@ -515,7 +526,7 @@ _build_fixture(){
   cut_tree=$(GIT_DIR="$STORAGE/zmediacut" git rev-parse 'master^{tree}:docs')
   rm -f "$STORAGE/zmediacut/objects/${cut_tree:0:2}/${cut_tree:2}"
   e_tree zmediapeer  60 master "notes.txt:100"
-  local stranger=zSTRANGERxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+  local stranger=$STRANGER_NID
   # A project with a README on its branch and a clip attached to its owner's own issue, which
   # one peer replicates: replicating mirrors the branch, so the README is a blob a stranger's
   # refs hold too. Subtract on that and the README is gone while the un-mirrored clip stays,
@@ -2189,6 +2200,70 @@ out=$(DISK_AWARE=1 PRESSURE_CRIT_PCT=100 PRESSURE_CRIT_GB=999999 ABS_SIZE_FLOOR_
 { [ ! -e "$Q/zfreshquar" ] && grep -q 'emptied the whole quarantine' <<<"$out"; } \
   && ok "a critical disk empties the whole quarantine, window or not" \
   || no "quarantine held disk hostage at the critical watermark"
+
+# --- the deny list: a person's verdict, acted on wherever it turns up ---
+# zcode4 is listed by id. zfarm1 is listed through its delegate. The stranger who pushed into
+# zmediapeer, and whom its identity document thanks by did:key, is listed too and must not
+# take that repo with them: only the document's delegates list counts. zpin6 is listed, and so
+# is its delegate; the pin wins, and the delegate is not blocked, since that would stop the
+# pinned repo's updates. One id names a repo this node has not fetched, which is blocked ahead
+# of it. This node's own identity is listed and must be ignored. zcode4 was just written, as a
+# repo still arriving is, and a listed one is pruned anyway. The file ends without a newline
+# and has a Windows line ending, as a hand-edited one may. A history where no rule jumps shows
+# the deny list is not held back like a rule.
+build_fixture; assert_isolated
+for i in 1 2 3 4; do past_run "$i" $USUAL_BUT_C stale:20; done
+touch "$STORAGE/zcode4"
+printf '%s\n' "rad:zcode4            # by repo id" "did:key:$(dlg zfarm1)"$'\r' \
+       "$STRANGER_NID" "rad:zpin6" "did:key:$(dlg zpin6)" "not-an-id" "did:key:$RSP_NID" \
+       > "$AUDIT_DIR/deny.txt"
+printf 'zUnfetchedRepo9' >> "$AUDIT_DIR/deny.txt"
+dry=$(RATCHET_FLOOR=0 "$SCRIPT" 2>&1)
+{ [ ! -e "$RSP_HOME/.stub_block" ] && grep -q '#   deny list: block 3 id(s)' <<<"$dry" \
+  && grep -qx '#     rad:zUnfetchedRepo9' <<<"$dry" \
+  && grep -qx "zfarm1"$'\t'"delegate $(dlg zfarm1)" "$AUDIT_DIR/last-run/denied.tsv"; } \
+  && ok "a dry run lists what the deny list would block and why, and blocks nothing" \
+  || no "a dry run blocked something, or hid what --apply would block"
+out=$(RATCHET_FLOOR=0 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
+{ [ "$rc" = 0 ] && [ ! -e "$STORAGE/zcode4" ] && [ ! -e "$STORAGE/zfarm1" ] \
+  && grep -qE $'^zcode4\t.*\tdenied\t' "$AUDIT_DIR"/prune-2*Z.log \
+  && grep -qE $'^zfarm1\t.*\tdenied\t' "$AUDIT_DIR"/prune-2*Z.log \
+  && grep -qx "# denied: zfarm1 delegate $(dlg zfarm1)" "$AUDIT_DIR"/prune-2*Z.log; } \
+  && ok "a repo on the deny list, or one its listed delegate owns, is pruned as denied" \
+  || no "the deny list did not prune what it names (rc=$rc)"
+! grep -qE $'^zmediapeer\t.*\tdenied\t' "$AUDIT_DIR"/prune-2*Z.log \
+  && ok "a listed stranger takes no repo it is only named in or pushed into" \
+  || no "a listed stranger condemned a repo they are not a delegate of"
+{ [ -e "$STORAGE/zpin6" ] && grep -q 'kept anyway' <<<"$out" && grep -q 'zpin6' <<<"$out" \
+  && ! grep -qx "$(dlg zpin6)" "$RSP_HOME/.stub_block"; } \
+  && ok "a pin outranks the deny list, its listed delegate is not blocked, and the run says so" \
+  || no "the deny list overrode a pin, blocked its delegate, or kept it without a word"
+{ grep -qx 'rad:zUnfetchedRepo9' "$RSP_HOME/.stub_block" \
+  && grep -qx "$STRANGER_NID" "$RSP_HOME/.stub_block" \
+  && grep -q $'^blocked-denied\trad:zUnfetchedRepo9$' "$AUDIT_DIR"/prune-2*Z.log; } \
+  && ok "a listed id with no repo here is blocked ahead of it, and the block is logged" \
+  || no "the deny list left an unfetched repo or an identity unblocked"
+grep -q "not-an-id is neither a repo id nor an identity" <<<"$out" \
+  && ok "a deny line that names nothing is called out" \
+  || no "a malformed deny line was dropped without a word"
+{ grep -q "own identity; ignored" <<<"$out" && ! grep -qx "$RSP_NID" "$RSP_HOME/.stub_block"; } \
+  && ok "the deny list never blocks this node's own identity" \
+  || no "the deny list blocked this node itself, or said nothing"
+n=$(cat "$AUDIT_DIR"/prune-2*Z.log | grep -c 'blocked-denied')
+"${NOTTY[@]}" "$SCRIPT" --apply --force </dev/null >/dev/null 2>&1; rc=$?
+[ "$rc" = 0 ] && [ "$n" -gt 0 ] \
+  && [ "$(cat "$AUDIT_DIR"/prune-2*Z.log | grep -c 'blocked-denied')" = "$n" ] \
+  && ok "a standing deny list does not log the same blocks again every week" \
+  || no "every run re-logged blocks that were already in place"
+
+# The runaway caps measure what the rules picked. A deny list longer than the cap is still a
+# person's list, and counting it in would stop every unattended run until somebody forced one.
+build_fixture; assert_isolated
+printf 'rad:zcode4\nrad:zcode6\nrad:zcode7\n' > "$AUDIT_DIR/deny.txt"
+out=$(RULES= MAX_PRUNE_COUNT=1 MAX_PRUNE_GB=0 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
+{ [ "$rc" = 0 ] && [ ! -e "$STORAGE/zcode4" ] && [ ! -e "$STORAGE/zcode7" ]; } \
+  && ok "repos on the deny list do not count against the runaway caps" \
+  || no "a deny list longer than the cap stopped the run (rc=$rc)"
 
 # --- the ratchet: each rule against what that rule usually prunes --- A weekly cron whose plan
 # doubles every month never touches a fixed cap, so the baseline is the audit logs the tool

@@ -53,7 +53,11 @@ case "$sub" in
     ;;
   # A block that fails is what an apply against a node that has gone away looks like, and the
   # script must not delete a repo it could not block.
+  # Real rad says something only when the policy changes, and the script reads that silence as
+  # "already blocked", so the stub has to keep quiet the same way.
   block)  [ "${RSP_BLOCK_FAIL:-0}" = 1 ] && exit 1
+          grep -qxF -- "${1:-}" "$RSP_HOME/.stub_block" 2>/dev/null \
+            || printf "✓ Policy for %s set to 'block'\n" "${1:-}"
           echo "${1:-}" >> "$RSP_HOME/.stub_block" ;;
   unseed) echo "${1:-}" >> "$RSP_HOME/.stub_unseed" ;;
   seed)   echo "${1:-}" >> "$RSP_HOME/.stub_seed" ;;

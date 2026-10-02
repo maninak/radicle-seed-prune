@@ -8,16 +8,21 @@ All notable changes to this project are documented here. The format is based on 
 
 Replace the script. Nothing else has to change.
 
+### Added
+
+- **You can list repos and identities to prune and block on sight.** Put one repo id or identity (`did:key:z6Mk...`) per line in `deny.txt` in the audit directory, and a list another operator shares works as is. `--apply` prunes and blocks every listed repo and every repo a listed identity is a delegate of, unless it is pinned, private, your own or in `keep.txt`.
+
 ### Changed
 
-- **A sudden jump in one rule no longer stops the whole unattended run.** An unattended run compares each rule's part of the plan with what that rule pruned in recent runs. When a rule plans more than three times its usual number, only that rule's repos stay in storage for a person to check. Everything else in the plan is pruned, and the run exits with the new code `4`. A jump in any one rule used to stop the whole run, so a wave of old mirrors also stopped the week's spam and junk removal. A dry run lists what would be held back, and so does `last-run/held.tsv`.
-- **Up to 20 repos per rule always go through.** A rule is held back only when it plans more than 20 repos in one run, however few it usually prunes. Without that, a rule that usually prunes nothing would be held back over a single repo. The spam, link-farm and media rules usually prune nothing in a week, so a new campaign of more than 20 repos waits for `--force` or a yes at the prompt. The number is set with `RATCHET_FLOOR`.
+- **When an unattended run plans over three times a rule's usual count, only that rule is held back.** Its repos stay in storage for a person to check, the rest of the plan is pruned, and the run exits `4`. Such a jump used to stop the whole run. `last-run/held.tsv` lists what was held.
+- **Up to 20 repos per rule always go through.** A rule that usually prunes nothing is not held back over a single repo. The number is set with `RATCHET_FLOOR`.
 
 ### Fixed
 
-- **A run that stops no longer empties the quarantine first.** Repos in quarantine now stay there when the size caps (`MAX_PRUNE_COUNT`, `MAX_PRUNE_GB`) stop a run, or when you answer `n` at the prompt. Both used to delete the expired ones before stopping, so two stopped weeks in a row lost repos someone still needed to check.
-- **Safety settings must be whole numbers.** `MAX_PRUNE_COUNT`, `RATCHET_FACTOR`, `RATCHET_RUNS` and `RATCHET_FLOOR` now stop the run with exit `2` when set to anything else. A typo in one used to switch its check off without a word.
-- **An unexpected failure always exits `1`.** It used to exit with the failed command's own status, which could be mistaken for the tool's own exit codes `3`, `4` or `5`. The failed command and its status are still printed.
+- **The media and peer rules no longer take an identity named in a repo's description for one of its owners.** The media rule counted that identity's uploads as the repo's own, and the peer rule never flagged it.
+- **A stopped run no longer deletes expired repos from quarantine.** Stopping at the runaway caps or with an `n` at the prompt used to delete them first.
+- **`MAX_PRUNE_COUNT` and the `RATCHET_*` settings must be whole numbers.** Anything else now exits `2`. A typo used to switch the check off without a word.
+- **An unexpected failure always exits `1`.** It used to pass on the failed command's status, which could look like exit `3`, `4` or `5`.
 - **The tool keeps working once `rad` drops `rad self --nid`.** rad 1.10 deprecates the flag, and once it is gone every prune run would stop with exit `5`.
 
 ## [0.7.0] - 2026-09-10

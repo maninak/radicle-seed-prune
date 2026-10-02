@@ -27,10 +27,10 @@
 #   link-farm) ship with a floor of 0 and may take the last copy the network is known to
 #   hold, which is what the quarantine is for. Every prune is recorded in an audit log.
 #
-# SELECTION  (a repo is pruned if it is NOT excluded AND matches a rule; rule G is about
-# peers instead, and prunes nothing)
+# SELECTION  (a repo is pruned if it is denied, see below, or if it is NOT excluded AND matches
+# a rule; rule G is about peers instead, and prunes nothing)
 #
-#   Exclusions (never touched):
+#   Exclusions (never touched by a rule):
 #     - pinned repos        (config web.pinned.repositories)
 #     - private repos       (rad ls --private)
 #     - our own repos       (rad ls: repos we initialized or forked / delegate)
@@ -40,6 +40,13 @@
 #                            broken scan, not an exclusion)
 #     - kept                (one rid per line in AUDIT_DIR/keep.txt; a verdict a human has
 #                            already overruled, written there by "quarantine restore")
+#
+#   Denied (pruned and blocked on sight, before any rule; pinned, private, own and kept
+#   still win, the other exclusions do not):
+#     - a repo id in AUDIT_DIR/deny.txt, blocked ahead of time when it is not in storage yet
+#     - every repo whose DELEGATES include an identity in deny.txt, which is blocked too. A
+#       listed identity's push into someone else's repo does not count, or listing it would
+#       let it condemn any repo it can comment on.
 #
 #   Rule A - junk-named & abandoned, in two branches that differ in how sure we are:
 #     A/junk-name: name contains a disposable WORD (test, tmp, old, demo, ...)
@@ -503,6 +510,12 @@ quar="$AUDIT_DIR/quarantine"
 # "quarantine restore" and editable by hand: a verdict a human has overruled once should not
 # have to be overruled again every week.
 KEEP_FILE="${KEEP_FILE:-$AUDIT_DIR/keep.txt}"
+# Repos and identities a human has already judged, one per line, blank lines and #-comments
+# ignored. A repo id is pruned wherever it turns up and blocked before it ever arrives. An
+# identity (did:key:z6Mk...) is blocked as a peer, and every repo it is a delegate of is pruned.
+# The verdict is a person's, so no rule's evidence, age or seed count is asked for. Pins, our
+# own and private repos, and keep.txt still win, since each of those is a person's word too.
+DENY_FILE="$AUDIT_DIR/deny.txt"
 # What rules E and F read out of each repo, kept between runs and reused for the repos that
 # have not changed. See "the run cache" below for what a repo is keyed on.
 CACHE="${CACHE:-1}"                              # 0 reads every repo on every run
@@ -577,6 +590,27 @@ JUNK_WORD_REGEX="(^|[-_.])($JUNK_WORDS)([-_.]|$)"
 JUNK_EXACT_REGEX='^(foo|bar|baz)$'
 JUNK_ID_MIN_LEN="${JUNK_ID_MIN_LEN:-8}"
 
+# Sets $dids to a repo's delegates, space-separated, and to nothing when they cannot be read.
+# $1 = the repo's git dir. They come from the identity document's "delegates" list and nowhere
+# else. refs/rad/id is written by the local node only after it verifies the document's
+# signatures, so no stranger can add a name. The rest of that ref's tree is free text the
+# delegates wrote, a description or a revision's title, and a did:key quoted there is not a
+# delegate. The document is canonical JSON, which sorts its keys, so the first "delegates" in
+# it is the top-level one. Sets a variable rather than printing, because the activity scan
+# calls it once per repo in storage and a command substitution would fork for each one.
+read_delegates() {
+  local doc list re_list='"delegates":\[([^]]*)\]' re_did='did:key:(z[1-9A-HJ-NP-Za-km-z]+)(.*)'
+  dids=""
+  doc=$(GIT_DIR="$1" git cat-file blob refs/rad/id:embeds/radicle.json 2>/dev/null) || return 0
+  [[ $doc =~ $re_list ]] || return 0
+  list=${BASH_REMATCH[1]}
+  while [[ $list =~ $re_did ]]; do
+    dids="$dids${dids:+ }${BASH_REMATCH[1]}"
+    list=${BASH_REMATCH[2]}
+  done
+  return 0
+}
+
 # ---------------------------------------------------------------------------------------- args
 # One subcommand, "quarantine", for dealing with repos an earlier run pruned. Everything else
 # is a flag on the prune run itself.
@@ -609,7 +643,7 @@ OPTIONS
   --apply          carry out the plan: unseed, block and quarantine every repo in it
   --block-peers    act on rule G as well, asking before each peer is blocked
   --yes, -y        answer y to every prompt this run asks, so it needs nobody present
-  --force          carry on past the runaway caps and the history ratchet
+  --force          carry on past the runaway caps and the hold on a rule that jumps
   --restart-node   restart the node service afterwards, to flush its inventory
   --version        print the version and exit
   --help, -h       print this and exit
@@ -1125,6 +1159,38 @@ sed 's/#.*//; s/rad://' "$KEEP_FILE" 2>/dev/null \
   | grep -oE '^\s*z[1-9A-HJ-NP-Za-km-z]+' \
   | tr -d ' \t' | sort -u > "$tmp/kept" || true
 cat "$tmp/pinned" "$tmp/private" "$tmp/own" "$tmp/kept" 2>/dev/null | sort -u > "$tmp/excluded"
+# The deny list, split into repo ids and identities. An identity is 48 characters and a repo id
+# under 40, which is what tells the two apart once their prefixes are dropped. A line that is
+# neither is said out loud: it is a verdict somebody wrote down that would otherwise do nothing.
+: > "$tmp/deny-rids"; : > "$tmp/deny-nids"
+if [ -e "$DENY_FILE" ] && { [ ! -f "$DENY_FILE" ] || [ ! -r "$DENY_FILE" ]; }; then
+  echo "# WARN: cannot read $DENY_FILE; nothing on it is pruned or blocked this run." >&2
+elif [ -e "$DENY_FILE" ]; then
+  # `|| [ -n "$line" ]` reads a last line that has no newline, and the carriage return and
+  # byte-order mark go so a file saved by a Windows editor reads the same as any other.
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%$'\r'}; line=${line#$'\xef\xbb\xbf'}
+    read -ra toks <<<"${line%%#*}"
+    for tok in "${toks[@]}"; do
+      id=${tok#rad:}; id=${id#did:key:}
+      # This node's own identity is dropped here, so neither its block nor its repos depend on
+      # `rad ls` having listed them as our own. %q because the list may come from somebody
+      # else, and a token is echoed to a terminal.
+      if   [ "$id" = "$OUR_NID" ]; then
+        echo "# WARN: $DENY_FILE lists this node's own identity; ignored." >&2
+      elif [[ $id =~ ^z[1-9A-HJ-NP-Za-km-z]{40,}$ ]]; then printf '%s\n' "$id" >> "$tmp/deny-nids"
+      elif [[ $id =~ ^z[1-9A-HJ-NP-Za-km-z]+$ ]];     then printf '%s\n' "$id" >> "$tmp/deny-rids"
+      else printf '# WARN: %s: %q is neither a repo id nor an identity; ignored.\n' \
+             "$DENY_FILE" "$tok" >&2
+      fi
+    done
+  done < "$DENY_FILE"
+fi
+sort -u -o "$tmp/deny-rids" "$tmp/deny-rids"; sort -u -o "$tmp/deny-nids" "$tmp/deny-nids"
+# Said every run, so a cron log shows the list was read at all.
+[ ! -e "$DENY_FILE" ] \
+  || echo "# deny list: $(wc -l < "$tmp/deny-rids") repo(s), $(wc -l < "$tmp/deny-nids")" \
+          "identit(ies) in $DENY_FILE"
 echo "# excluded: $(wc -l < "$tmp/pinned") pinned," \
      "$(wc -l < "$tmp/private") private, $(wc -l < "$tmp/own") own," \
      "$(wc -l < "$tmp/kept") kept"
@@ -1289,8 +1355,7 @@ repos_to_read() {                 # $1 = file listing rids the cache already ans
   find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -print0 2>>"$scanerr" \
     | grep -zvxFf "$tmp/cached-paths"
 }
-cat > "$tmp/life.sh" <<'LIFE'
-#!/usr/bin/env bash
+{ printf '#!/usr/bin/env bash\n'; declare -f read_delegates; cat <<'LIFE'
 # The ref listing is written to a file rather than a shell variable because one repo on a real
 # seed has 152k refs. It is read twice: once for the dates, once for the fingerprint the run
 # cache keys on.
@@ -1310,9 +1375,12 @@ for d; do
   bl=$(awk '$1 ~ /^[0-9]+$/ && length($1) <= 11 { if (b == "") b = $1; l = $1 }
             END { if (b == "") printf "0\t0"; else printf "%s\t%s", b, l }' "$t")
   refhash=$(sha1sum < "$t" | cut -c1-40)
-  printf '%s\t%s\t%s\n' "${d##*/}" "${bl:-0	0}" "$refhash"
+  # The repo's delegates, comma-separated, for the deny list.
+  read_delegates "$d"
+  printf '%s\t%s\t%s\t%s\n' "${d##*/}" "${bl:-0	0}" "$refhash" "${dids// /,}"
 done
 LIFE
+} > "$tmp/life.sh"
 progress_start "activity" "$nrepos" "$tmp/lives"
 find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -print0 2>>"$scanerr" \
   | xargs -0r -P "$JOBS" -n 64 "$BASH_BIN" "$tmp/life.sh" > "$tmp/lives" || true
@@ -1441,6 +1509,7 @@ if rule_on F; then
   echo "# measuring repo trees for rule F ($JOBS workers)..." >&2
   cat > "$tmp/media.sh" <<MEDIA
 #!/usr/bin/env bash
+$(declare -f read_delegates)
 media_exts='$MEDIA_EXTS'
 text_exts='$MEDIA_TEXT_EXTS'
 text_names='$MEDIA_TEXT_NAMES'
@@ -1522,9 +1591,7 @@ for d; do
   # too. "Own" is decided by refs/rad/id, the identity document, which the local node writes
   # only after verifying its signatures; a stranger's push can never move it. Their content
   # lands under refs/namespaces/<their-nid>/ and is what the subtraction below drops.
-  dids=$(GIT_DIR="$d" git grep -h -oE 'did:key:z[1-9A-HJ-NP-Za-km-z]+' refs/rad/id \
-           2>/dev/null \
-         | sed 's/^did:key://' | sort -u | tr '\n' ' ')
+  read_delegates "$d"
   # Collect the refs this repo's own delegates control, and only those. That is the canonical
   # branches and tags, which only a delegate can move, plus the delegates' own namespaces and
   # COBs. Any other peer's namespace is left out of the walk entirely: what a stranger pushed
@@ -1662,6 +1729,7 @@ if rule_on G; then
   echo "# looking for parasite peers for rule G ($JOBS workers)..." >&2
   cat > "$tmp/peer.sh" <<PEER
 #!/usr/bin/env bash
+$(declare -f read_delegates)
 media_exts='$MEDIA_EXTS'
 max_refs=$MEDIA_MAX_REFS
 PEER
@@ -1709,9 +1777,7 @@ walk_repo() {
   # signatures, so a stranger's push cannot make itself a delegate.
   # This runs before any skip below, because a delegate is never blocked and that protection
   # must not depend on whether the rest of this repo turned out to be worth walking.
-  dids=$(GIT_DIR="$d" git grep -h -oE 'did:key:z[1-9A-HJ-NP-Za-km-z]+' refs/rad/id \
-           2>/dev/null \
-         | sed 's/^did:key://' | sort -u | tr '\n' ' ')
+  read_delegates "$d"
   # Every row this worker prints carries the rid in field 2, whatever its kind, because the
   # run cache reuses rows by repo and can only look in one field.
   if [ -z "$dids" ]; then printf 'u\t%s\n' "$rid"; return 0; fi
@@ -2048,7 +2114,7 @@ OWNED
 fi
 
 declare -A SIZE MTIME LIFE BIRTH NAME SEEDS EXCL SCANFAIL SPAM LINKSCORE MEDIA SHARED \
-           FIRSTSEEN MEDIABYTES
+           FIRSTSEEN MEDIABYTES DELEGATES DENY_RID DENY_NID
 while IFS=$'\t' read -r sz path; do SIZE[${path##*/}]=$sz; done < "$tmp/du"
 while IFS=$'\t' read -r rid mt;   do MTIME[$rid]=${mt%.*}; done < "$tmp/mtimes"
 # Anything that is not a plain number becomes 0, which the classify loop reads as "age
@@ -2056,11 +2122,13 @@ while IFS=$'\t' read -r rid mt;   do MTIME[$rid]=${mt%.*}; done < "$tmp/mtimes"
 # lock on the one door through which a non-number could reach an arithmetic comparison and
 # leave a repo either unjudgeable or judged on nonsense.
 ncoerced=0
-while IFS=$'\t' read -r rid bt lf _; do
+while IFS=$'\t' read -r rid bt lf _ dl; do
   case $bt in ''|*[!0-9]*) bt=0; ncoerced=$((ncoerced + 1)) ;; esac
   case $lf in ''|*[!0-9]*) lf=0; ncoerced=$((ncoerced + 1)) ;; esac
-  BIRTH[$rid]=$bt; LIFE[$rid]=$lf
+  BIRTH[$rid]=$bt; LIFE[$rid]=$lf; DELEGATES[$rid]=$dl
 done < "$tmp/lives"
+while read -r r; do DENY_RID[$r]=1; done < "$tmp/deny-rids"
+while read -r r; do DENY_NID[$r]=1; done < "$tmp/deny-nids"
 # Reaching this lock at all means the worker's filter let something through, and the repos it
 # fires on go unjudged by every age rule. Silence there reads exactly like a clean scan.
 [ "$ncoerced" = 0 ] \
@@ -2226,7 +2294,41 @@ plan_header(){
 : > "$tmp/plan"   # rid \t size \t seeds \t life \t reason \t name \t age_from \t near
 : > "$tmp/media-review"
 nblind=0; nfresh=0; nnoage=0
+: > "$tmp/deny-kept"        # rid \t why, for every denied repo an exclusion kept
+: > "$tmp/deny-nids-kept"   # listed identities that delegate one of those kept repos
+: > "$tmp/deny-why"         # rid \t why, for every denied repo in the plan
 while IFS=$'\t' read -r rid sz mt life birth; do
+  # The deny list comes first, because it asks nothing the checks below exist to establish: no
+  # readable size, no age, no settled fetch. A listed identity condemns only the repos it is a
+  # DELEGATE of. A stranger's namespace inside somebody else's repo does not count, or anyone
+  # could get a repo pruned by commenting on it from an identity already on the list.
+  denied=""
+  [ -n "${DENY_RID[$rid]:-}" ] && denied="listed"
+  IFS=, read -ra dls <<<"${DELEGATES[$rid]:-}"
+  # A repo listed by id keeps "listed" as its cause even when a delegate is listed too.
+  for nid in "${dls[@]}"; do
+    [ -z "$denied" ] || break
+    [ -n "${DENY_NID[$nid]:-}" ] && denied="delegate $nid"
+  done
+  if [ -n "$denied" ]; then
+    if [ -n "${EXCL[$rid]:-}" ]; then
+      printf '%s\t%s\n' "$rid" "$denied" >> "$tmp/deny-kept"
+      # Blocking a delegate stops their repos receiving updates, this kept one included, so
+      # every listed delegate of it is spared the block as well.
+      for nid in "${dls[@]}"; do
+        [ -n "${DENY_NID[$nid]:-}" ] && printf '%s\n' "$nid" >> "$tmp/deny-nids-kept"
+      done
+    else
+      dname=${NAME[$rid]:-}; [ -z "$dname" ] && dname='(?)'
+      # Column 7 is the date the verdict measured age from. The deny list measures none, so
+      # it is 0, which the plan prints as "-" rather than as an age nobody measured.
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$rid" "${sz:-0}" "${SEEDS[$rid]:-0}" "$life" "denied" "$dname" 0 "" \
+        >> "$tmp/plan"
+      printf '%s\t%s\n' "$rid" "$denied" >> "$tmp/deny-why"
+    fi
+    continue
+  fi
   [ -n "${SCANFAIL[$rid]:-}" ] && { nblind=$((nblind+1)); continue; }  # size and age unusable
   [ -n "${EXCL[$rid]:-}" ] && continue                # pinned / private / own
   # Freshness is read before age, because a repo whose fetch is still in flight has no refs
@@ -2330,6 +2432,13 @@ done < "$tmp/repos"
 # background rate, and four weekly runs over a 12.5k-repo seed each reported zero of it.
 echo "# skipped: $nblind unreadable, $nfresh written in the last ${FRESH_GUARD_DAYS}d," \
      "$nnoage with no readable refs"
+# Two people's words disagree here, and the one that keeps the repo wins, since a prune is the
+# one of the two that cannot be taken back. Named, so the disagreement gets settled by hand.
+if [ -s "$tmp/deny-kept" ]; then
+  echo "# WARN: $(wc -l < "$tmp/deny-kept") repo(s) on $DENY_FILE are kept anyway, because" \
+       "they are pinned, private, our own or in $KEEP_FILE:" >&2
+  sed 's/^/#   /; s/\t/  /' "$tmp/deny-kept" >&2
+fi
 # A repo can reach $tmp/repos without being one of the directories counted at the top of the
 # walk, so this subtraction can come out below zero and must not then credit the scan.
 vanished=$(( nrepos - total_repos )); [ "$vanished" -lt 0 ] && vanished=0
@@ -2372,7 +2481,8 @@ count_by_rule() {
   awk -F'\t' -v map="$RULE_OF_REASON" '
     BEGIN { n = split(map, pairs, " ")
             for (i = 1; i <= n; i++) { split(pairs[i], kv, ":"); rule[kv[1]] = kv[2] } }
-    !/^#/ && NF >= 5 { c[($5 in rule) ? rule[$5] : $5]++ }
+    # A denied repo is a verdict a person already reviewed, so it is never held back for one.
+    !/^#/ && NF >= 5 && $5 != "denied" { c[($5 in rule) ? rule[$5] : $5]++ }
     END { for (r in c) printf "%s\t%d\n", r, c[r] }' "$1" | sort
 }
 
@@ -2459,7 +2569,8 @@ awk -F'\t' -v now="$now" -v collapse="$PLAN_COLLAPSE_ROWS" -v full="$PLAN_FULL" 
                        "RID", "SIZE", "SEEDS", "AGE(d)", "REASON", "NEAR", "NAME" }
      { if ($5 in fold) next
        printf "%-34s %9s %6s %8s %-13s %-15s %s\n",
-              $1, size($2), $3, int((now - $7) / 86400), $5, ($8 == "" ? "-" : $8), $6 }
+              $1, size($2), $3, ($7 == 0 ? "-" : int((now - $7) / 86400)), $5,
+              ($8 == "" ? "-" : $8), $6 }
      # In the order c was split, not `for (r in fold)`: awk leaves that order unspecified, and
      # a plan that prints its rows differently from one run to the next cannot be diffed.
      END { for (i = 1; i in c; i++) if (c[i] in fold)
@@ -2507,6 +2618,20 @@ if [ -s "$tmp/held" ]; then
     echo "#     rule $letter: $planned repos, where its median over the last $nratchet runs" \
          "is $usual a run (limit $limit)"
   done < "$tmp/held"
+fi
+
+# What deny_block_ahead will block under --apply, printed by a dry run too: a block lands with
+# no row in the plan above, so without this a dry run would not show it.
+: > "$tmp/deny-ahead"
+while IFS= read -r id; do
+  [ -d "$STORAGE/$id" ] || grep -qxF "$id" "$tmp/excluded" || printf 'rad:%s\n' "$id"
+done < "$tmp/deny-rids" >> "$tmp/deny-ahead"
+grep -vxF -f "$tmp/deny-nids-kept" "$tmp/deny-nids" >> "$tmp/deny-ahead" || true
+if [ -s "$tmp/deny-ahead" ]; then
+  echo "#   deny list: block $(wc -l < "$tmp/deny-ahead") id(s), unless already blocked:"
+  head -n "$top_evidence" "$tmp/deny-ahead" | sed 's/^/#     /'
+  nmore=$(( $(wc -l < "$tmp/deny-ahead") - top_evidence ))
+  [ "$nmore" -le 0 ] || echo "#     ...and $nmore more (PLAN_FULL=1 lists them)"
 fi
 
 # Rule G's verdicts are about peers, so they get their own section rather than a row in the
@@ -2588,6 +2713,10 @@ if [ "$lr_ok" = 1 ]; then
   { lr_stamp
     printf '# rule\tplanned\tusual\tlimit\n'
     cat "$tmp/held"; } > "$staging/held.tsv" 2>/dev/null || lr_ok=0
+  # Which deny-list entry took each denied repo, so a dry run can trace a row to its line.
+  { lr_stamp
+    printf '# rid\tcause\n'
+    cat "$tmp/deny-why"; } > "$staging/denied.tsv" 2>/dev/null || lr_ok=0
   { lr_stamp
     cat "$scanerr"; } > "$staging/scan-errors.txt" 2>/dev/null || lr_ok=0
 fi
@@ -2625,9 +2754,44 @@ open_audit() {
   echo "# audit log: $audit"
 }
 
+# The deny list's ids that no repo in storage stands for: repo ids not fetched yet, and
+# identities. Blocked now, so the node never fetches the repo and never follows the identity.
+# A repo id still in storage is left to the prune, and one the prune moved out was blocked by
+# it, so blocking it again here logs nothing. An excluded repo is left alone, and so is an
+# identity that delegates one. `rad block` prints a line on stdout only when it changes a
+# policy, which is what keeps a standing list from writing the same blocks into every week's
+# audit log.
+deny_block_ahead() {
+  local id said nblocked=0
+  while IFS= read -r id; do
+    [ -d "$STORAGE/$id" ] && continue
+    grep -qxF "$id" "$tmp/excluded" && continue
+    said=$("$RAD" block "rad:$id" 2>"$tmp/block-err") \
+      || { echo "# WARN: could not block denied repo rad:$id: $(head -1 "$tmp/block-err")" >&2
+           continue; }
+    [ -n "$said" ] || continue
+    open_audit; printf 'blocked-denied\trad:%s\n' "$id" >> "$audit"
+    nblocked=$((nblocked+1))
+  done < "$tmp/deny-rids"
+  while IFS= read -r id; do
+    if grep -qxF "$id" "$tmp/deny-nids-kept"; then
+      echo "# WARN: not blocking $id, a delegate of a kept repo; rad unblock it if blocked." >&2
+      continue
+    fi
+    said=$("$RAD" block "$id" 2>"$tmp/block-err") \
+      || { echo "# WARN: could not block denied identity $id: $(head -1 "$tmp/block-err")" >&2
+           continue; }
+    [ -n "$said" ] || continue
+    open_audit; printf 'blocked-denied\t%s\n' "$id" >> "$audit"
+    nblocked=$((nblocked+1))
+  done < "$tmp/deny-nids"
+  [ "$nblocked" = 0 ] || echo "# blocked $nblocked id(s) from $DENY_FILE"
+  return 0
+}
+
 # Rule G's action. A block is permanent, it is invisible to the person blocked, and it applies
-# to every repo at once, so it is the one thing here that never happens without a human in the
-# room: --block-peers refuses outright when nothing can be asked, and asks again per peer.
+# to every repo at once, so rule G never blocks without a human in the room: --block-peers
+# refuses outright when nothing can be asked, and asks again per peer.
 # Blocking is what makes it stick, since the node filters every namespaced ref it receives
 # through the block list whatever the seeding scope is, so refs dropped here do not come back.
 # Dropping them frees no disk until git gc runs, which this tool does not do, so none of it is
@@ -2705,6 +2869,7 @@ fi
 if [ "$nplan" = 0 ]; then
   quar_purge_expired
   quar_purge_all_if_critical
+  deny_block_ahead
   echo "# nothing to do"
   exit 0
 fi
@@ -2762,10 +2927,18 @@ fi
 
 # Runaway caps guard unattended runs, measured on what the ratchet left, so a held wave does
 # not take the rest of the plan down with it. Bypassed the same two ways as the ratchet.
+# Denied repos are left out of the measure: the caps catch a rule gone wrong, and the deny list
+# is a person's verdict. Counted in, one listed identity with a thousand repos would stop
+# every unattended run, and every rule with it, until somebody forced one through.
 if [ "$FORCE" = 0 ] && [ "$CONFIRMED" = 0 ]; then
-  over_gb=$(awk -v b="$bytes" -v m="$MAX_PRUNE_GB" 'BEGIN{print (b/1073741824 > m) ? 1 : 0}')
-  if [ "$nplan" -gt "$MAX_PRUNE_COUNT" ] || [ "$over_gb" = 1 ]; then
-    echo "# ABORT: plan ($nplan repos, ${gib} GiB) trips runaway caps" \
+  nruled=$(awk -F'\t' '$5 != "denied"' "$tmp/plan.sorted" | wc -l)
+  ruled_bytes=$(awk -F'\t' '$5 != "denied" { s += $2 } END { printf "%.0f", s }' \
+                  "$tmp/plan.sorted")
+  ruled_gib=$(awk -v b="$ruled_bytes" 'BEGIN{printf "%.2f", b/1073741824}')
+  over_gb=$(awk -v b="$ruled_bytes" -v m="$MAX_PRUNE_GB" \
+              'BEGIN{print (b/1073741824 > m) ? 1 : 0}')
+  if [ "$nruled" -gt "$MAX_PRUNE_COUNT" ] || [ "$over_gb" = 1 ]; then
+    echo "# ABORT: the rules' plan ($nruled repos, ${ruled_gib} GiB) trips runaway caps" \
          "(count=$MAX_PRUNE_COUNT gb=$MAX_PRUNE_GB)." >&2
     echo "# Review it, then re-run with --force (unattended), or confirm interactively." >&2
     exit 3
@@ -2782,6 +2955,7 @@ quar_purge_expired
 quar_purge_all_if_critical
 
 if [ "$nplan" = 0 ]; then
+  deny_block_ahead
   echo "# nothing pruned: every verdict in the plan was held back (see HELD BACK above)." >&2
   exit 4
 fi
@@ -2797,6 +2971,8 @@ open_audit
              "$letter" "$planned" "$usual" "$limit"
     done < "$tmp/held"
   fi
+  # Which line of the deny list took each denied repo, so one bad line can be traced.
+  sed 's/^/# denied: /; s/\t/ /' "$tmp/deny-why"
   plan_header
   cat "$tmp/plan.sorted"; } >> "$audit"
 
@@ -2871,6 +3047,8 @@ progress_stop
        "less than ${gib} GiB was reclaimed." >&2
   echo "# The audit log lists the plan, not what actually got deleted." >&2
 }
+
+deny_block_ahead
 
 if [ "$RESTART" = 1 ]; then
   echo "# restarting $SERVICE (clears the stale inventory-announce warning)..."
