@@ -291,7 +291,7 @@ _fixture_env(){
   export PATH="$ROOT/bin:$PATH"
 
   export RSP_HOME="$ROOT/rad-home"
-  export RSP_NID="zOURNODExxxxxxxxxxxxxxxxxxxxx"
+  export RSP_NID="z6MkourNodexxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
   export RSP_MANIFEST="$ROOT/manifest.tsv"
   export RSP_DELEGATES="$ROOT/delegates.tsv"
 
@@ -303,7 +303,7 @@ _fixture_env(){
   export STORAGE="$RSP_HOME/storage"
   export CONFIG="$RSP_HOME/config.json"
   export AUDIT_DIR="$RSP_HOME/prune-audit"
-  export OUR_NID="$RSP_NID"
+  unset OUR_NID   # read from the stub's `rad self --did`, so that path runs in every test
   export SERVICE="rsp-test-does-not-exist.service"
   # Hermetic git: ignore the user's global/system config, so fixture commits never use their
   # signing key (gpgsign) or identity, and the host config can't change behaviour.

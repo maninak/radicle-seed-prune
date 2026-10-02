@@ -10,7 +10,7 @@ printf '%s\n' "${RAD_HOME:-<unset>}" >> "$RSP_HOME/.stub_radhome"
 sub="${1:-}"; shift || true
 case "$sub" in
   path) echo "$RSP_HOME" ;;
-  self) echo "$RSP_NID" ;;                    # `rad self --nid`
+  self) echo "did:key:$RSP_NID" ;;            # `rad self --did`
   ls)
     [ "${RSP_NO_LS:-0}" = 1 ] && exit 0        # `rad ls` yields nothing: rule D goes blind
     priv=0; allf=0

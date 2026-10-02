@@ -327,7 +327,9 @@ RAD_HOME="${RAD_HOME:-$("$RAD" path 2>/dev/null || echo "${HOME:?}/.radicle")}"
 export RAD_HOME
 STORAGE="${STORAGE:-$RAD_HOME/storage}"
 CONFIG="${CONFIG:-$RAD_HOME/config.json}"
-OUR_NID="${OUR_NID:-$("$RAD" self --nid 2>/dev/null || true)}"
+# `--did` rather than `--nid`, which rad 1.10 deprecates and will remove.
+OUR_NID="${OUR_NID:-$("$RAD" self --did 2>/dev/null || true)}"
+OUR_NID=${OUR_NID#did:key:}
 SERVICE="${SERVICE:-radicle-node}"          # systemd unit for --restart-node
 
 ABS_SIZE_FLOOR_MB="${ABS_SIZE_FLOOR_MB:-500}"   # rule B absolute floor

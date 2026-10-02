@@ -18,6 +18,7 @@ Replace the script. Nothing else has to change.
 - **A run that stops no longer empties the quarantine first.** Repos in quarantine now stay there when the size caps (`MAX_PRUNE_COUNT`, `MAX_PRUNE_GB`) stop a run, or when you answer `n` at the prompt. Both used to delete the expired ones before stopping, so two stopped weeks in a row lost repos someone still needed to check.
 - **Safety settings must be whole numbers.** `MAX_PRUNE_COUNT`, `RATCHET_FACTOR`, `RATCHET_RUNS` and `RATCHET_FLOOR` now stop the run with exit `2` when set to anything else. A typo in one used to switch its check off without a word.
 - **An unexpected failure always exits `1`.** It used to exit with the failed command's own status, which could be mistaken for the tool's own exit codes `3`, `4` or `5`. The failed command and its status are still printed.
+- **The tool keeps working once `rad` drops `rad self --nid`.** rad 1.10 deprecates the flag, and once it is gone every prune run would stop with exit `5`.
 
 ## [0.7.0] - 2026-09-10
 
