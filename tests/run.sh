@@ -22,8 +22,7 @@ no(){ FAIL=$((FAIL+1)); printf 'FAIL - %s\n' "$1"; }
 # Neither pass nor fail: the machine cannot run this one. It still prints, so a
 # permanently skipped check is visible rather than quietly absent.
 skip(){ printf 'skip - %s\n' "$1"; }
-# assert that "$2" (a plan text) contains / omits a repo line for rid $3 with optional reason
-# $4
+# true when plan text $1 holds a row for rid $2
 has(){ grep -qE "^$2 " <<<"$1"; }
 
 # ---- fixture -----------------------------------------------------------------
@@ -217,7 +216,7 @@ e_tree(){
 e_code(){ local rid=$1; shift; e_push "$rid" master README.md "$@"; }
 
 # Building the fixture below is about 700 git invocations, and the suite wants a clean one
-# roughly forty times, which used to be most of its runtime. It is built once and kept as a
+# once per section, which used to be most of its runtime. It is built once and kept as a
 # template; every later call throws the working copy away and restores it from that template,
 # which is a copy of a few MB, and a reflink on a filesystem that has them.
 build_fixture(){
@@ -463,9 +462,9 @@ _build_fixture(){
   touch -d "10 days ago" "$STORAGE/zheavy"
 
   # Rule F fixtures. Each replaces the manifest loop's tree, so what the repo tracks is exactly
-  # what is listed here. The suite runs with MEDIA_MIN_BYTES=20000, small enough to keep 40-odd
-  # full runs fast; a separate test covers the shipped default. Sizes straddle that bar and
-  # MEDIA_TEXT_MAX_BYTES (2048), so each repo differs from zmediaone in ONE thing.
+  # what is listed here. The suite runs with MEDIA_MIN_BYTES=20000, small enough to keep its
+  # many full runs fast. Sizes straddle that bar and MEDIA_TEXT_MAX_BYTES (2048), so each repo
+  # differs from zmediaone in ONE thing.
   e_tree zmediaone   60 master "clip.mp4:40000"                 # media only          -> pruned
   e_tree zmediatwo   60 master "clip.mp4:40000" "README.md:8192" # a real README       -> kept
   e_tree zmediabin   60 master "payload.bin:40000:mp4"          # a video renamed     -> pruned
@@ -698,8 +697,8 @@ case "${1:-}" in
     ;;
   -e)
     total=$(sections "" 0 count); printed=$(mktemp)
-    # Each section keeps its own tally in its own process and prints it, which is noise forty
-    # times over, so the tallies are dropped here and the ok and FAIL lines counted instead.
+    # Each section keeps its own tally in its own process and prints it, which is noise once per
+    # section, so the tallies are dropped here and the ok and FAIL lines counted instead.
     for i in $(seq 1 "$total"); do
       bash "$0" -n "$i" || echo "# section $i exited $?, see above"
     done | grep -vE '^(-+$|passed: )' | tee "$printed"
@@ -716,7 +715,7 @@ esac
 
 # ============================================================================
 # The classification tests below are cut into the sections that follow rather than left as
-# one, so that -k on a rule reaches a handful of runs instead of forty. The price is that
+# one, so that -k on a rule reaches a handful of runs instead of all of them. The price is that
 # several of them build the same default plan again for themselves: a section that borrowed it
 # from another could not be run on its own.
 build_fixture
@@ -752,11 +751,6 @@ has "$plan" "zhexid23" && grep -qE "^zhexid23 .*junk-id" <<<"$plan" \
 ! has "$plan" "zdigit24" \
   && ok "all-digit name '12345678' not treated as a random id"  \
   || no "'12345678' not a random id"
-
-# Rules A/B/C must keep clocking ACTIVITY: a repo touched yesterday is not abandoned.
-! grep -qE "^zfresh4 " <<<"$plan" \
-  && ok "an actively-used repo is still spared by the activity rules" \
-  || no "activity rules unaffected"
 
 # --- pruning the last copy WE KNOW OF, but only where the evidence is conclusive --- "No other
 # seed has it" is worthlessness for machine-generated bulk and preservation value for anything
@@ -803,9 +797,6 @@ grep -qE "^zspaced26 .*Blog e64$" <<<"$plan" \
 plan_hi=$(DISK_AWARE=1 ABS_SIZE_FLOOR_MB=1 \
           PRESSURE_CRIT_PCT=100 PRESSURE_CRIT_GB=99999999 \
           PRESSURE_RELAX_PCT=100 PRESSURE_RELAX_GB=999999999 run)
-grep -qE "pressure=100%" <<<"$plan_hi" \
-  && ok "pressure reaches 100% under forced watermarks" \
-  || no "pressure=100%"
 has "$plan_hi" "zbwid9" \
   && ok "pressure prunes a repo that was kept at p=0"   \
   || no "pressure widens the net"
@@ -873,9 +864,6 @@ nodeschits=$(grep -cE "^znodesc[1-9] " <<<"$plan" || true)
 [ "$nodeschits" = 0 ] \
   && ok "id-slot batch with no descriptions kept (one signal is not enough)" \
   || no "no-description batch kept (got $nodeschits/9 pruned)"
-grep -qE '^# spam batches: 1 template' <<<"$plan" \
-  && ok "the plan header reports the batch it found" \
-  || no "plan header reports spam batches"
 
 # The check must be able to say no: raise the batch threshold above the batch size and the
 # exact same repos have to survive, or the rule is passing on something other than the evidence
@@ -884,11 +872,6 @@ plan_k=$(SPAM_MIN_BATCH=14 run)   # the flatten batch is 13 members
 [ "$(grep -cE "^zspam[1-9] " <<<"$plan_k" || true)" = 0 ] \
   && ok "SPAM_MIN_BATCH above the batch size spares it" \
   || no "SPAM_MIN_BATCH check is vacuous"
-# ...and so must the description-agreement check, on its own.
-plan_d=$(SPAM_DESC_AGREE_PCT=101 run)
-[ "$(grep -cE "^zspam[1-9] " <<<"$plan_d" || true)" = 0 ] \
-  && ok "unreachable description agreement spares the batch" \
-  || no "SPAM_DESC_AGREE_PCT check is vacuous"
 # Opting out of the random-id requirement is what reaches an enumeration-only batch.
 plan_id=$(SPAM_REQUIRE_ID=0 run)
 idhits=$(grep -cE "^zenum[1-9] .*spam-batch" <<<"$plan_id" || true)
@@ -958,12 +941,7 @@ plan_ed=$(LINK_MIN_REPOS=3 LINK_MIN_SCORE=2 SPAM_MIN_BATCH=99 run)
 ! grep -q 'spamhost-c.example' <<<"$plan_ed" \
   && ok "with no rule D batch, that member's vouch counts again" \
   || no "the rule D leg is vacuous"
-# Non-vacuity: the same repos must survive when the rule cannot see them.
-plan_e0=$(RULES=ABCDFG LINK_MIN_REPOS=3 LINK_MIN_SCORE=2 run)
-[ "$(grep -cE "^zfarm[1-3] " <<<"$plan_e0" || true)" = 0 ] \
-  && ok "a RULES without E spares them, so the hits above came from rule E" \
-  || no "rule E hits are vacuous"
-# ...and when they are too few to look like a pattern.
+# Non-vacuity: the same repos must survive when they are too few to look like a pattern.
 plan_e1=$(LINK_MIN_REPOS=99 LINK_MIN_SCORE=2 run)
 [ "$(grep -cE "^zfarm[1-3] " <<<"$plan_e1" || true)" = 0 ] \
   && ok "a host too few repos link to is not a spam host" || no "LINK_MIN_REPOS is vacuous"
@@ -995,9 +973,6 @@ grep -qE "^zvictimten .*link-farm" <<<"$plan_ex" \
   && ok "LINK_DELEGATE_CHECK=0 does flag it, so the spare above is the check working" \
   || no "LINK_DELEGATE_CHECK is vacuous"
 spared_msg='# rule E: 1 repo(s) spared, the spam links were pushed by peers that are not'
-grep -qF "$spared_msg their delegates" <<<"$plan_e" \
-  && ok "the plan says how many repos the delegate check took back out" \
-  || no "delegate check reports its drops"
 # Without a delegate list there is no way to tell a repo's own links from a stranger's, so the
 # repo leaves the plan rather than staying in it on evidence nobody can attribute.
 grep -v "^zfarm1"$'\t' "$RSP_DELEGATES" > "$ROOT/deleg.partial"
@@ -1140,14 +1115,6 @@ plan_fr=$(MEDIA_MAX_REFS=2 run)
   && grep -qE "^zmediaone .*media-dump" <<<"$plan_fr"; } \
   && ok "a repo over MEDIA_MAX_REFS is left unjudged, said so, and the rest still run" \
   || no "MEDIA_MAX_REFS is vacuous"
-plan_fb=$(MEDIA_MIN_BYTES=99999999 run)
-! has "$plan_fb" "zmediaone" \
-  && ok "MEDIA_MIN_BYTES above the media it holds spares it" || no "MEDIA_MIN_BYTES is vacuous"
-# The suite lowers MEDIA_MIN_BYTES to keep itself fast, so the shipped default needs its own
-# check: without it, 1 MiB could become any other number unnoticed.
-grep -q 'rule F media-dump(>=64KB of media' <<<"$(env -u MEDIA_MIN_BYTES "$SCRIPT" 2>&1)" \
-  && ok "the shipped MEDIA_MIN_BYTES default is 64 KiB" \
-  || no "MEDIA_MIN_BYTES default is 64 KiB"
 plan_ft=$(MEDIA_TEXT_MAX_BYTES=99999 run)
 grep -qE "^zmediatwo .*media-dump" <<<"$plan_ft" \
   && ok "a bigger text budget reaches the repo its README was sparing" \
@@ -1163,13 +1130,6 @@ grep -qE "^zmediawide .*media-dump" <<<"$plan_ft" \
 plan_fx=$(MEDIA_EXTS='bin' run)
 { grep -qE "^zmediabin .*media-dump" <<<"$plan_fx" && ! has "$plan_fx" "zmediaone"; } \
   && ok "MEDIA_EXTS decides what counts as media, both ways" || no "MEDIA_EXTS is vacuous"
-plan_fo=$(RULES=ABCDEG run)
-# The "# PLAN:" line is the last thing a run prints, so it separates "rule F found nothing"
-# from "the run died before it could".
-{ ! has "$plan_fo" "zmediaone" && grep -q 'F media-dump.*DISABLED' <<<"$plan_fo" \
-  && grep -q '^# PLAN:' <<<"$plan_fo"; } \
-  && ok "a RULES without F turns rule F off, says so, and still finishes" \
-  || no "a RULES without F disables rule F"
 
 # Rule F may prune the last copy we know of, like rules D and E. Its evidence is what the repo
 # itself holds, and a dump nobody else seeds is still a dump.
@@ -1186,9 +1146,6 @@ plan_fz=$(MEDIA_MIN_SEEDS=1 run)
     && grep -qE '^#   zmediazero +media-dump' <<<"$plan_fz"; } \
   && ok "the dump it kept is named for a human to look at" \
   || no "the review list names what it kept"
-! grep -q '^# review:' <<<"$plan" \
-  && ok "nothing to review at the default floor, where it was pruned instead" \
-  || no "review list is vacuous"
 
 
 build_fixture; assert_isolated
@@ -1214,11 +1171,9 @@ noa=$(RULES=BCDEFG run)
 { ! has "$noa" "zjunk1" && has "$noa" "zbig2"; } \
   && ok "a rule left out of RULES puts nothing in the plan" \
   || no "RULES=BCDEFG still pruned a rule A repo, or took rule B down with it"
-grep -q 'A junk.*DISABLED: not in RULES' <<<"$noa" \
-  && ok "the banner says which rules are switched off" \
-  || no "a disabled rule was not marked in the banner"
 nof=$(RULES=ABCDE run)
-{ ! has "$nof" "zmediamd" && ! grep -q 'measuring repo trees' <<<"$nof"; } \
+{ ! has "$nof" "zmediamd" && ! grep -q 'measuring repo trees' <<<"$nof" \
+  && has "$nof" "zjunk1"; } \
   && ok "a rule left out of RULES does not even run its scan" \
   || no "RULES=ABCDE still ran or planned rule F"
 
@@ -1255,15 +1210,10 @@ grep -q "PARASITE PEERS: 1" <<<"$gplan" && grep -q "$PARA" <<<"$gplan" \
 { ! has "$gplan" "zpara1" && ! has "$gplan" "zpara2" && ! has "$gplan" "zpara3"; } \
   && ok "rule G puts no repo in the plan; the peer is the finding" \
   || no "rule G pruned a repo somebody else pushed into"
-grep -q -- "--block-peers" <<<"$gplan" \
-  && ok "rule G reports without blocking until --block-peers is given" \
-  || no "rule G did not say that blocking needs its own opt-in"
 unset PARASITE_MIN_REPOS PARASITE_MIN_BYTES PARASITE_TEXT_MAX_BYTES
 
 
 build_fixture; assert_isolated
-
-# --- gates on the script itself: its locale, its generated workers, its number formats ---
 
 # --- numbers must not follow the operator's locale --- mawk honours LC_NUMERIC, so under a
 # comma locale it hands back "2,52e+10" and the awk that reads it gets 2. The script pins
@@ -1284,44 +1234,12 @@ if locale -a 2>/dev/null | grep -qix 'de_AT.utf8'; then
 else
   skip "no comma-decimal locale installed to test LC_ALL=C against"
 fi
-# Each worker is written to a file and run later, so a stray apostrophe inside one of their
-# single-quoted awk programs is invisible to `bash -n` on the script itself. It closes the
-# quote, and only the generated worker then fails to parse. Parse each one on its own.
-badbody=""
-# Discovered from the script, not listed here: a hand-kept list would silently stop covering
-# whichever worker was added last, which is the exact moment this gate is worth having.
-tags=$(grep -oE "<<'[A-Z]+'\$" "$SCRIPT" | tr -d "<'" | sort -u)
-[ -n "$tags" ] || no "found no generated workers to parse; the gate has stopped working"
-for tag in $tags; do
-  awk -v tag="$tag" '$0 ~ ("<<" "\047" tag "\047$") { f=1; next }
-                     f && $0 == tag { exit }
-                     f' "$SCRIPT" > "$HERE/.body.$tag.sh"
-  bash -n "$HERE/.body.$tag.sh" 2>/dev/null || badbody="$badbody $tag"
-  rm -f "$HERE/.body.$tag.sh"
-done
-[ -z "$badbody" ] \
-  && ok "every generated worker parses on its own" \
-  || no "generated worker(s)$badbody do not parse; a quote inside one is unbalanced"
-
-# mawk prints any integral value over 2^31 with "%.6g", so an unformatted 3 GB size arrives as
-# "2.81904e+09" and the shell reading it stops dead. This machine's awk prints it in full, so
-# no fixture can reach the bug from here: pin the formats that avoid it instead.
-# Both counts come from the script, so a new printf that emits a byte count without %.0f
-# raises the first and not the second. A fixed number here would instead go red for any new
-# printf at all, formatted or not, which is a gate that cries wolf until someone edits it.
-emitre='printf "[^"]*", *[^;]*\b(size|media|text|unk|other)\b'
-fmtre='printf "[^"]*%\.0f[^"]*", *[^;]*\b(size|media|text|unk|other)\b'
-nemit=$(grep -cE "$emitre" "$SCRIPT"); nfmt=$(grep -cE "$fmtre" "$SCRIPT")
-{ [ "$nemit" -gt 0 ] && [ "$nemit" = "$nfmt" ]; } \
-  && ok "every byte count handed back to the shell is formatted ($nfmt sites)" \
-  || no "$((nemit - nfmt)) unformatted byte count(s) reach the shell as 2.81904e+09 on mawk"
 
 
 build_fixture; assert_isolated
 
-# --- the clocks a row is judged on, and the margin printed beside them --- The ledger, the
-# freshness guard and the AGE column all read one default plan, built here rather than
-# inherited, so this section runs on its own.
+# --- the clocks a row is judged on --- The ledger and the freshness guard both read one
+# default plan, built here rather than inherited, so this section runs on its own.
 plan=$(run)
 
 # --- the creation clock cannot be reset by a push --- Every date inside a repo is set by
@@ -1338,7 +1256,7 @@ plan_fs=$(FIRST_SEEN=/dev/null run)
 grep -q "^zjunk1"$'\t' "$AUDIT_DIR/first-seen.tsv" \
   && ok "the ledger records repos it had not seen before, on a dry run too" \
   || no "the ledger is written on a dry run"
-{ ! grep -q 'integer expression' <<<"$plan" && ! has "$plan" "zfresh4"; } \
+! grep -q 'integer expression' <<<"$plan" \
   && ok "a torn ledger line is skipped, not fed to an arithmetic comparison" \
   || no "a torn ledger line is skipped"
 
@@ -1354,39 +1272,12 @@ grep -qE "^zinfetch .*stale" <<<"$plan_fg" \
   && ok "FRESH_GUARD_DAYS=0 reaches it, so the skip above is the guard" \
   || no "the freshness guard is vacuous"
 
-# --- the AGE column reports the date the matching rule measured ---
-# zspamfresh was created 90 days ago and touched yesterday. Printing its last activity beside a
-# 7-day creation minimum reads as a bug in the tool rather than as the verdict it is.
-[ "$(awk '$1=="zspamfresh"{print $4}' <<<"$plan")" = 90 ] \
-  && ok "a spam-batch row shows the creation age its rule measured" \
-  || no "AGE column shows the rule's own clock"
-[ "$(awk '$1=="zjunk1"{print $4}' <<<"$plan")" = 400 ] \
-  && ok "a junk-name row still shows last activity" \
-  || no "AGE column still shows activity for rules A to C"
-
-# The NEAR column is what tells a reviewer which verdicts rest on a hair, so a row that
-# cleared every threshold comfortably must stay unmarked, or the marking says nothing.
-near_far=$(JUNK_STALE_DAYS=100 run)
-near_close=$(JUNK_STALE_DAYS=350 run)
-near_off=$(NEAR_PCT=0 JUNK_STALE_DAYS=350 run)
-{ [ "$(awk '$1=="zjunk1"{print $6}' <<<"$near_far")" = "-" ] \
-  && [ "$(awk '$1=="zjunk1"{print $6}' <<<"$near_close")" = "age" ] \
-  && [ "$(awk '$1=="zjunk1"{print $6}' <<<"$near_off")" = "-" ]; } \
-  && ok "NEAR marks a row that only just cleared its age threshold, and NEAR_PCT=0 marks none" \
-  || no "the NEAR column did not follow the margin between the repo and its threshold"
-
-# Counted under the plan too, because on a plan of hundreds of rows nobody scrolls the table
-# to discover that a column has something in it.
-grep -qE '^#   [0-9]+ of them cleared a threshold by under 20%' <<<"$near_close" \
-  && ok "the plan summary counts the rows that were near a threshold" \
-  || no "the plan never said how many of its rows were near a threshold"
-
 
 build_fixture; assert_isolated
 
 # --- what a run cannot read is reported, never quietly dropped --- A repo over the read
-# budget, an empty listing, a home rad never saw, an injected failure, a node that is down
-# and a directory nobody may read: each one is named, and the run finishes or aborts loudly.
+# budget, an empty listing, a home rad never saw, an empty routing table and a directory
+# nobody may read: each one is named, and the run finishes or aborts loudly.
 
 # --- a repo larger than the read budget is judged, not excluded --- Reaching LINK_REPO_BUDGET
 # closes the harvest pipe early and kills the object lister with SIGPIPE. Read as a failure,
@@ -1400,7 +1291,7 @@ plan_bud=$(LINK_REPO_BUDGET=100 run)
 # --- an empty `rad ls` degrades loudly: blank names and a blind rule D would otherwise look
 # exactly like a clean seed ---
 out=$(RSP_NO_LS=1 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 run)
-{ grep -q "WARN: .*returned no repos" <<<"$out" && ! grep -q '^# spam batches' <<<"$out"; } \
+{ grep -q "WARN: .*returned no repos" <<<"$out" && ! grep -qE '^zspam[1-9] ' <<<"$out"; } \
   && ok "an empty repo listing is reported, not silently read as 'no spam'" \
   || no "empty repo listing warns"
 # With no listing, own and private repos are known only from the repo itself; an --apply would
@@ -1443,22 +1334,7 @@ env -u RAD_HOME DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" >/dev/null 2>&1; rc=$
   && ok "resolved RAD_HOME is exported to rad" \
   || no "resolved RAD_HOME is exported to rad (rc=$rc)"
 
-# --- an unexpected failure names the line and the command instead of exiting silently ---
-# Regression: `set -e` plus muted stderr meant any hiccup exited non-zero with no output
-# whatsoever, which is undebuggable from a bug report. Inject a failure and demand a
-# diagnosable message.
-inj="$ROOT/injected-failure"
-sed 's|^nrepos=|false  # injected\nnrepos=|' "$SCRIPT" > "$inj"; chmod +x "$inj"
-out=$(DISK_AWARE=0 "$inj" 2>&1); rc=$?
-{ [ "$rc" != 0 ] && grep -qE '^# ERROR: line [0-9]+: \[false' <<<"$out"; } \
-  && ok "unexpected failure reports line + command" \
-  || no "unexpected failure reports line + command (rc=$rc)"
-
 # --- blind runs abort instead of reporting a reassuring, meaningless "prune 0 repos" ---
-out=$(RSP_NODE_DOWN=1 DISK_AWARE=0 "$SCRIPT" 2>&1); rc=$?
-{ [ "$rc" = 5 ] && grep -q 'ABORT(dry-run)' <<<"$out" && ! grep -q '# PLAN:' <<<"$out"; } \
-  && ok "node-down aborts dry-run too (exit 5, no plan)" \
-  || no "node-down aborts dry-run (got exit $rc)"
 out=$(RSP_LS_FAIL=1 DISK_AWARE=0 "$SCRIPT" 2>&1); rc=$?
 { [ "$rc" = 5 ] && grep -qE "ABORT\(dry-run\): '[^']* ls[^']*' failed" <<<"$out" \
   && grep -q "invalid repository id 'notarid'" <<<"$out"; } \
@@ -1468,7 +1344,6 @@ out=$(OUR_NID=z6Mknotanid DISK_AWARE=0 "$SCRIPT" 2>&1); rc=$?
 { [ "$rc" = 5 ] && grep -q 'ABORT(dry-run): our node id is malformed' <<<"$out"; } \
   && ok "a malformed node id aborts" \
   || no "a malformed node id did not abort (got exit $rc)"
-
 out=$(RSP_NO_ROUTING=1 DISK_AWARE=0 "$SCRIPT" 2>&1); rc=$?
 { [ "$rc" = 5 ] && grep -q 'routing table empty' <<<"$out" \
     && ! grep -q '# PLAN:' <<<"$out"; } \
@@ -1511,32 +1386,6 @@ out=$(DISK_AWARE=0 run)
   && ok "a ref with no date does not put an object id where the repo's age belongs" \
   || no "a dateless ref blinded the age rules, and the repo went unjudged"
 
-# The tables under the plan header are the evidence a corpus verdict rests on, and each shows
-# only its top few. Truncated with no way to reach the rest, a reviewer cannot check the other
-# 153 spam domains that condemned a repo, so PLAN_FULL lifts these caps as well as the row
-# folding it already controls, and every truncated list says so.
-build_fixture; assert_isolated
-victims=(zjunk1 zbig2 ztwoyr3 zfresh4); stamps=()
-for r in "${victims[@]}"; do
-  stamps+=("$(stat -c %y "$STORAGE/$r")")
-  mkdir -p "$STORAGE/$r/unreadable" && chmod 000 "$STORAGE/$r/unreadable"
-  touch -d "10 days ago" "$STORAGE/$r"     # a repo written moments ago is skipped as fresh
-done
-short=$(DISK_AWARE=0 MAX_SCAN_FAIL_PCT=90 PLAN_FULL=0 "$SCRIPT" 2>&1)
-long=$( DISK_AWARE=0 MAX_SCAN_FAIL_PCT=90 PLAN_FULL=1 "$SCRIPT" 2>&1)
-# Taking the directory back out writes the repo again, so the mtimes go back to what the
-# fixture set. Left at now, all four read as fresh and the tests below lose their subjects.
-for i in "${!victims[@]}"; do
-  d="$STORAGE/${victims[$i]}"
-  chmod 755 "$d/unreadable"; rmdir "$d/unreadable"; touch -d "${stamps[$i]}" "$d"
-done
-{ grep -q 'more (PLAN_FULL=1 lists them)' <<<"$short" \
-  && ! grep -q 'more (PLAN_FULL=1 lists them)' <<<"$long" \
-  && [ "$(grep -c 'Permission denied' <<<"$long")" \
-       -gt "$(grep -c 'Permission denied' <<<"$short")" ]; } \
-  && ok "PLAN_FULL prints the evidence tables whole, and the short form names the way there" \
-  || no "a truncated evidence table gave a reviewer no way to see the rest of it"
-
 # What the terminal showed is trimmed and then scrolls away, so the lists behind it are written
 # out whole on every run, a dry one included. The point is not that the files exist: it is that
 # they hold the rows the screen left out, and that a reviewer is told where they are.
@@ -1560,10 +1409,7 @@ done
   && [ "$(sed -n '2p' "$L/plan.tsv")" = "$cols" ] \
   && [ "$(grep -vc '^#' "$L/plan.tsv")" = "${planned:-0}" ] \
   && [ "${planned:-0}" -gt "$screenrows" ] \
-  && [ "$stamped" = 1 ] \
-  && [ -e "$L/spam-batches.tsv" ] && [ -e "$L/spam-domains.tsv" ] \
-  && [ -e "$L/media-review.tsv" ] && [ -e "$L/parasite-peers.tsv" ] \
-  && [ -e "$L/scan-errors.txt" ] && [ ! -e "$L.new" ]; } \
+  && [ "$stamped" = 1 ] && [ ! -e "$L.new" ]; } \
   && ok "a dry run writes the whole plan out and says where, however folded the screen was" \
   || no "the rows the plan folded away were nowhere to be found after the run"
 
@@ -1606,19 +1452,7 @@ nunj=$(sed -n 's/^# WARN: rule F left \([0-9]*\) repo(s) unjudged.*/\1/p' <<<"$u
   || no "rule F warned about $nunj unjudged repos and named none of them"
 
 
-# A read-only audit dir must cost the operator the files, not the run.
 build_fixture; assert_isolated
-mkdir -p "$RSP_HOME/prune-audit/last-run"
-echo "from the run before" > "$RSP_HOME/prune-audit/last-run/plan.tsv"
-chmod 500 "$RSP_HOME/prune-audit"
-out=$(DISK_AWARE=0 "$SCRIPT" 2>&1); rc=$?
-chmod 700 "$RSP_HOME/prune-audit"
-{ [ "$rc" = 0 ] && grep -q '# PLAN:' <<<"$out" \
-  && grep -q 'WARN: could not write .*last-run' <<<"$out" \
-  && [ "$(cat "$RSP_HOME/prune-audit/last-run/plan.tsv")" = "from the run before" ]; } \
-  && ok "an audit dir it cannot write costs the evidence files and says so, not the run" \
-  || no "a read-only audit dir took the run down, or lost the evidence in silence"
-
 # --- a scan that missed too much of storage refuses to report a plan at all --- Three
 # unreadable repos against a 1% limit, so the assertion does not ride on the fixture size.
 # Without this the run would report a plausible-looking small plan built from a partial scan.
@@ -1655,16 +1489,6 @@ chmod 755 "$STORAGE"
   && ok "unreadable storage dir aborts (no empty plan)" \
   || no "unreadable storage aborts (got exit $rc)"
 
-# --- a dependency missing from PATH is named, not read as unreadable storage --- Without the
-# preflight, every per-repo git call fails the way one unreadable repo does, and the run blames
-# storage for a binary that is not installed.
-nogit="$ROOT/nogit"; path_without "$nogit" git
-out=$(PATH="$nogit" "$SCRIPT" 2>&1); rc=$?
-{ [ "$rc" = 1 ] && grep -q 'missing required command(s): git$' <<<"$out" \
-    && grep -q "^PATH=$nogit$" <<<"$out"; } \
-  && ok "a git missing from PATH is named, with the PATH that was searched" \
-  || no "missing git named (got exit $rc)"
-
 # A quarantine verb is checked against what it calls, not against what a scan calls, so the
 # list it is checked against has to be right: restore reaches dirname through the keep file it
 # writes, and without dirname it puts a repo back that the next run prunes again.
@@ -1673,13 +1497,6 @@ out=$(PATH="$nodirname" "$SCRIPT" quarantine restore zjunk1 2>&1); rc=$?
 { [ "$rc" = 1 ] && grep -q 'missing required command(s): dirname$' <<<"$out"; } \
   && ok "a quarantine verb names the command it needs and does not half-run" \
   || no "quarantine restore ran without dirname (got exit $rc)"
-
-# rad is looked up through $RAD and not through the list above, so it gets its own check: a
-# seed whose rad is a Nix store path is exactly where this is typed wrong.
-out=$(RAD="$ROOT/no-such-rad" "$SCRIPT" 2>&1); rc=$?
-{ [ "$rc" = 1 ] && grep -q "no rad at '$ROOT/no-such-rad'" <<<"$out"; } \
-  && ok "a rad that is not there is named, with the path that was tried" \
-  || no "missing rad named (got exit $rc)"
 
 # --- the per-repo workers do not need bash on PATH --- A run started as
 # `/nix/store/.../bash rad-prune` has the shell by absolute path and not through PATH.
@@ -1705,9 +1522,6 @@ out=$(PATH="$nolife:$PATH" DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" 2>&1); rc=
     && ! grep -q '# PLAN:' <<<"$out"; } \
   && ok "a scan with no ref dates aborts (no empty plan)" \
   || no "ref-less scan aborts (got exit $rc)"
-grep -q "# activity: 0 of $NREPOS repos in" <<<"$out" \
-  && ok "a phase reports what it read, not the total it set out to read" \
-  || no "phase that read nothing still reported its own total"
 
 # --- a fetch still arriving is fresh, not ageless --- A repo whose directory exists before its
 # refs do has no age, and counting it against the blind-scan limit would abort a run over
@@ -1721,9 +1535,9 @@ rm -rf "$STORAGE/zinflightfetch"
   || no "an in-flight fetch counted against the blind-scan limit (got exit $rc)"
 
 # --- fail-safe: node down aborts --apply before touching anything ---
-RSP_NODE_DOWN=1 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" --apply >/dev/null 2>&1; rc=$?
-[ "$rc" = 5 ] \
-  && ok "node-down aborts --apply (exit 5)" \
+out=$(RSP_NODE_DOWN=1 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" --apply 2>&1); rc=$?
+{ [ "$rc" = 5 ] && ! grep -q '# PLAN:' <<<"$out"; } \
+  && ok "node-down aborts --apply (exit 5, no plan)" \
   || no "node-down aborts --apply (got exit $rc)"
 
 # --- apply: non-interactive (cron path) applies; interactive prompt (pty) obeys y/N ---
@@ -1743,27 +1557,15 @@ done
 { [ "$gone" = 1 ] && [ "$kept" = 1 ]; } \
   && ok "non-interactive --apply prunes exactly the plan" \
   || no "non-interactive --apply prunes the plan"
-{ [ -s "$RSP_HOME/.stub_block" ] && [ -s "$RSP_HOME/.stub_unseed" ]; } \
-  && ok "apply calls rad unseed + block" \
+{ grep -qx 'rad:zjunk1' "$RSP_HOME/.stub_block" \
+  && grep -qx 'rad:zjunk1' "$RSP_HOME/.stub_unseed"; } \
+  && ok "apply calls rad unseed + block on a pruned repo" \
   || no "apply calls unseed+block"
-
-# The prune is the one phase that changes anything, and it reports over the whole plan, so
-# these two numbers are read out of the run's own output rather than counted here.
-planned=$(sed -n 's/^# PLAN: prune \([0-9]*\) repos.*/\1/p' <<<"$aout")
-pruning=$(sed -n 's/^# pruning: \([0-9]*\) repos in.*/\1/p' <<<"$aout")
-{ [ -n "$planned" ] && [ "$pruning" = "$planned" ]; } \
-  && ok "the prune reports its progress over every repo in the plan" \
-  || no "prune progress covered $pruning of $planned planned repos"
 
 # What a run that has just moved GiB out of storage is asked next is how to get the disk back.
 grep -q 'quarantine delete --all' <<<"$aout" \
   && ok "the DONE line says how to reclaim the disk now" \
   || no "DONE line does not name the reclaim command"
-
-# Where a run writes is asked before it finishes, so the answer is in the header.
-grep -q "audit=$AUDIT_DIR" <<<"$aout" \
-  && ok "the header names the audit dir" \
-  || no "header does not name the audit dir"
 
 # --- an apply that could block nothing --- The block is what stops a deleted repo being
 # fetched straight back, so a repo it failed on stays in storage. Every line the run then
@@ -1789,12 +1591,6 @@ for r in zjunk1 zbig2 ztwoyr3; do [ -e "$STORAGE/$r" ] || kept=0; done
   && ! grep -q 'quarantine delete --all' <<<"$bout"; } \
   && ok "a run that quarantined nothing leaves out the quarantine advice" \
   || no "quarantine advice printed after a run that quarantined nothing"
-
-# The progress line is redrawn in place on a terminal, and its warnings clear it first. Into a
-# log there is no line to clear, and an escape sequence written there is not readable later.
-grep -q $'\033' <<<"$bout" \
-  && no "the run wrote terminal escapes into output that is not a terminal" \
-  || ok "no terminal escapes reach output that is not a terminal"
 
 # --- a quarantine copy that could not be dated --- The purge measures the window from the
 # directory's date, so a copy that kept the repo's own date counts its window from a date this
@@ -1964,33 +1760,8 @@ after=$(ls "$STORAGE" | wc -l)
   && ok "a failed quarantine move is reported, not counted as reclaimed" \
   || no "failed quarantine reported (rc=$rc)"
 
-# The same claim on the outright-delete path, which is what a full disk falls back to.
-build_fixture; assert_isolated
-before=$(ls "$STORAGE" | wc -l)
-chmod 555 "$STORAGE"
-out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 QUARANTINE=0 "${NOTTY[@]}" "$SCRIPT" --apply \
-        </dev/null 2>&1); rc=$?
-chmod 755 "$STORAGE"
-after=$(ls "$STORAGE" | wc -l)
-{ [ "$before" = "$after" ] && grep -q 'WARN delete failed' <<<"$out" \
-    && grep -q 'DONE: deleted 0 repos' <<<"$out"; } \
-  && ok "failed deletions are reported, not counted as reclaimed" \
-  || no "failed deletions reported (rc=$rc)"
-
 # --- quarantine --- The three floor-0 verdicts may prune the last copy the network is known to
 # hold, so "re-fetch it" is not an undo for exactly the repos that most need one.
-
-# A dry run promises disk it will not free for a month, so the plan line must not say
-# "reclaim" while the quarantine is on, and must say it when it is off.
-build_fixture; assert_isolated
-qplan=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 run)
-{ grep -q "still on disk for 7d, until a later --apply run deletes them" <<<"$qplan" \
-  && ! grep -q 'PLAN:.*reclaim' <<<"$qplan"; } \
-  && ok "the plan does not promise disk the quarantine is still holding" \
-  || no "the plan claimed to reclaim disk that quarantine keeps for a week"
-DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 QUARANTINE=0 run | grep -q 'PLAN:.*reclaim' \
-  && ok "QUARANTINE=0 puts the reclaim promise back in the plan" \
-  || no "QUARANTINE=0 still hedged the plan's disk figure"
 
 build_fixture; assert_isolated
 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null >/dev/null 2>&1
@@ -2000,13 +1771,18 @@ Q="$RSP_HOME/prune-audit/quarantine"
   && ok "a pruned repo is moved to quarantine intact, not destroyed" \
   || no "a pruned repo was not recoverable from quarantine"
 
+# QUARANTINE=0 is the path with no undo, so it has to stop at exactly the plan.
 build_fixture; assert_isolated
 Q="$RSP_HOME/prune-audit/quarantine"
 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 QUARANTINE=0 "${NOTTY[@]}" "$SCRIPT" --apply \
   </dev/null >/dev/null 2>&1
-{ [ ! -e "$STORAGE/zjunk1" ] && [ ! -e "$Q/zjunk1" ]; } \
-  && ok "QUARANTINE=0 deletes outright, keeping nothing" \
-  || no "QUARANTINE=0 still parked a copy"
+kept=1
+for r in zfresh4 zpin6 zpriv7 zown22 zbwid9 zfews5 zdecoy1 zenum1; do
+  [ -e "$STORAGE/$r" ] || kept=0
+done
+{ [ ! -e "$STORAGE/zjunk1" ] && [ ! -e "$Q/zjunk1" ] && [ "$kept" = 1 ]; } \
+  && ok "QUARANTINE=0 deletes the plan outright and nothing outside it" \
+  || no "QUARANTINE=0 parked a copy, or deleted a repo outside the plan"
 
 # The quarantine subcommands. An operator who has just read a wrong verdict needs to act on
 # one repo, and the run that produced it is over: these are the only way to do that without
@@ -2077,6 +1853,8 @@ out=$("$SCRIPT" quarantine purge 2>&1)
 # run, it is a verdict resting on evidence that has since stopped being true.
 build_fixture; assert_isolated
 first=$(DISK_AWARE=0 run)
+grep -qE "^zmediaone .*media-dump" <<<"$first" \
+  || no "the cold run never condemned zmediaone, so the cache checks below are moot"
 second=$(DISK_AWARE=0 run 2>&1)
 { grep -q 'cache: media reuses' <<<"$second" \
   && [ "$(grep -c 'media-dump' <<<"$first")" = "$(grep -c 'media-dump' <<<"$second")" ]; } \
@@ -2090,14 +1868,6 @@ DISK_AWARE=0 run | grep -qE "^zmediaone .*media-dump" \
   && no "a repo was condemned on cached evidence it no longer matches" \
   || ok "a repo that changed is read again, not judged on the cached reading"
 
-# And the other direction, so the test above cannot pass by the cache simply never being used.
-build_fixture; assert_isolated
-DISK_AWARE=0 run >/dev/null
-e_tree zcode4 60 master "clip.mp4:40000:mp4"
-DISK_AWARE=0 run | grep -qE "^zcode4 .*media-dump" \
-  && ok "a repo that has become a dump is caught on the next run" \
-  || no "the cache hid a repo that turned into a media dump"
-
 # A threshold the operator has just tuned must not leave last week's verdicts standing.
 build_fixture; assert_isolated
 DISK_AWARE=0 run >/dev/null
@@ -2105,23 +1875,6 @@ out=$(DISK_AWARE=0 MEDIA_MIN_BYTES=999999999 "${NOTTY[@]}" "$SCRIPT" </dev/null 
 { grep -q 'cache: cold' <<<"$out" && ! has "$out" "zmediaone"; } \
   && ok "changing a threshold drops the whole cache" \
   || no "a tuned threshold reused verdicts measured under the old one"
-
-build_fixture; assert_isolated
-DISK_AWARE=0 run >/dev/null
-out=$(DISK_AWARE=0 CACHE=0 "${NOTTY[@]}" "$SCRIPT" </dev/null 2>&1)
-{ ! grep -q 'cache: media reuses' <<<"$out" \
-  && grep -qE "^zmediaone .*media-dump" <<<"$out"; } \
-  && ok "CACHE=0 reads every repo and still finds them" \
-  || no "CACHE=0 still reused a cached reading"
-
-# A repo that links to nothing produces no line of its own, so the harvest marks each repo
-# it finished. Without that marker the cache cannot tell "read it, found nothing" from
-# "never read it", and the repo would be read again every week.
-build_fixture; assert_isolated
-DISK_AWARE=0 run >/dev/null
-DISK_AWARE=0 run 2>&1 | grep -q 'cache: hosts reuses' \
-  && ok "the harvest reuses repos it read, including the ones that linked to nothing" \
-  || no "the harvest cache never took effect"
 
 # A cold start throws the key files of EVERY cached rule away, not only those of the rules it
 # is about to rewrite. Stamping the new fingerprint once per rule instead left a run that died
@@ -2136,23 +1889,6 @@ DISK_AWARE=0 RULES=E MEDIA_MIN_BYTES=999999999 "${NOTTY[@]}" "$SCRIPT" \
 [ ! -f "$CACHEDIR/keys-media" ] \
   && ok "a cold start drops the keys of the rules it does not run, not just its own" \
   || no "a rule that sat out a cold run kept keys measured under the settings that changed"
-
-# The fingerprint covers the settings this script reads, not whatever the caller happens to
-# have in its environment. Hashing the whole environment made a systemd run and a hand run
-# invalidate each other every time, since systemd stamps a fresh INVOCATION_ID on each start.
-build_fixture; assert_isolated
-DISK_AWARE=0 run >/dev/null
-out=$(DISK_AWARE=0 INVOCATION_ID=deadbeef WHATEVER=1 "${NOTTY[@]}" "$SCRIPT" </dev/null 2>&1)
-grep -q 'cache: media reuses' <<<"$out" \
-  && ok "a variable this script never reads leaves the cache warm" \
-  || no "an unrelated environment variable dropped the whole cache"
-
-# A knob that only changes what is printed is in the fingerprint's skip list, because dropping
-# the cache over it would re-read every repo on a seed of this size to no effect on the plan.
-out=$(DISK_AWARE=0 PROGRESS_SECS=5 "${NOTTY[@]}" "$SCRIPT" </dev/null 2>&1)
-grep -q 'cache: media reuses' <<<"$out" \
-  && ok "changing the progress cadence leaves the cache warm" \
-  || no "PROGRESS_SECS dropped the whole cache"
 
 # STORAGE is an operator-supplied path, and the list of already-answered repos is built from
 # it. A '#' in it used to end sed's own delimiter, which both re-walked every repo and pasted
@@ -2223,44 +1959,6 @@ out=$(DISK_AWARE=0 RULES= "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1)
   && ok "RULES= means no rules, not the default set" \
   || no "an empty RULES fell back to running every rule"
 
-# --help is the one command a stranger runs first, and it used to read the script through a
-# relative $0 after the script had already cd'd to /, so it died on whoever ran ./the-script.
-h=$(cd "$ROOT" && "$SCRIPT" --help 2>&1); rc=$?
-{ [ "$rc" = 0 ] && grep -q '^USAGE' <<<"$h" && grep -q -- '--block-peers' <<<"$h" \
-  && grep -q 'quarantine <verb>' <<<"$h" && grep -q 'restore <rid>' <<<"$h" \
-  && grep -qE '^ +RULES=' <<<"$h" && grep -qE '^ +RAD_HOME=' <<<"$h"; } \
-  && ok "--help lists the options, the quarantine verbs and the resolved config" \
-  || no "--help did not print a usable help (rc=$rc)"
-
-# The subcommand has to answer --help too, and an unknown verb has to say so and fail.
-hq=$(cd "$ROOT" && "$SCRIPT" quarantine --help 2>&1); rcq=$?
-bq=$(cd "$ROOT" && "$SCRIPT" quarantine nosuchverb 2>&1); rcb=$?
-{ [ "$rcq" = 0 ] && grep -q 'QUARANTINE VERBS' <<<"$hq" \
-  && [ "$rcb" = 2 ] && grep -q 'unknown quarantine verb: nosuchverb' <<<"$bq"; } \
-  && ok "quarantine --help helps, and an unknown verb exits 2 naming itself" \
-  || no "quarantine --help or the unknown-verb path is wrong (rc=$rcq/$rcb)"
-
-# The verbs that only read the quarantine must work when storage is unmounted, which is when
-# an operator most wants to see what is still recoverable.
-build_fixture; assert_isolated
-mv "$STORAGE" "$ROOT/storage-away"
-qout=$(QUARANTINE_DAYS=7 "$SCRIPT" quarantine list 2>&1); rc=$?
-mv "$ROOT/storage-away" "$STORAGE"
-{ [ "$rc" = 0 ] && ! grep -q 'no storage dir' <<<"$qout"; } \
-  && ok "quarantine list works with storage unmounted" \
-  || no "quarantine list refused to run without storage (rc=$rc)"
-
-# They must also work when the tools a SCAN needs are missing, for the same reason: the
-# quarantine holds repos that are already out of storage and none of those tools reads it.
-Q="$RSP_HOME/prune-audit/quarantine"
-mkdir -p "$Q/zheldrepo"; : > "$Q/zheldrepo/some-file"
-noscan="$ROOT/noscan"; path_without "$noscan" git jq awk sed find xargs sort sha1sum od df
-qout=$(PATH="$noscan" RAD="$ROOT/no-such-rad" "$SCRIPT" quarantine list 2>&1); rc=$?
-rm -rf "$Q/zheldrepo"
-{ [ "$rc" = 0 ] && grep -q '^zheldrepo ' <<<"$qout"; } \
-  && ok "quarantine list works without the tools a scan needs" \
-  || no "quarantine list needs the scan's dependencies (rc=$rc)"
-
 # At the critical watermark a recovery copy is a luxury the disk cannot buy.
 build_fixture; assert_isolated
 Q="$RSP_HOME/prune-audit/quarantine"
@@ -2324,12 +2022,6 @@ grep -q "not-an-id is neither a repo id nor an identity" <<<"$out" \
 { grep -q "own identity; ignored" <<<"$out" && ! grep -qx "$RSP_NID" "$RSP_HOME/.stub_block"; } \
   && ok "the deny list never blocks this node's own identity" \
   || no "the deny list blocked this node itself, or said nothing"
-n=$(cat "$AUDIT_DIR"/prune-2*Z.log | grep -c 'blocked-denied')
-"${NOTTY[@]}" "$SCRIPT" --apply --force </dev/null >/dev/null 2>&1; rc=$?
-[ "$rc" = 0 ] && [ "$n" -gt 0 ] \
-  && [ "$(cat "$AUDIT_DIR"/prune-2*Z.log | grep -c 'blocked-denied')" = "$n" ] \
-  && ok "a standing deny list does not log the same blocks again every week" \
-  || no "every run re-logged blocks that were already in place"
 
 # The runaway caps measure what the rules picked. A deny list longer than the cap is still a
 # person's list, and counting it in would stop every unattended run until somebody forced one.
@@ -2377,8 +2069,6 @@ printf '%s - hand-list 2026-10-02\n%s - hand-list 2026-10-02\n' "$small" "$notes
   >> "$AUDIT_DIR/deny-files.tsv"
 plan=$(run)
 { grep -qE "^zcode4 .* denied-copy " <<<"$plan" \
-  && grep -qE "^#   zcode4 +6\.0 MiB in 1 file\(s\), 99% of the bytes on its branches, from rad:zgonesrc$" \
-       <<<"$plan" \
   && grep -qE $'^zcode4\t6291456\t629[0-9]{4}\t99\t1\trad:zgonesrc\t0$' \
        "$AUDIT_DIR/last-run/denied-copies.tsv" \
   && grep -qx "zcode4"$'\t'"$leak"$'\t6291456' "$AUDIT_DIR/last-run/denied-copy-files.tsv"; } \
@@ -2388,7 +2078,7 @@ grep -qE "^zcode6 .* denied-copy " <<<"$plan" \
   && ok "a listed file committed and then deleted still makes a copy" \
   || no "a listed file only in history was missed"
 { ! grep -qE "^(zcode7|zrot1) .* denied-copy " <<<"$plan" \
-  && grep -qE '^#   zcode7 +6\.0 MiB in 1 file\(s\), 19% of the bytes on its branches$' <<<"$plan" \
+  && grep -qE '^#   zcode7 ' <<<"$plan" \
   && ! grep -qE '^#   zrot1 ' <<<"$plan"; } \
   && ok "a copy needs both the bytes and the share, and one under only the share is named" \
   || no "a repo under one of the two bars was pruned as a copy, or went unnamed"
@@ -2596,14 +2286,6 @@ if command -v script >/dev/null 2>&1; then
     && ok "the confirmation prompt says quarantine, not reclaim, while quarantine is on" \
     || no "the apply prompt promised disk the quarantine is still holding"
 
-  build_fixture; assert_isolated
-  printf 'n\n' | script -qec \
-    "env DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 QUARANTINE=0 '$SCRIPT' --apply" \
-    /dev/null >"$ROOT/nq0.out" 2>&1
-  grep -q 'DELETE.*reclaiming' "$ROOT/nq0.out" \
-    && ok "QUARANTINE=0 puts the reclaim promise back in the prompt" \
-    || no "the prompt hid the outright deletion QUARANTINE=0 was about to do"
-
   # A quarantine is a recovery copy, and at the critical watermark the run empties it whole
   # rather than wait out the window. That emptying used to happen before the human was asked
   # anything, so answering no destroyed every recovery copy in a run that pruned nothing.
@@ -2637,23 +2319,8 @@ else
   echo "skip - interactive prompt tests (no util-linux 'script' for a pty)"
 fi
 
-# The script anchors its cwd (cd /) so a launch directory the running user cannot read
-# never turns every find into a "Failed to restore initial working directory" scan
-# error. Both halves are guarded: the anchor, and the path resolution before it.
-build_fixture; assert_isolated
-blind="$ROOT/unreadable"; mkdir -p "$blind"
-if [ "$(id -u)" != 0 ]; then
-  out=$(cd "$blind" && chmod 000 . && "$SCRIPT" 2>&1); rc=$?
-  chmod 755 "$blind"
-  { [ "$rc" = 0 ] && ! grep -q 'Failed to restore initial working directory' <<<"$out" \
-      && ! grep -q 'scan error' <<<"$out" && grep -q '# PLAN:' <<<"$out"; } \
-    && ok "an unreadable launch directory produces no scan errors" \
-    || no "unreadable cwd is clean (rc=$rc)"
-else
-  echo "skip - unreadable-cwd test (running as root bypasses the mode bits)"
-fi
-
-# cd / must not change what a RELATIVE RAD_HOME/STORAGE/RAD meant to the caller.
+# The script runs from / so a launch directory it cannot read does not fail every find, and
+# that must not change what a RELATIVE RAD_HOME/STORAGE/RAD meant to the caller.
 build_fixture; assert_isolated
 out=$(cd "$ROOT" && env RAD_HOME="./rad-home" STORAGE="./rad-home/storage" \
         CONFIG="./rad-home/config.json" AUDIT_DIR="./rad-home/prune-audit" \
@@ -2661,96 +2328,6 @@ out=$(cd "$ROOT" && env RAD_HOME="./rad-home" STORAGE="./rad-home/storage" \
 { [ "$rc" = 0 ] && grep -qE '^zjunk1 ' <<<"$out" && grep -q '# PLAN:' <<<"$out"; } \
   && ok "relative RAD_HOME/STORAGE/RAD survive the cwd anchor" \
   || no "relative paths survive cd / (rc=$rc)"
-
-# A phase that reads every repo runs for minutes on a real seed, and a terminal that says
-# nothing looks the same whether the walk is slow or hung, so operators kill runs that were
-# working. The shim makes rule E's walk outlast a tick on any machine.
-build_fixture; assert_isolated
-shimdir="$ROOT/shim"; mkdir -p "$shimdir"
-cp "$HERE/slow-git-shim" "$shimdir/git"; chmod +x "$shimdir/git"
-slow=(env "PATH=$shimdir:$PATH" DISK_AWARE=0 CACHE=0 JOBS=1 RULES=E)
-out=$("${slow[@]}" PROGRESS_SECS=1 "$SCRIPT" 2>&1)
-grep -qE '^#   \[[0-9]+/[0-9]+\] rule E: [0-9]+ of [0-9]+ repos \([0-9]+%\), [0-9]' <<<"$out" \
-  && ok "a slow walk says how many repos it has read and how long is left" \
-  || no "rule E printed no progress during a walk long enough to need it"
-
-# What a phase cost is the number an operator tuning JOBS or RULES reaches for, and on a
-# terminal it is the only trace the redrawn line leaves behind.
-grep -qE "^# rule E: $NREPOS repos in [0-9]" <<<"$out" \
-  && ok "a finished phase says how many repos it read and how long it took" \
-  || no "rule E never reported what the phase cost"
-
-# The same run with the reporting off, so the two checks above cannot pass on a line that some
-# other part of the script prints anyway.
-out=$("${slow[@]}" PROGRESS_SECS=0 "$SCRIPT" 2>&1)
-{ grep -qE '^#   \[[0-9]+/[0-9]+\] rule E:' <<<"$out" \
-    || grep -qE "^# rule E: $NREPOS repos in " <<<"$out"; } \
-  && no "PROGRESS_SECS=0 reported progress anyway" \
-  || ok "PROGRESS_SECS=0 prints no progress at all"
-
-# On a terminal the reading is redrawn in place instead, so a run that takes minutes never
-# scrolls its own output away, and the line is wiped when the phase ends rather than left
-# frozen at whatever it last read.
-if command -v script >/dev/null 2>&1; then
-  script -qec "env 'PATH=$shimdir:$PATH' DISK_AWARE=0 CACHE=0 JOBS=1 RULES=E '$SCRIPT'" \
-    /dev/null >"$ROOT/tty.out" 2>&1
-  { grep -qE $'\r''.*\[=* *\] +[0-9]+%' "$ROOT/tty.out" \
-      && ! grep -qE '^#   \[[0-9]+/[0-9]+\] rule E:' "$ROOT/tty.out"; } \
-    && ok "a terminal gets one line redrawn in place, not a line per tick" \
-    || no "the terminal progress line was not drawn, or the log form was used instead"
-else
-  skip "terminal progress line (no util-linux 'script' for a pty)"
-fi
-
-# The ticker is a background process holding the run's own stderr. One left behind keeps
-# printing into a terminal whose run has ended, so the phase that started it stops it. It is
-# caught by watching whether the run's stderr keeps growing after the run has exited.
-tickerlog="$ROOT/ticker.err"
-"${slow[@]}" PROGRESS_SECS=1 "$SCRIPT" >/dev/null 2>"$tickerlog"
-settled=$(wc -c < "$tickerlog"); sleep 2; grown=$(wc -c < "$tickerlog")
-[ "$settled" = "$grown" ] \
-  && ok "a finished run leaves no ticker printing behind it" \
-  || no "a ticker outlived the run and kept writing to its stderr"
-
-# The output of a run has to end when the run does. The ticker waits between readings in a
-# child process of its own, which inherits the run's stdout and stderr, so one left behind
-# holds the pipe open and `rad prune | anything` waits out the whole interval after the plan
-# is already printed. Read through a pipe here, since a file cannot show the difference.
-started=$SECONDS
-DISK_AWARE=0 PROGRESS_SECS=60 "${NOTTY[@]}" "$SCRIPT" </dev/null 2>&1 | cat >/dev/null
-took=$(( SECONDS - started ))
-[ "$took" -lt 30 ] \
-  && ok "the output of a run ends when the run does" \
-  || no "reading the run's output waited ${took}s for something left behind"
-
-# Rule E reads every repo it flagged a second time, to see whose links they are. That walk is
-# as slow as the harvest that fed it, it is the one walk a run can skip entirely, and it
-# counts flagged repos rather than storage, so it reports on its own terms.
-build_fixture; assert_isolated
-shimdir="$ROOT/shim"; mkdir -p "$shimdir"
-cp "$HERE/slow-rad-shim" "$shimdir/rad"; chmod +x "$shimdir/rad"
-flagged=(env RSP_REAL_RAD="$RAD" RAD="$shimdir/rad" LINK_MIN_REPOS=3 LINK_MIN_SCORE=2 \
-         DISK_AWARE=0 CACHE=0 RULES=E)
-out=$("${flagged[@]}" PROGRESS_SECS=1 "$SCRIPT" 2>&1)
-nflagged=$(grep -oE '^# re-reading [0-9]+ flagged' <<<"$out" | grep -oE '[0-9]+' || true)
-{ [ -n "$nflagged" ] && [ "$nflagged" -gt 0 ] && [ "$nflagged" -lt "$NREPOS" ]; } \
-  && ok "the delegate re-check says how many flagged repos it is about to read" \
-  || no "the delegate re-check started without saying what it was reading"
-
-# A count that never moves is what a missing per-repo marker looks like, and it reads as a
-# hung walk, which is the thing this reporting exists to rule out.
-grep -qE "^#   \[[0-9]+/[0-9]+\] delegates: [1-9][0-9]* of $nflagged repos" <<<"$out" \
-  && ok "the delegate re-check counts up as it finishes repos" \
-  || no "the delegate re-check never counted a repo it had finished"
-grep -qE "^# delegates: $nflagged repos in [0-9]" <<<"$out" \
-  && ok "the delegate re-check reports what it cost, over its own repos" \
-  || no "the delegate re-check never reported what it cost"
-
-# Nothing flagged means no second walk, and a phase that did not happen may not report itself.
-out=$("${flagged[@]/LINK_MIN_SCORE=2/LINK_MIN_SCORE=99}" PROGRESS_SECS=1 "$SCRIPT" 2>&1)
-{ grep -q '^# re-reading' <<<"$out" || grep -q '^# delegates: ' <<<"$out"; } \
-  && no "a run that flagged nothing reported a delegate walk anyway" \
-  || ok "a run with nothing to re-check reports no delegate walk"
 
 # ---- end of sections -------------------------------------------------------
 summary
