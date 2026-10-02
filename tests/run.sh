@@ -571,6 +571,32 @@ assert_isolated(){
 
 # run the real script against the fixture; echoes combined output, sets RC
 run(){ local out; out=$("$SCRIPT" "$@" 2>&1); RC=$?; printf '%s' "$out"; }
+# One past applied run, as the ratchet reads it: an audit log and the history.log line naming it.
+# $1 = which run (1-9, oldest first), then any of: "reason:count" for what it pruned,
+# "held:<rule>" for a rule it held back, "rules:<letters>" for the rules it ran with.
+past_run(){
+  local i=$1 spec reason count r log="prune-2026010${1}T000000Z.log" rules="" held=""
+  shift
+  for spec in "$@"; do
+    case $spec in rules:*) rules="  rules=${spec#rules:}" ;; held:*) held+=" ${spec#held:}" ;; esac
+  done
+  mkdir -p "$AUDIT_DIR"
+  { printf '# 2026-01-0%sT00:00:00Z  pressure=0%%%s\n' "$i" "$rules"
+    for r in $held; do printf '# held back: rule %s, 99 repos (usual 0, limit 20)\n' "$r"; done
+    for spec in "$@"; do
+      case $spec in rules:*|held:*) continue ;; esac
+      reason=${spec%%:*}; count=${spec#*:}
+      for r in $(seq 1 "$count"); do
+        printf 'zpast%s%s%s\t1\t1\t1\t%s\tpast\t1\t\n' "$i" "${reason%%-*}" "$r" "$reason"
+      done
+    done; } > "$AUDIT_DIR/$log"
+  printf '2026-01-0%sT00:00:00Z\tdeleted=1\taudit=%s\n' "$i" "$log" >> "$AUDIT_DIR/history.log"
+}
+# A past where every rule but C pruned plenty and C pruned nothing, so only C is over its usual.
+# The fixture plans 4 of rule A, 1 of B, 4 of C, 13 of D and 14 of F.
+USUAL_BUT_C="junk-name:20 junk-id:20 size-outlier:20 spam-batch:50 link-farm:50 media-dump:50"
+# The same past for every rule but C, which each test then writes its own history for.
+REST="junk-name:20 junk-id:20 size-outlier:20 spam-batch:50 media-dump:50"
 
 # drop the tty for the non-interactive --apply test
 NOTTY=(); command -v setsid >/dev/null && NOTTY=(setsid)
@@ -2164,46 +2190,131 @@ out=$(DISK_AWARE=1 PRESSURE_CRIT_PCT=100 PRESSURE_CRIT_GB=999999 ABS_SIZE_FLOOR_
   && ok "a critical disk empties the whole quarantine, window or not" \
   || no "quarantine held disk hostage at the critical watermark"
 
-# --- the caps must catch a plan that CREEPS, not only one that jumps --- A weekly cron whose
-# plan doubles every month never touches a fixed cap. The baseline is the history the tool
-# already writes, so this fixture writes a history and checks the run stops against it.
+# --- the ratchet: each rule against what that rule usually prunes --- A weekly cron whose plan
+# doubles every month never touches a fixed cap, so the baseline is the audit logs the tool
+# already writes. It is per rule so that one rule's wave holds back that rule alone.
 build_fixture; assert_isolated
-mkdir -p "$RSP_HOME/prune-audit"
-for i in 1 2 3 4; do
-  printf '2026-0%s-01T00:00:00Z\tdeleted=2\treclaimed_gib=0.01\tpressure=0%%\taudit=x.log\n' \
-    "$i" >> "$RSP_HOME/prune-audit/history.log"
-done
-out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
-{ [ "$rc" = 3 ] && grep -q 'is not a routine week' <<<"$out" \
-  && [ -e "$STORAGE/zjunk1" ]; } \
-  && ok "a plan far above what this seed usually prunes stops an unattended run" \
-  || no "a creeping plan ran unattended (rc=$rc)"
+for i in 1 2 3 4; do past_run "$i" $USUAL_BUT_C; done
+dry=$(RATCHET_FLOOR=0 "$SCRIPT" 2>&1)
+grep -q 'HELD BACK unless --force' <<<"$dry" && grep -q '#     rule C: ' <<<"$dry" \
+  && ! grep -q '#     rule A: ' <<<"$dry" \
+  && ok "a dry run says which rule an unattended apply would hold back" \
+  || no "the dry run did not name the rule the ratchet would hold"
+out=$(RATCHET_FLOOR=0 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
+{ [ "$rc" = 4 ] && grep -q '^# HELD BACK rule C: ' <<<"$out" \
+  && [ -e "$STORAGE/ztwoyr3" ] && [ ! -e "$STORAGE/zjunk1" ]; } \
+  && ok "a rule far over its usual is held back while the rest of the plan is pruned" \
+  || no "the ratchet held the wrong rules, or held the whole run (rc=$rc)"
+grep -q '^# held back: rule C, ' "$AUDIT_DIR"/prune-2*Z.log 2>/dev/null \
+  && ! grep -q $'^ztwoyr3\t' "$AUDIT_DIR"/prune-2*Z.log \
+  && grep -q $'^C\t4\t0\t0$' "$AUDIT_DIR/last-run/held.tsv" \
+  && ok "the audit log and last-run/held.tsv name the held rule, the plan in the log omits it" \
+  || no "the audit log does not say what the ratchet held back"
 
-out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply --force \
-        </dev/null 2>&1); rc=$?
-{ [ "$rc" != 3 ] && [ ! -e "$STORAGE/zjunk1" ]; } \
+build_fixture; assert_isolated
+for i in 1 2 3 4; do past_run "$i" $USUAL_BUT_C; done
+out=$(RATCHET_FLOOR=0 "${NOTTY[@]}" "$SCRIPT" --apply --force </dev/null 2>&1); rc=$?
+{ [ "$rc" = 0 ] && [ ! -e "$STORAGE/ztwoyr3" ] && ! grep -q 'HELD BACK rule' <<<"$out"; } \
   && ok "--force still gets past the history ratchet" \
   || no "--force could not override the ratchet (rc=$rc)"
 
+# The floor is what lets an ordinary week through when a rule's usual is 0.
+build_fixture; assert_isolated
+for i in 1 2 3 4; do past_run "$i" $USUAL_BUT_C; done
+out=$("${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
+{ [ "$rc" = 0 ] && [ ! -e "$STORAGE/ztwoyr3" ]; } \
+  && ok "a rule under RATCHET_FLOOR is never held, however small its usual" \
+  || no "the ratchet held back a handful of repos from a rule that usually prunes none (rc=$rc)"
+
 # Too little history is no baseline: two runs must not be treated as a norm to measure against.
 build_fixture; assert_isolated
-mkdir -p "$RSP_HOME/prune-audit"
-printf '2026-01-01T00:00:00Z\tdeleted=1\taudit=x.log\n' >> "$RSP_HOME/prune-audit/history.log"
-printf '2026-02-01T00:00:00Z\tdeleted=1\taudit=x.log\n' >> "$RSP_HOME/prune-audit/history.log"
-out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
-{ [ "$rc" != 3 ] && [ ! -e "$STORAGE/zjunk1" ]; } \
+for i in 1 2; do past_run "$i" junk-name:1; done
+out=$(RATCHET_FLOOR=0 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
+{ [ "$rc" = 0 ] && [ ! -e "$STORAGE/zjunk1" ] && [ ! -e "$STORAGE/ztwoyr3" ]; } \
   && ok "two past runs are not enough history to ratchet against" \
   || no "the ratchet fired on a baseline too thin to mean anything (rc=$rc)"
+
+# A run that held a rule back pruned none of that rule because it was not allowed to, and a run
+# with the rule switched off could not prune any, so neither is a sample of what the rule
+# usually does. Counted as zeros, the three of each below would drag C's median of 4 down to 2.
+build_fixture; assert_isolated
+for i in 1 2 3; do past_run "$i" $REST stale:4; done
+for i in 4 5 6; do past_run "$i" $REST held:C; done
+for i in 7 8 9; do past_run "$i" $REST rules:ABDEFG; done
+out=$(RATCHET_RUNS=9 RATCHET_FACTOR=1 RATCHET_FLOOR=0 "${NOTTY[@]}" "$SCRIPT" --apply \
+        </dev/null 2>&1); rc=$?
+{ [ "$rc" = 0 ] && [ ! -e "$STORAGE/ztwoyr3" ]; } \
+  && ok "a run that held a rule, or ran without it, is no sample of what that rule prunes" \
+  || no "held or switched-off runs dragged a rule's usual down to a hold (rc=$rc)"
+
+# Two samples are no median: after six held weeks and one forced run, C's window holds that
+# forced wave and one ordinary week, and three times their mean would wave the next wave through.
+build_fixture; assert_isolated
+for i in 1 2 3 4 5 6; do past_run "$i" $REST held:C; done
+past_run 7 $REST stale:490
+past_run 8 $REST stale:5
+out=$(RATCHET_FLOOR=0 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
+{ [ "$rc" = 4 ] && [ -e "$STORAGE/ztwoyr3" ]; } \
+  && ok "a rule with fewer than three samples of its own is held at the floor" \
+  || no "one forced wave set a rule's limit for the next one (rc=$rc)"
+# Any spelling of RULES that rule_on accepts is read back the same way from the log.
+build_fixture; assert_isolated
+for i in 1 2 3; do past_run "$i" $REST stale:4 rules:A,B,C,D,E,F; done
+out=$(RATCHET_RUNS=3 RATCHET_FACTOR=1 RATCHET_FLOOR=0 "${NOTTY[@]}" "$SCRIPT" --apply \
+        </dev/null 2>&1); rc=$?
+{ [ "$rc" = 0 ] && [ ! -e "$STORAGE/ztwoyr3" ]; } \
+  && ok "a rules list written with separators still counts every rule it names" \
+  || no "a separated rules list dropped samples for the rules after its first (rc=$rc)"
+
+# The caps are measured on what the ratchet leaves: the 36-repo plan is over a cap of 33, the
+# 32 left once rule C's 4 are held are not, so the rest still goes ahead.
+build_fixture; assert_isolated
+for i in 1 2 3 4; do past_run "$i" $USUAL_BUT_C; done
+out=$(MAX_PRUNE_COUNT=33 RATCHET_FLOOR=0 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
+{ [ "$rc" = 4 ] && [ -e "$STORAGE/ztwoyr3" ] && [ ! -e "$STORAGE/zjunk1" ]; } \
+  && ok "a held wave does not trip the caps for the rest of the plan" \
+  || no "the caps counted repos the ratchet had already held back (rc=$rc)"
+
+# Rotated logs leave the ratchet with less to go on, said out loud since under three readable
+# logs it holds nothing at all.
+build_fixture; assert_isolated
+for i in 1 2 3 4; do past_run "$i" $USUAL_BUT_C; done
+rm "$AUDIT_DIR"/prune-20260103T000000Z.log "$AUDIT_DIR"/prune-20260104T000000Z.log
+out=$(RATCHET_FLOOR=0 "$SCRIPT" 2>&1)
+grep -q 'cannot read 2 of the 4 most recent audit logs' <<<"$out" \
+  && ok "the ratchet says when the audit logs it measures against are gone" \
+  || no "missing audit logs thinned the ratchet's baseline without a word"
+out=$(RATCHET_FLOOR=twenty "$SCRIPT" 2>&1); rc=$?
+{ [ "$rc" = 2 ] && grep -q 'RATCHET_FLOOR must be a whole number' <<<"$out"; } \
+  && ok "a brake set to something other than a whole number stops the run" \
+  || no "a mistyped brake was read as a number (rc=$rc)"
+
+# --- a run that stops leaves the quarantine as it found it --- The stop is what makes a human
+# look, and what they look at includes the last runs' verdicts, which only the quarantine has.
+build_fixture; assert_isolated
+Q="$AUDIT_DIR/quarantine"; mkdir -p "$Q/zexpired"; touch -d "30 days ago" "$Q/zexpired"
+out=$(MAX_PRUNE_COUNT=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
+{ [ "$rc" = 3 ] && [ -d "$Q/zexpired" ]; } \
+  && ok "a run the caps stop keeps what is in quarantine, expired or not" \
+  || no "an aborted run purged the quarantine before stopping (rc=$rc)"
+# A held rule's repos wait in storage, so holding them is no reason to keep the quarantine too.
+for i in 1 2 3 4; do past_run "$i"; done
+out=$(RATCHET_FLOOR=0 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
+{ [ "$rc" = 4 ] && [ ! -d "$Q/zexpired" ] && [ -e "$STORAGE/zjunk1" ] \
+  && grep -q 'every verdict in the plan was held back' <<<"$out"; } \
+  && ok "a run whose whole plan is held back prunes nothing, and still purges what expired" \
+  || no "a fully held run pruned something, or kept the quarantine's expired disk (rc=$rc)"
 
 # interactive prompt via a pty (needs util-linux `script`): n aborts, y applies.
 if command -v script >/dev/null 2>&1; then
   build_fixture; assert_isolated
   b=$(ls "$STORAGE" | wc -l)
+  Q="$AUDIT_DIR/quarantine"; mkdir -p "$Q/zexpired"; touch -d "30 days ago" "$Q/zexpired"
   printf 'n\n' | script -qec "env DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 '$SCRIPT' --apply" \
     /dev/null >"$ROOT/n.out" 2>&1
   a=$(ls "$STORAGE" | wc -l)
-  { grep -q aborted "$ROOT/n.out" && [ "$b" = "$a" ]; } \
-    && ok "interactive --apply + n aborts, nothing deleted" \
+  { grep -q aborted "$ROOT/n.out" && [ "$b" = "$a" ] && [ -d "$Q/zexpired" ]; } \
+    && ok "interactive --apply + n aborts, nothing deleted, nothing purged" \
     || no "interactive + n aborts"
 
   # The line a human answers has to say what the run really does. Under quarantine the disk
@@ -2239,12 +2350,15 @@ if command -v script >/dev/null 2>&1; then
     && ok "answering yes at the critical watermark still empties the whole quarantine" \
     || no "the critical watermark left the quarantine holding disk the run needed"
 
+  # Rule C would be held back unattended, and a yes is a human signing off on that too.
   build_fixture; assert_isolated
-  printf 'y\n' | script -qec "env DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 '$SCRIPT' --apply" \
+  for i in 1 2 3 4; do past_run "$i" $USUAL_BUT_C; done
+  printf 'y\n' | script -qec \
+    "env DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 RATCHET_FLOOR=0 '$SCRIPT' --apply" \
     /dev/null >"$ROOT/y.out" 2>&1
   gone=1; for r in zjunk1 zbig2 ztwoyr3 zbar8; do [ -e "$STORAGE/$r" ] && gone=0; done
   [ "$gone" = 1 ] \
-    && ok "interactive --apply + y prunes the plan" \
+    && ok "interactive --apply + y prunes the plan, rules the ratchet would hold included" \
     || no "interactive + y prunes"
 else
   echo "skip - interactive prompt tests (no util-linux 'script' for a pty)"

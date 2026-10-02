@@ -311,9 +311,11 @@ VERSION="0.7.0"
 # `set -e` on its own exits mute: a command failing anywhere below would end the run with a
 # bare non-zero status and nothing to debug from. Name the line, the command, and the status
 # instead.
+# Always exit 1: the failed command's own status could be 3, 4 or 5, which a caller reads as the
+# caps, the ratchet or a refusal to guess.
 report_error(){
   echo "# ERROR: line $2: [$3] exited $1" >&2
-  exit "$1"
+  exit 1
 }
 trap 'report_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
 
@@ -455,10 +457,16 @@ MAX_PRUNE_COUNT="${MAX_PRUNE_COUNT:-1000}"       # runaway guards (abort unless 
 MAX_PRUNE_GB="${MAX_PRUNE_GB:-80}"
 # The fixed caps above only catch a plan that jumps. They cannot catch one that CREEPS: at a
 # steady 2.5 GiB a week, a plan could grow for a year without ever touching MAX_PRUNE_GB, and
-# under sustained disk pressure the thresholds loosen on their own. So a plan is also measured
-# against what this seed normally prunes, taken from the run history it already writes.
-RATCHET_FACTOR="${RATCHET_FACTOR:-3}"            # times the usual plan before a run stops
+# under sustained disk pressure the thresholds loosen on their own. So each rule's share of the
+# plan is also measured against what that rule normally prunes here, taken from the audit logs
+# the seed already writes, and a rule that jumps is held back while the others go ahead.
+RATCHET_FACTOR="${RATCHET_FACTOR:-3}"            # times a rule's usual haul before it is held
 RATCHET_RUNS="${RATCHET_RUNS:-8}"                # past runs the usual is taken from (median)
+# A rule that usually prunes nothing has a usual of 0, and three times 0 would hold back its
+# very first verdict. Below this many repos a rule is never held back, so an ordinary week's
+# handful goes through and only a wave waits for a human. Measured on radicle.at: rule A's
+# weekly median was 13 (limit 39), and the waves worth stopping ran to hundreds of repos.
+RATCHET_FLOOR="${RATCHET_FLOOR:-20}"             # repos per rule, per run
 MAX_SCAN_FAIL_PCT="${MAX_SCAN_FAIL_PCT:-10}"     # abort if this share of storage is unreadable
 
 # --- disk-pressure adaptivity ---
@@ -718,6 +726,19 @@ quar_expired() {                  # prints every quarantined repo past its windo
     [ "$born" -le "$quar_cut" ] && printf '%s\n' "$d"
   done
 }
+# Deletes what is past its window. Called by an --apply run once nothing can stop it any more,
+# so a run that stops leaves the quarantine as it found it.
+quar_purge_expired() {
+  [ "$QUARANTINE" = 1 ] || return 0
+  mkdir -p "$quar" 2>/dev/null || true
+  local d purged=0
+  while IFS= read -r d; do
+    rm -rf -- "$d" && purged=$((purged+1))
+  done < <(quar_expired)
+  [ "$purged" = 0 ] || echo "# purged $purged repo(s) out of quarantine after" \
+                            "${QUARANTINE_DAYS}d; they are gone for good now."
+  return 0
+}
 # The window is ignored outright once the disk is at the critical watermark: a recovery copy is
 # a luxury a full disk cannot buy. Kept as a function because the two moments that can afford
 # to do this sit far apart in the apply path below.
@@ -824,6 +845,16 @@ if [ "$CMD" = quarantine ]; then
   esac
   exit 0
 fi
+
+# A brake that is not a whole number stops the run. Read as a number, a typo turns every test
+# against it false, which lets everything through without a word, and a leading zero reads as
+# octal. Checked here, after the quarantine verbs, which use none of them.
+for knob in MAX_PRUNE_COUNT RATCHET_FACTOR RATCHET_RUNS RATCHET_FLOOR; do
+  case "${!knob}" in
+    0) ;;
+    ''|0*|*[!0-9]*) echo "# $knob must be a whole number, not '${!knob}'." >&2; exit 2 ;;
+  esac
+done
 
 # disk pressure p in [0,1] on the storage filesystem
 read -r disk_total disk_avail < <(df -Pk "$STORAGE" \
@@ -2318,6 +2349,96 @@ nplan=$(wc -l < "$tmp/plan.sorted")
 bytes=$(awk -F'\t' '{s+=$2} END{printf "%.0f", s}' "$tmp/plan.sorted")
 gib=$(awk -v b="$bytes" 'BEGIN{printf "%.2f", b/1073741824}')
 
+# ------------------------------------------------------------------------- the history ratchet
+# Each rule's share of the plan is measured against the median of what that rule pruned in the
+# last RATCHET_RUNS applied runs, and a rule over RATCHET_FACTOR times that is held back. It is
+# per rule so that one rule's wave holds back that rule alone: the others' verdicts are as sound
+# as they were the week before, and a whole-plan ratchet would make them wait for a human too.
+#
+# The past comes from the audit logs history.log names, since those list every verdict an
+# applied run acted on with its reason. Only worked out here, so a dry run can show it; whether
+# it holds anything back is decided at apply time, where --force and an interactive yes both
+# get past it.
+#
+# Which rule each verdict belongs to. spam-family is rule D's verdict under an older name, still
+# in audit logs written before it was renamed. A reason missing here is ratcheted on its own,
+# under its own name, so a new verdict is never one the ratchet cannot see.
+RULE_OF_REASON="junk-name:A junk-id:A size-outlier:B stale:C"
+RULE_OF_REASON="$RULE_OF_REASON spam-batch:D spam-family:D link-farm:E media-dump:F media-batch:F"
+# rule \t how many verdicts that rule has in the file named by $1, one line per rule.
+count_by_rule() {
+  awk -F'\t' -v map="$RULE_OF_REASON" '
+    BEGIN { n = split(map, pairs, " ")
+            for (i = 1; i <= n; i++) { split(pairs[i], kv, ":"); rule[kv[1]] = kv[2] } }
+    !/^#/ && NF >= 5 { c[($5 in rule) ? rule[$5] : $5]++ }
+    END { for (r in c) printf "%s\t%d\n", r, c[r] }' "$1" | sort
+}
+
+# Logs that were rotated or deleted are skipped before the last RATCHET_RUNS are taken, so the
+# baseline is the most recent past that can still be read. Said out loud, since a ratchet with
+# fewer than three logs holds nothing back.
+grep -oE 'audit=[^[:space:]]+' "$AUDIT_DIR/history.log" 2>/dev/null | sed 's/^audit=//' \
+  > "$tmp/ratchet-named" || true
+while IFS= read -r log; do
+  [ -r "$AUDIT_DIR/$log" ] && printf '%s\n' "$AUDIT_DIR/$log"
+done < "$tmp/ratchet-named" | tail -n "$RATCHET_RUNS" > "$tmp/ratchet-logs" || true
+nratchet=$(wc -l < "$tmp/ratchet-logs")
+tail -n "$RATCHET_RUNS" "$tmp/ratchet-named" > "$tmp/ratchet-recent"
+nrecent=$(wc -l < "$tmp/ratchet-recent")
+ngone=0
+while IFS= read -r log; do
+  [ -r "$AUDIT_DIR/$log" ] || ngone=$((ngone + 1))
+done < "$tmp/ratchet-recent"
+[ "$ngone" = 0 ] \
+  || echo "# WARN: cannot read $ngone of the $nrecent most recent audit logs history.log" \
+          "names. They tell an unattended run what each rule usually prunes, so it now goes" \
+          "by $nratchet, older ones filling in, and with fewer than 3 holds nothing back." >&2
+
+# rule \t repos, one line per past run and rule this run plans. A run in which a rule pruned
+# nothing counts as 0, because that is part of what the rule usually does. A run in which the
+# rule was off, or held back, is no sample at all: it pruned none of that rule's verdicts
+# because it was not allowed to, and counting that as 0 would pull the usual down every week
+# the rule waits, until the ratchet held even an ordinary week. Audit logs older than 0.8.0 do
+# not say which rules were on, and are read as all of them.
+count_by_rule "$tmp/plan.sorted" > "$tmp/ratchet-planned"
+: > "$tmp/ratchet-past"
+while IFS= read -r log; do
+  rules_then=$(sed -n '1s/.*  rules=//p' "$log")
+  count_by_rule "$log" > "$tmp/ratchet-onelog"
+  while IFS=$'\t' read -r letter _; do
+    case $letter in
+      [A-Z]) [ -z "$rules_then" ] || [[ $rules_then == *$letter* ]] || continue ;;
+    esac
+    grep -q "^# held back: rule $letter," "$log" && continue
+    past=$(awk -F'\t' -v l="$letter" '$1 == l { print $2 }' "$tmp/ratchet-onelog")
+    printf '%s\t%s\n' "$letter" "${past:-0}" >> "$tmp/ratchet-past"
+  done < "$tmp/ratchet-planned"
+done < "$tmp/ratchet-logs"
+
+# rule \t planned \t usual \t limit, for every rule this run would hold back. Fewer than three
+# past runs is no baseline at all, and then nothing is held. --force holds nothing either, so
+# nothing here claims a hold that will not happen.
+#
+# A rule with fewer than three samples of its own, one that was off or held for most of the
+# window, has a usual of 0, so RATCHET_FLOOR is its limit. Its median would otherwise come from
+# one or two runs, and the one forced run that let a held wave through would set a limit three
+# times that wave.
+: > "$tmp/held"
+if [ "$nratchet" -ge 3 ] && [ "$FORCE" = 0 ]; then
+  while IFS=$'\t' read -r letter planned; do
+    usual=$(awk -F'\t' -v l="$letter" '$1 == l { print $2 }' "$tmp/ratchet-past" | sort -n \
+            | awk '{ v[NR] = $1 }
+                   END { if (NR < 3) print 0
+                         else if (NR % 2) print v[(NR + 1) / 2]
+                         else print int((v[NR / 2] + v[NR / 2 + 1]) / 2) }')
+    limit=$(( usual * RATCHET_FACTOR ))
+    [ "$limit" -ge "$RATCHET_FLOOR" ] || limit=$RATCHET_FLOOR
+    if [ "$planned" -gt "$limit" ]; then
+      printf '%s\t%s\t%s\t%s\n' "$letter" "$planned" "$usual" "$limit" >> "$tmp/held"
+    fi
+  done < "$tmp/ratchet-planned"
+fi
+
 # One awk for the whole table rather than one per row: a plan can run to hundreds of lines.
 # It makes two passes: the first counts each verdict so the second knows what to fold.
 awk -F'\t' -v now="$now" -v collapse="$PLAN_COLLAPSE_ROWS" -v full="$PLAN_FULL" '
@@ -2376,7 +2497,15 @@ awk -F'\t' '{ c[$5]++; b[$5]+=$2 }
 nnear=$(awk -F'\t' '$8 != ""' "$tmp/plan.sorted" | wc -l)
 [ "$nnear" = 0 ] \
   || echo "#   $nnear of them cleared a threshold by under ${NEAR_PCT}%: see the NEAR column,"\
-          "which names the threshold that was close. Read those rows first." 
+          "which names the threshold that was close. Read those rows first."
+# Printed by a dry run too, which is when an operator decides whether to let a wave through.
+if [ -s "$tmp/held" ]; then
+  echo "#   HELD BACK unless --force or a yes at the prompt, as each rule is far over its usual:"
+  while IFS=$'\t' read -r letter planned usual limit; do
+    echo "#     rule $letter: $planned repos, where its median over the last $nratchet runs" \
+         "is $usual a run (limit $limit)"
+  done < "$tmp/held"
+fi
 
 # Rule G's verdicts are about peers, so they get their own section rather than a row in the
 # plan: nothing here deletes a repo, and blocking one peer touches every repo at once.
@@ -2452,6 +2581,11 @@ if [ "$lr_ok" = 1 ]; then
   { lr_stamp
     printf '# rid\n'
     sort -u "$tmp/media-fail"; } > "$staging/media-unjudged.tsv" 2>/dev/null || lr_ok=0
+  # plan.tsv still lists a held rule's repos, because without --force or a yes at the prompt
+  # nobody knows yet whether they will be pruned. This says which rules are waiting on that.
+  { lr_stamp
+    printf '# rule\tplanned\tusual\tlimit\n'
+    cat "$tmp/held"; } > "$staging/held.tsv" 2>/dev/null || lr_ok=0
   { lr_stamp
     cat "$scanerr"; } > "$staging/scan-errors.txt" 2>/dev/null || lr_ok=0
 fi
@@ -2485,7 +2619,7 @@ open_audit() {
   [ -z "$audit" ] || return 0
   mkdir -p "$AUDIT_DIR"
   audit="$AUDIT_DIR/prune-$(date -u +%Y%m%dT%H%M%SZ).log"
-  printf '# %s  pressure=%s%%\n' "$run_ts" "$press_pct" > "$audit"
+  printf '# %s  pressure=%s%%  rules=%s\n' "$run_ts" "$press_pct" "$RULES" > "$audit"
   echo "# audit log: $audit"
 }
 
@@ -2558,29 +2692,20 @@ if [ "$APPLY" = 0 ]; then
   exit 0
 fi
 
-# Empty the quarantine of anything past its window before pruning, so the disk this run
-# reports as reclaimed is disk that actually came back.
-#
-# Above the "nothing to do" exit below, because a seed that has caught up has an empty plan
-# every week, and quarantined disk that only comes back on a week with something to prune is
-# quarantined disk that never comes back.
-if [ "$QUARANTINE" = 1 ]; then
-  mkdir -p "$quar" 2>/dev/null || true
-  purged=0
-  while IFS= read -r d; do
-    rm -rf -- "$d" && purged=$((purged+1))
-  done < <(quar_expired)
-  [ "$purged" = 0 ] || echo "# purged $purged repo(s) out of quarantine after" \
-                            "${QUARANTINE_DAYS}d; they are gone for good now."
-fi
-
 # --apply: the (slow) scan above ran ONCE. In a terminal, ask before deleting;
 # non-interactively (cron, a pipe) just apply. --yes skips the prompt. A yes here is the human
-# sign-off that lets a run bypass the runaway caps below.
-# An empty plan asks nothing, so the critical-watermark wipe is free to run on the way out;
-# below the prompt it is not, because an operator who answers no is owed a run that changed
-# nothing, and no phrasing of a prompt about pruning N repos asks about that wipe as well.
-[ "$nplan" = 0 ] && { quar_purge_all_if_critical; echo "# nothing to do"; exit 0; }
+# sign-off that lets a run bypass the ratchet and the runaway caps below.
+#
+# An empty plan asks nothing, so the quarantine is emptied of what is past its window on the way
+# out, and of everything at the critical watermark: a seed that has caught up has an empty plan
+# every week, and quarantined disk that only comes back on a week with something to prune is
+# quarantined disk that never comes back.
+if [ "$nplan" = 0 ]; then
+  quar_purge_expired
+  quar_purge_all_if_critical
+  echo "# nothing to do"
+  exit 0
+fi
 CONFIRMED=0
 if [ "$YES" = 0 ]; then
   # The line a human actually answers, so it says what the run will really do. Under
@@ -2609,8 +2734,32 @@ if [ "$YES" = 0 ]; then
 fi
 
 # --------------------------------------------------------------------------------------- apply
-# Runaway caps guard unattended runs. An interactive yes is a human confirming the exact
-# numbers just printed, so a confirmed run bypasses them. --yes and cron still respect them.
+# The ratchet's verdict, worked out with the plan above. An interactive yes is a human
+# confirming the exact numbers just printed, so a confirmed run bypasses it; --yes and cron do
+# not. The rules it holds back leave this run's plan, and every number below is recounted from
+# what is left, so the caps, the audit log and the DONE line all describe what is pruned.
+nheld=0
+if [ "$CONFIRMED" = 0 ] && [ -s "$tmp/held" ]; then
+  while IFS=$'\t' read -r letter planned usual limit; do
+    echo "# HELD BACK rule $letter: $planned repos, where its median over the last" \
+         "$nratchet runs is $usual a run (limit $limit). None of them is pruned this run." >&2
+    nheld=$(( nheld + planned ))
+  done < "$tmp/held"
+  echo "# Review them in the plan above, then re-run with --force (unattended), or confirm" \
+       "interactively. The rest of the plan goes ahead." >&2
+  awk -F'\t' -v map="$RULE_OF_REASON" -v heldfile="$tmp/held" '
+      BEGIN { n = split(map, pairs, " ")
+              for (i = 1; i <= n; i++) { split(pairs[i], kv, ":"); rule[kv[1]] = kv[2] }
+              while ((getline line < heldfile) > 0) { split(line, f, "\t"); held[f[1]] = 1 } }
+      !((($5 in rule) ? rule[$5] : $5) in held)' "$tmp/plan.sorted" > "$tmp/plan.kept"
+  mv "$tmp/plan.kept" "$tmp/plan.sorted"
+  nplan=$(wc -l < "$tmp/plan.sorted")
+  bytes=$(awk -F'\t' '{s+=$2} END{printf "%.0f", s}' "$tmp/plan.sorted")
+  gib=$(awk -v b="$bytes" 'BEGIN{printf "%.2f", b/1073741824}')
+fi
+
+# Runaway caps guard unattended runs, measured on what the ratchet left, so a held wave does
+# not take the rest of the plan down with it. Bypassed the same two ways as the ratchet.
 if [ "$FORCE" = 0 ] && [ "$CONFIRMED" = 0 ]; then
   over_gb=$(awk -v b="$bytes" -v m="$MAX_PRUNE_GB" 'BEGIN{print (b/1073741824 > m) ? 1 : 0}')
   if [ "$nplan" -gt "$MAX_PRUNE_COUNT" ] || [ "$over_gb" = 1 ]; then
@@ -2619,32 +2768,33 @@ if [ "$FORCE" = 0 ] && [ "$CONFIRMED" = 0 ]; then
     echo "# Review it, then re-run with --force (unattended), or confirm interactively." >&2
     exit 3
   fi
-  # The median of past runs, not the mean: one big first run would otherwise raise the bar
-  # permanently and defeat the whole check. Fewer than three past runs is no baseline at all.
-  # `|| true` because a seed that has never pruned has no history file at all, and under
-  # `set -e` an assignment from a command that failed would end the run right here.
-  usual=$(grep -oE 'deleted=[0-9]+' "$AUDIT_DIR/history.log" 2>/dev/null \
-          | sed 's/^deleted=//' | tail -n "$RATCHET_RUNS" | sort -n \
-          | awk '{ v[NR] = $1 + 0 }
-                 END { if (NR < 3) exit
-                       print (NR % 2) ? v[(NR+1)/2] : int((v[NR/2] + v[NR/2+1]) / 2) }' \
-          || true)
-  if [ -n "$usual" ] && [ "$usual" -gt 0 ] \
-     && [ "$nplan" -gt $(( usual * RATCHET_FACTOR )) ]; then
-    echo "# ABORT: plan is $nplan repos where the last $RATCHET_RUNS runs pruned about" \
-         "$usual. Something changed; a ${RATCHET_FACTOR}x jump is not a routine week." >&2
-    echo "# Review it, then re-run with --force (unattended), or confirm interactively." >&2
-    exit 3
-  fi
 fi
 
-# Every way out of this run without pruning is behind us, so the quarantine can now be emptied
-# outright if the disk is critical. Before this run puts its own copies there, so what it
-# quarantines today keeps its full window.
+# Past the caps and the prompt, the run has gone ahead, so this is where the quarantine gives up
+# what is past its window, and everything if the disk is critical. A run the caps stop or a
+# human turns down leaves it standing, since that run is the one somebody will look into. A run
+# the ratchet held keeps its held repos in storage, not in quarantine, so it purges as usual:
+# otherwise a rule held week after week would also hold the disk the quarantine owes back.
+# Before this run puts its own copies there, so what it quarantines today keeps its full window.
+quar_purge_expired
 quar_purge_all_if_critical
 
+if [ "$nplan" = 0 ]; then
+  echo "# nothing pruned: every verdict in the plan was held back (see HELD BACK above)." >&2
+  exit 4
+fi
+
 open_audit
+# A held rule's rows are not in the plan below, so the log names what was held and why: the
+# ratchet reads these logs to learn what each rule usually prunes, and a reader of this one
+# needs to know that rule C's absence was the ratchet and not a quiet week.
 { printf '# plan=%s repos / %s GiB\n' "$nplan" "$gib"
+  if [ "$nheld" -gt 0 ]; then
+    while IFS=$'\t' read -r letter planned usual limit; do
+      printf '# held back: rule %s, %s repos (usual %s, limit %s)\n' \
+             "$letter" "$planned" "$usual" "$limit"
+    done < "$tmp/held"
+  fi
   plan_header
   cat "$tmp/plan.sorted"; } >> "$audit"
 
@@ -2760,3 +2910,9 @@ fi
 [ "$RESTART" = 1 ] \
   || echo "# tip: run 'sudo systemctl restart $SERVICE' once to clear the stale" \
           "inventory-announce log warning."
+# Non-zero so whatever runs this unattended sees that verdicts are waiting on a human. Not 3,
+# which says the caps stopped the whole run and nothing was pruned.
+if [ "$nheld" -gt 0 ]; then
+  echo "# $nheld repo(s) held back are still in storage; see HELD BACK above." >&2
+  exit 4
+fi

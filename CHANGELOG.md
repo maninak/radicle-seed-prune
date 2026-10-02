@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Upgrading
+
+Replace the script. Nothing else has to change.
+
+### Changed
+
+- **A sudden jump in one rule no longer stops the whole unattended run.** An unattended run compares each rule's part of the plan with what that rule pruned in recent runs. When a rule plans more than three times its usual number, only that rule's repos stay in storage for a person to check. Everything else in the plan is pruned, and the run exits with the new code `4`. A jump in any one rule used to stop the whole run, so a wave of old mirrors also stopped the week's spam and junk removal. A dry run lists what would be held back, and so does `last-run/held.tsv`.
+- **Up to 20 repos per rule always go through.** A rule is held back only when it plans more than 20 repos in one run, however few it usually prunes. Without that, a rule that usually prunes nothing would be held back over a single repo. The spam, link-farm and media rules usually prune nothing in a week, so a new campaign of more than 20 repos waits for `--force` or a yes at the prompt. The number is set with `RATCHET_FLOOR`.
+
+### Fixed
+
+- **A run that stops no longer empties the quarantine first.** Repos in quarantine now stay there when the size caps (`MAX_PRUNE_COUNT`, `MAX_PRUNE_GB`) stop a run, or when you answer `n` at the prompt. Both used to delete the expired ones before stopping, so two stopped weeks in a row lost repos someone still needed to check.
+- **Safety settings must be whole numbers.** `MAX_PRUNE_COUNT`, `RATCHET_FACTOR`, `RATCHET_RUNS` and `RATCHET_FLOOR` now stop the run with exit `2` when set to anything else. A typo in one used to switch its check off without a word.
+- **An unexpected failure always exits `1`.** It used to exit with the failed command's own status, which could be mistaken for the tool's own exit codes `3`, `4` or `5`. The failed command and its status are still printed.
+
 ## [0.7.0] - 2026-09-10
 
 ### Upgrading
