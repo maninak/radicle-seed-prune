@@ -77,7 +77,7 @@ A dry run against a seed of 12,292 repos:
 # radicle-seed-prune 0.7.0  2026-09-10T04:16:49Z   mode=DRY-RUN
 # home=/var/lib/radicle  audit=/var/lib/radicle/prune-audit
 # disk: 125.5GB free (46.5%)  pressure=0% [relax>=54GB crit<=2GB]
-# rules: A junk(>30d, seeds>=1; id-names seeds>=0)  B size(>500MB & >=P95, >90d, seeds>=3)  C stale(>730d, seeds>=3)  D spam(batch>=5 & desc>=80%, >7d, seeds>=0)
+# rules: A junk(>30d, seeds>=1, spare-import>14d; id-names seeds>=0)  B size(>500MB & >=P95, >90d, seeds>=3)  C stale(>730d, seeds>=3)  D spam(batch>=5 & desc>=80%, >7d, seeds>=0)
 # rule E link-farm(>=5 spam domains, each linked from >=0.4% of repos and from the code of <10% of them, >7d, seeds>=0)
 # rule F media-dump(>=64KB of media and <2048B of anything else, >7d, seeds>=0)  media-batch(that media held by >=5 repos, <65536B of anything else)
 # rule G parasite-peer(one file of theirs in >=10 repos they do not own, >=1MB media, <16384B of anything else) [reports only; --block-peers asks per peer]
@@ -138,7 +138,7 @@ Corpus verdicts (`spam-batch`, `link-farm`, `media-batch`) fold to one summary l
 
 `AGE(d)` is the age the matching rule measured: days since last activity for A, B and C, days since creation for D, E and F.
 
-`NEAR` names any threshold the row cleared by less than `NEAR_PCT` (20%), and is `-` when the row cleared every one of them comfortably. It reports the numbers the matching rule actually tested: `age` for every rule, `seeds` where the rule has a seed floor above zero, plus `size` for rule B, `media` for rule F and `score` for rule E. Those are the rows to read first, and the summary under the plan counts them. `NEAR_PCT=0` marks nothing.
+`NEAR` names any threshold the row cleared by less than `NEAR_PCT` (20%), and is `-` when the row cleared every one of them comfortably. It reports the numbers the matching rule actually tested: `age` for every rule, `seeds` where the rule has a seed floor above zero, plus `import` for rule A's word branch, `size` for rule B, `media` for rule F and `score` for rule E. Those are the rows to read first, and the summary under the plan counts them. `NEAR_PCT=0` marks nothing.
 
 Everything a run says about itself, the progress below included, goes to stderr, and the plan to stdout, so `> plan.txt` keeps them apart.
 
@@ -215,16 +215,16 @@ Removing a line does not undo its blocks. Run `rad unblock rad:z<rid>` for a rep
 
 Every rule has the same shape: **something about the repo**, *and* it is old enough, *and* enough other nodes still hold it. Defaults shown; each is an environment variable.
 
-| Rule               | The repo looks like                                                                 | Minimum age               | Other seeds              |
-| ------------------ | ----------------------------------------------------------------------------------- | ------------------------- | ------------------------ |
-| **A, junk-name**   | a disposable *word* in the name (`test`, `tmp`, `old`, `demo`)                      | `JUNK_STALE_DAYS`, 30d    | ≥ `JUNK_MIN_SEEDS`, 1    |
-| **A, junk-id**     | the name is *nothing but* a random hex id (`0a1b2c3d4e5f`)                          | `JUNK_STALE_DAYS`, 30d    | ≥ `JUNK_ID_MIN_SEEDS`, 0 |
-| **B, size**        | a giant: over `ABS_SIZE_FLOOR_MB` (500M) *and* in the top `REL_PCTL`% by size (P95) | `OUTLIER_STALE_DAYS`, 90d | ≥ `MIN_OTHER_SEEDS`, 3   |
-| **C, stale**       | nothing in particular; the catch-all for whatever the other rules missed            | `STALE_YEARS_DAYS`, 730d  | ≥ `MIN_OTHER_SEEDS`, 3   |
-| **D, spam-batch**  | one of a batch stamped out from one template ([more](#rule-d-spam-batches))         | `SPAM_STALE_DAYS`, 7d     | ≥ `SPAM_MIN_SEEDS`, 0    |
-| **E, link-farm**   | published to carry links rather than code ([more](#rule-e-link-farms))              | `LINK_STALE_DAYS`, 7d     | ≥ `LINK_MIN_SEEDS`, 0    |
-| **F, media-dump**  | video, images or audio with no project around them ([more](#rule-f-media-dumps))    | `MEDIA_STALE_DAYS`, 7d    | ≥ `MEDIA_MIN_SEEDS`, 0   |
-| **F, media-batch** | the same media files, published across many repos ([more](#rule-f-media-dumps))     | `MEDIA_STALE_DAYS`, 7d    | ≥ `MEDIA_MIN_SEEDS`, 0   |
+| Rule               | The repo looks like                                                                                    | Minimum age               | Other seeds              |
+| ------------------ | ------------------------------------------------------------------------------------------------------ | ------------------------- | ------------------------ |
+| **A, junk-name**   | a disposable *word* in the name (`test`, `tmp`, `old`, `demo`), unless its history starts more than 14 days before `rad init` | `JUNK_STALE_DAYS`, 30d    | ≥ `JUNK_MIN_SEEDS`, 1    |
+| **A, junk-id**     | the name is *nothing but* a random hex id (`0a1b2c3d4e5f`)                                             | `JUNK_STALE_DAYS`, 30d    | ≥ `JUNK_ID_MIN_SEEDS`, 0 |
+| **B, size**        | a giant: over `ABS_SIZE_FLOOR_MB` (500M) *and* in the top `REL_PCTL`% by size (P95)                    | `OUTLIER_STALE_DAYS`, 90d | ≥ `MIN_OTHER_SEEDS`, 3   |
+| **C, stale**       | nothing in particular; the catch-all for whatever the other rules missed                               | `STALE_YEARS_DAYS`, 730d  | ≥ `MIN_OTHER_SEEDS`, 3   |
+| **D, spam-batch**  | one of a batch stamped out from one template ([more](#rule-d-spam-batches))                            | `SPAM_STALE_DAYS`, 7d     | ≥ `SPAM_MIN_SEEDS`, 0    |
+| **E, link-farm**   | published to carry links rather than code ([more](#rule-e-link-farms))                                 | `LINK_STALE_DAYS`, 7d     | ≥ `LINK_MIN_SEEDS`, 0    |
+| **F, media-dump**  | video, images or audio with no project around them ([more](#rule-f-media-dumps))                       | `MEDIA_STALE_DAYS`, 7d    | ≥ `MEDIA_MIN_SEEDS`, 0   |
+| **F, media-batch** | the same media files, published across many repos ([more](#rule-f-media-dumps))                        | `MEDIA_STALE_DAYS`, 7d    | ≥ `MEDIA_MIN_SEEDS`, 0   |
 
 Rule G is missing from the table because it judges a **peer**, not a repo, and prunes nothing: it names peers who use repos they do not own as file hosting of their own, and prints the `rad block` line for each such peer ([more](#rule-g-parasite-peers)).
 
@@ -469,6 +469,7 @@ Anything this tool does is written to `$RAD_HOME/prune-audit/` (default `~/.radi
   - `spam-batches.tsv`: every rule D template, with how many repos matched it.
   - `spam-domains.tsv`: every domain rule E condemned, with how many repos link to it.
   - `media-review.tsv`: every dump rule F found and kept because no other node seeds it.
+  - `imports.tsv`: every junk-named repo rule A kept because its history starts more than 14 days before its `rad init`.
   - `parasite-peers.tsv`: every peer rule G accused, with the evidence each accusation rests on.
   - `media-unjudged.tsv`: every repo rule F could not read, or gave up on for holding more than `MEDIA_MAX_REFS` refs. These are the repos its warning counts.
   - `denied.tsv`: every repo the deny list took, with the entry that took it: `listed`, or `delegate` and the identity.

@@ -52,6 +52,8 @@
 #     A/junk-name: name contains a disposable WORD (test, tmp, old, demo, ...)
 #       AND no new commit/COB for > JUNK_STALE_DAYS
 #       AND other-seeds >= JUNK_MIN_SEEDS   (default 1: never take the last copy on a guess)
+#       AND its history starts no more than IMPORT_SPARE_DAYS before its `rad init`
+#           (a repo whose commit dates do not read counts as not imported, with a WARN)
 #     A/junk-id:   the name is NOTHING BUT a random hex id (08a25d0f666d)
 #       AND no new commit/COB for > JUNK_STALE_DAYS
 #       AND other-seeds >= JUNK_ID_MIN_SEEDS  (default 0: may take the last copy we know of)
@@ -346,6 +348,10 @@ JUNK_STALE_DAYS="${JUNK_STALE_DAYS:-30}"         # rule A staleness  (~1 month)
 STALE_YEARS_DAYS="${STALE_YEARS_DAYS:-730}"      # rule C staleness  (~2 years)
 MIN_OTHER_SEEDS="${MIN_OTHER_SEEDS:-3}"          # rules B & C: > 2 other seeds
 JUNK_MIN_SEEDS="${JUNK_MIN_SEEDS:-1}"            # rule A word branch: keeps the last copy
+# A repo whose oldest commit is this much older than its `rad init` is a project somebody kept
+# before publishing it, whatever its name says. Over the 55 repos rule A took by name, the 11
+# restored by hand were 29.5 to 4748 days apart; the disposable ones 0 to 7.1.
+IMPORT_SPARE_DAYS=14                             # rule A word branch: days before rad init
 # The id branch (a name that is NOTHING but a random hex id) may take the last copy we
 # know of: for machine-generated bulk "nobody else seeds it" measures worthlessness, not
 # rarity. The word branch keeps its floor, since "my-old-thesis" is a guess, not proof.
@@ -655,8 +661,9 @@ QUARANTINE VERBS
   purge            delete everything already past its window
 
 CONFIGURATION
-  Every threshold is an environment variable and there are no tuning flags. The README lists
-  them; the comment block at the top of this script says why each has the value it has.
+  The thresholds an operator may want to move are environment variables, and there are no
+  tuning flags. The README lists them; the comment block at the top of this script says why
+  each has the value it has.
 
   RULES=$RULES
   RAD_HOME=$RAD_HOME
@@ -937,7 +944,7 @@ crit_gb=$(awk  -v c="$crit_free" 'BEGIN{printf "%.0f",c/1e9}')
 echo "# disk: ${free_gb}GB free (${free_pct}%)  pressure=${press_pct}%" \
      "[relax>=${relax_gb}GB crit<=${crit_gb}GB]"
 
-rule_a="A junk(>${eff_junk_days}d, seeds>=${JUNK_MIN_SEEDS};"
+rule_a="A junk(>${eff_junk_days}d, seeds>=${JUNK_MIN_SEEDS}, spare-import>${IMPORT_SPARE_DAYS}d;"
 rule_a="$rule_a id-names seeds>=${JUNK_ID_MIN_SEEDS})"
 rule_b="B size(>${eff_abs_mb}MB & >=P${eff_pctl}, >${eff_outlier_days}d, seeds>=${eff_seeds})"
 rule_c="C stale(>${eff_stale_days}d, seeds>=${eff_seeds})"
@@ -2266,8 +2273,8 @@ echo "# repos=$total_repos  sizes P50=$((p50/1048576))M P90=$((p90/1048576))M" \
 # A verdict that cleared its thresholds by a hair is the one a reviewer should read first, and
 # nothing else in the plan distinguishes it from one that cleared by a mile. Each branch below
 # reports what it measured through these two helpers, which append a word to $near and always
-# succeed, so no branch can end on a failed test and trip `set -e`. Both are pure bash
-# arithmetic, because the classify loop runs once per repo and must spawn nothing.
+# succeed, so no branch can end on a failed test and trip `set -e`. They are pure bash
+# arithmetic, so a marker costs nothing per repo.
 NEAR_PCT="${NEAR_PCT:-20}"        # % of the threshold that still counts as near; 0 marks none
 near_age() {   # $1 = the date the rule measured, $2 = the instant it had to be older than
   [ "$NEAR_PCT" -gt 0 ] && [ "$2" -lt "$now" ] \
@@ -2281,6 +2288,12 @@ near_min() {   # $1 = the value measured, $2 = the minimum it had to reach, $3 =
     && near="$near+$3"
   return 0
 }
+near_max() {   # $1 = the value measured, $2 = the maximum it had to stay under, $3 = its label
+  [ "$NEAR_PCT" -gt 0 ] && [ "$2" -gt 0 ] \
+    && [ $(( $1 * 100 )) -gt $(( $2 * (100 - NEAR_PCT) )) ] \
+    && near="$near+$3"
+  return 0
+}
 
 # The columns of a plan row, spelled once for the two files that carry those rows out of the
 # run. A reader of either file has to be able to tell field 4 from field 7, and a header that
@@ -2290,7 +2303,29 @@ plan_header(){
   printf '\tage_from_unix\tnear_threshold\n'
 }
 
-# ---------------------- classify (map lookups + native bash regex; zero per-repo subprocesses)
+# Rule A's word branch spares an imported project: one whose oldest commit is more than
+# IMPORT_SPARE_DAYS older than its `rad init`. This prints that gap in seconds, or nothing when
+# either date does not read. Author dates, because they survive a rebase or a conversion from
+# another VCS. It walks every commit on the branches: 22 s on a 1.3M-commit mirror without a
+# commit-graph, well under a second for most repos. Commit dates are the pusher's to set, so
+# backdating spares a repo, which is harmless: rule A's word list catches people who forgot a
+# repo, not people trying to keep one. --no-show-signature, because `git log` honours
+# log.showSignature from the caller's config and would print a line before the date.
+import_gap() {   # $1 = rid
+  local d="$STORAGE/$1" init oldest
+  init=$(GIT_DIR="$d" git log --no-show-signature --format=%ct --max-parents=0 refs/rad/id \
+           2>/dev/null | sort -n | head -1) || true
+  oldest=$(GIT_DIR="$d" git log --no-show-signature --branches --format=%at --max-parents=0 \
+             2>/dev/null | sort -n | head -1) || true
+  # Anything but digits would end the classify loop part-way through inside $(( )).
+  [[ $init =~ ^[0-9]+$ && $oldest =~ ^[0-9]+$ ]] || return 0
+  echo $(( init - oldest ))
+}
+import_cut=$(( IMPORT_SPARE_DAYS * 86400 ))
+: > "$tmp/imports"   # rid \t name, for every repo the import spare kept
+: > "$tmp/import-blind"   # junk-named repos whose commit dates did not read
+
+# ---------- classify (map lookups + native bash regex; git only for rule A's import spare)
 : > "$tmp/plan"   # rid \t size \t seeds \t life \t reason \t name \t age_from \t near
 : > "$tmp/media-review"
 nblind=0; nfresh=0; nnoage=0
@@ -2357,6 +2392,16 @@ while IFS=$'\t' read -r rid sz mt life birth; do
      && [[ $lname =~ ^[0-9a-f]+$ ]] && [[ $lname =~ [a-f] ]] && [[ $lname =~ [0-9] ]]; then
     is_junkid=1
   fi
+  # A disposable word in the name of a project that predates its `rad init` is no evidence it
+  # was thrown away. Asked of every repo the word branch's other tests would let through, since
+  # it reads the repo's history; rules D, E and F below may still take some of them first.
+  gap=""; is_import=0
+  if [ "$is_junk" = 1 ] && rule_on A && [ "$life" -lt "$junk_cut" ] \
+     && [ "$seeds" -ge "$JUNK_MIN_SEEDS" ]; then
+    gap=$(import_gap "$rid")
+    if [ -z "$gap" ]; then printf '%s\n' "$rid" >> "$tmp/import-blind"
+    elif [ "$gap" -gt "$import_cut" ]; then is_import=1; fi
+  fi
   is_big=0; [ "$sz" -gt "$abscut" ] && [ "$sz" -ge "$relcut" ] && is_big=1
 
   reason=""
@@ -2396,9 +2441,10 @@ while IFS=$'\t' read -r rid sz mt life birth; do
     reason="junk-id"
     near_age "$life" "$junk_cut"; near_min "$seeds" "$JUNK_ID_MIN_SEEDS" seeds
   elif rule_on A && [ "$is_junk" = 1 ] && [ "$life" -lt "$junk_cut" ] \
-       && [ "$seeds" -ge "$JUNK_MIN_SEEDS" ]; then
+       && [ "$seeds" -ge "$JUNK_MIN_SEEDS" ] && [ "$is_import" = 0 ]; then
     reason="junk-name"
     near_age "$life" "$junk_cut"; near_min "$seeds" "$JUNK_MIN_SEEDS" seeds
+    near_max "${gap:-0}" "$import_cut" import
   elif rule_on B && [ "$is_big" = 1 ] && [ "$life" -lt "$outlier_cut" ] \
        && [ "$seeds" -ge "$eff_seeds" ]; then
     reason="size-outlier"
@@ -2418,6 +2464,10 @@ while IFS=$'\t' read -r rid sz mt life birth; do
      && [ "$origin" -lt "$media_cut" ] && [ "$seeds" -lt "$MEDIA_MIN_SEEDS" ]; then
     printf '%s\t%s\t%s\n' "$rid" "${MEDIA[$rid]}" "$name" >> "$tmp/media-review"
   fi
+  # Listed only when no other rule took the repo, so the list can say it was kept.
+  if [ -z "$reason" ] && [ "$is_import" = 1 ]; then
+    printf '%s\t%s\n' "$rid" "$name" >> "$tmp/imports"
+  fi
   [ -z "$reason" ] && continue
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$rid" "$sz" "$seeds" "$life" "$reason" "$name" "$age_from" "${near:+${near#+}}" \
@@ -2432,6 +2482,16 @@ done < "$tmp/repos"
 # background rate, and four weekly runs over a 12.5k-repo seed each reported zero of it.
 echo "# skipped: $nblind unreadable, $nfresh written in the last ${FRESH_GUARD_DAYS}d," \
      "$nnoage with no readable refs"
+# Rule A's import spare reads each candidate's history, and a repo where that read failed is
+# treated as though it had no history before its `rad init`. Named, so it can be checked by hand.
+nimportblind=$(wc -l < "$tmp/import-blind")
+if [ "$nimportblind" -gt 0 ]; then
+  echo "# WARN: could not read the commit dates of $nimportblind junk-named repo(s), so rule A" \
+       "treats them as not imported:" >&2
+  head -n "$top_evidence" "$tmp/import-blind" | sed 's/^/#   /' >&2
+  [ "$nimportblind" -gt "$top_evidence" ] \
+    && echo "#   ...and $((nimportblind - top_evidence)) more (PLAN_FULL=1 lists them)" >&2
+fi
 # Two people's words disagree here, and the one that keeps the repo wins, since a prune is the
 # one of the two that cannot be taken back. Named, so the disagreement gets settled by hand.
 if [ -s "$tmp/deny-kept" ]; then
@@ -2590,6 +2650,14 @@ if [ "$nreview" -gt 0 ]; then
   [ "$nreview" -gt "$top_evidence" ] \
     && echo "#   ...and $((nreview - top_evidence)) more (PLAN_FULL=1 lists them)"
 fi
+nimports=$(wc -l < "$tmp/imports")
+if [ "$nimports" -gt 0 ]; then
+  echo
+  echo "# kept as imports: $nimports junk-named repo(s) with history from before their rad init:"
+  head -n "$top_evidence" "$tmp/imports" | awk -F'\t' '{printf "#   %-34s %s\n", $1, $2}'
+  [ "$nimports" -gt "$top_evidence" ] \
+    && echo "#   ...and $((nimports - top_evidence)) more (PLAN_FULL=1 lists them)"
+fi
 
 echo
 # The plan promises only what the run will actually deliver, and says it the same way the DONE
@@ -2698,6 +2766,9 @@ if [ "$lr_ok" = 1 ]; then
   { lr_stamp
     printf '# rid\tverdict\tname\n'
     cat "$tmp/media-review"; } > "$staging/media-review.tsv" 2>/dev/null || lr_ok=0
+  { lr_stamp
+    printf '# rid\tname\n'
+    cat "$tmp/imports"; } > "$staging/imports.tsv" 2>/dev/null || lr_ok=0
   # A block is permanent and the peer is never told, so the evidence behind one has to be
   # readable after the terminal that printed it has gone.
   { lr_stamp

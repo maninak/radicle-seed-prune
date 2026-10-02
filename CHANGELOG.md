@@ -10,12 +10,13 @@ Replace the script. Nothing else has to change.
 
 ### Added
 
-- **You can list repos and identities to prune and block on sight.** Put one repo id or identity (`did:key:z6Mk...`) per line in `deny.txt` in the audit directory, and a list another operator shares works as is. `--apply` prunes and blocks every listed repo and every repo a listed identity is a delegate of, unless it is pinned, private, your own or in `keep.txt`.
+- **You can list repos and identities to prune and block on sight.** Put one repo id or identity (`did:key:z6Mk...`) per line in `deny.txt` in the audit directory, and a list another operator shares works as is. `--apply` prunes and blocks every listed repo and every repo a listed identity maintains, unless it is pinned, private, your own or in `keep.txt`.
 
 ### Changed
 
 - **When an unattended run plans over three times a rule's usual count, only that rule is held back.** Its repos stay in storage for a person to check, the rest of the plan is pruned, and the run exits `4`. Such a jump used to stop the whole run. `last-run/held.tsv` lists what was held.
-- **Up to 20 repos per rule always go through.** A rule that usually prunes nothing is not held back over a single repo. The number is set with `RATCHET_FLOOR`.
+- **A rule is never held back for pruning 20 repos or fewer.** A rule that usually prunes nothing can still take a single repo. `RATCHET_FLOOR` sets the number.
+- **Old projects named like `foo-test` are no longer pruned as junk.** A repo whose history starts more than 14 days before it was created on Radicle was imported, not thrown away. `last-run/imports.tsv` lists the ones kept.
 
 ### Fixed
 

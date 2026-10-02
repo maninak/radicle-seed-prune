@@ -814,6 +814,34 @@ has "$plan_hi" "zfews5" \
 
 
 build_fixture; assert_isolated
+# --- rule A spares an import: a junk-named repo whose history began well before its rad init.
+# Both repos get their master and refs/rad/id commits rewritten with the init 380 days ago,
+# and only master's author date moves back: 20 days for zjunk1, past IMPORT_SPARE_DAYS, and 12
+# for zbar8, short of it. Committer dates stay at the init, so only the author date counts.
+init=$(date -u -d "380 days ago" +%s)
+for spec in zjunk1:20 zbar8:12; do
+  d="$STORAGE/${spec%%:*}"
+  old=$(( init - ${spec#*:} * 86400 ))
+  for ref in refs/heads/master refs/rad/id; do
+    author=$init; [ "$ref" = refs/heads/master ] && author=$old
+    c=$(GIT_AUTHOR_DATE="@$author +0000" GIT_COMMITTER_DATE="@$init +0000" \
+        git -c user.name=a -c user.email=a@b --git-dir="$d" \
+          commit-tree "$(git --git-dir="$d" rev-parse "$ref^{tree}")" -m c)
+    git --git-dir="$d" update-ref "$ref" "$c"
+  done
+  touch -d "10 days ago" "$d"
+done
+plan=$(run)
+{ ! has "$plan" "zjunk1" && grep -qE '^#   zjunk1 +test-old$' <<<"$plan" \
+  && [ "$(grep -v '^#' "$AUDIT_DIR/last-run/imports.tsv")" = "$(printf 'zjunk1\ttest-old')" ]; } \
+  && ok "rule A spares a junk-named import, and names it" \
+  || no "rule A spares a junk-named import"
+grep -qE "^zbar8 .*junk-name +[^ ]*import" <<<"$plan" \
+  && ok "rule A prunes a repo 12 days short of an import, marked near" \
+  || no "rule A spared a repo under IMPORT_SPARE_DAYS, or did not mark it near"
+
+
+build_fixture; assert_isolated
 # Built here rather than inherited, so this section can run on its own.
 plan=$(run)
 
@@ -1482,7 +1510,7 @@ cols=$cols$(printf '\tname\tage_from_unix\tnear_threshold')
 # Read months later a file of repo ids says nothing about which run condemned them, so every
 # one of them opens with the same stamp naming that run.
 stamped=1
-for f in plan spam-batches spam-domains media-review parasite-peers; do
+for f in plan spam-batches spam-domains media-review imports parasite-peers; do
   grep -qE '^# [0-9-]+T[0-9:]+Z  version=[0-9.]+  mode=DRY-RUN  rules=[A-G]+  storage=/' \
        "$L/$f.tsv" || stamped=0
 done
