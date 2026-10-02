@@ -47,6 +47,10 @@
 #     - every repo whose DELEGATES include an identity in deny.txt, which is blocked too. A
 #       listed identity's push into someone else's repo does not count, or listing it would
 #       let it condemn any repo it can comment on.
+#     - every repo whose delegates' branches and tags, history included, hold copies of the
+#       files listed in AUDIT_DIR/deny-files.tsv: at least COPY_MIN_BYTES of them, making up at
+#       least COPY_MIN_PCT% of the bytes there. This one is the tool's inference from a
+#       person's verdict, so the runaway caps and the ratchet count it like a rule's.
 #
 #   Rule A - junk-named & abandoned, in two branches that differ in how sure we are:
 #     A/junk-name: name contains a disposable WORD (test, tmp, old, demo, ...)
@@ -277,6 +281,8 @@
 #   rad prune quarantine restore <rid>    # put it back in storage and re-seed it
 #   rad prune quarantine delete <rid>     # or --all: delete now, for good
 #   rad prune quarantine purge            # delete whatever is past its window
+#   rad prune quarantine files <rid>      # its images, video, audio and archives, as rows
+#                                         # to append to deny-files.tsv
 #
 # --apply scans ONCE, prints the plan, then in a terminal asks before deleting; run
 # non-interactively (cron, a pipe) it just applies. Confirming interactively also bypasses the
@@ -522,6 +528,19 @@ KEEP_FILE="${KEEP_FILE:-$AUDIT_DIR/keep.txt}"
 # The verdict is a person's, so no rule's evidence, age or seed count is asked for. Pins, our
 # own and private repos, and keep.txt still win, since each of those is a person's word too.
 DENY_FILE="$AUDIT_DIR/deny.txt"
+# Files a denied repo carried, so a copy of them elsewhere is pruned too. One file per line,
+# whitespace-separated: its git object id, its size or -, where it came from (one word, a repo
+# id when it is one), and a date; #-comments ignored. A row whose source is a repo id in
+# keep.txt is ignored: a restored repo is a verdict taken back, and its files stop condemning.
+DENY_FILES="$AUDIT_DIR/deny-files.tsv"
+# A copy is a repo whose delegates' branches and tags, history included, hold at least
+# COPY_MIN_BYTES of those files, making up at least COPY_MIN_PCT% of all the bytes on those
+# branches. Both, because honest repos do share the odd avatar or icon with a leak: the honest
+# repos we measured held 0.3 MiB of a denied repo's files at most, and the copies 50 MiB and
+# up. The share spares a project that vendored a few listed files. A re-encoded copy has
+# different bytes and is not caught.
+COPY_MIN_BYTES=5242880                           # bytes of listed files a copy holds
+COPY_MIN_PCT=50                                  # % of the branches' bytes those files make up
 # What rules E and F read out of each repo, kept between runs and reused for the repos that
 # have not changed. See "the run cache" below for what a repo is keyed on.
 CACHE="${CACHE:-1}"                              # 0 reads every repo on every run
@@ -617,6 +636,49 @@ read_delegates() {
   return 0
 }
 
+# Prints, of the ref names on stdin, the branches and tags a repo's delegates control: the
+# canonical refs/heads and refs/tags, and the same under each delegate's namespace. Reads $dids
+# as read_delegates sets it. Issues and patches are left out. A COB op's parents are the newest
+# ops already there, whoever wrote them, and a patch op's are the patch's own commits, so a
+# delegate who replies to a stranger's patch puts the stranger's files in the history of the
+# delegate's own refs. Defined at the top level, so a worker can carry a copy of it.
+delegate_branches() {
+  awk -v dids=" $dids " '
+    /^refs\/(heads|tags)\// { print; next }
+    /^refs\/namespaces\/[^\/]+\/refs\/(heads|tags)\// {
+      split($0, p, "/"); if (index(dids, " " p[3] " ")) print }'
+}
+
+# What the first 16 bytes say a file is, as lowercase hex, whatever its name says. Most
+# signatures below hold a control byte, or one that cannot appear in UTF-8, which text does not
+# start with. GIF8, ID3, fLaC, 8BPS, and RIFF or ftyp a few bytes in, are plain letters, which
+# a text file is unlikely to start with but can.
+# Each `?` is one hex digit, so eight of them skip 4 bytes. Defined at the top level, so a
+# worker can carry a copy of it with declare -f.
+is_media() {
+  case "$1" in
+    ffd8ff*)                       return 0 ;;   # jpeg
+    89504e470d0a1a0a*)             return 0 ;;   # png
+    474946383761*|474946383961*)   return 0 ;;   # gif87a, gif89a
+    1a45dfa3*)                     return 0 ;;   # matroska, webm
+    ????????66747970*)             return 0 ;;   # "ftyp" at byte 4: mp4, mov, m4a, heic, avif
+    52494646????????57454250*)     return 0 ;;   # riff + webp
+    52494646????????57415645*)     return 0 ;;   # riff + wave
+    52494646????????41564920*)     return 0 ;;   # riff + avi
+    4f67675300*)                   return 0 ;;   # ogg
+    664c6143*)                     return 0 ;;   # flac
+    494433*|fffb*|fff3*|fff2*)     return 0 ;;   # mp3, tagged or a bare frame header
+    3026b275*)                     return 0 ;;   # asf, wmv
+    49492a00*|4d4d002a*)           return 0 ;;   # tiff, either byte order
+    38425053*)                     return 0 ;;   # psd
+    504b0304*)                     return 0 ;;   # zip, and the formats built on it
+    1f8b*)                         return 0 ;;   # gzip
+    526172211a07*)                 return 0 ;;   # rar
+    377abcaf271c*)                 return 0 ;;   # 7z
+  esac
+  return 1
+}
+
 # ---------------------------------------------------------------------------------------- args
 # One subcommand, "quarantine", for dealing with repos an earlier run pruned. Everything else
 # is a flag on the prune run itself.
@@ -659,6 +721,8 @@ QUARANTINE VERBS
   restore <rid>... put it back in storage, clear the block, re-seed it, and keep it after
   delete <rid>...  delete it now instead of waiting; --all deletes everything held
   purge            delete everything already past its window
+  files <rid>      print its images, video, audio and archives as rows to append to
+                   deny-files.tsv
 
 CONFIGURATION
   The thresholds an operator may want to move are environment variables, and there are no
@@ -699,13 +763,14 @@ esac
 # installed fails in that same shape for every repo at once, and the run then reports storage
 # as unreadable when one binary is missing from PATH. Name it here, before a repo is read.
 # What the quarantine verbs call, checked whatever the command is. `restore` reaches dirname
-# through the keep file it writes.
+# through the keep file it writes. `files` adds what it reads a repo with.
 need="basename cut date dirname du grep mkdir mv rm stat"
 # What a scan adds on top. `nproc` is left out of both: its one call has a fallback value.
 if [ "$CMD" != quarantine ]; then
   need="$need awk cat df find git head jq mktemp od sed sha1sum sort tail touch tr"
   need="$need uniq wc xargs"
 fi
+if [ "$QVERB" = files ]; then need="$need awk git od"; fi
 missing=
 for c in $need; do
   command -v "$c" >/dev/null 2>&1 || missing="$missing $c"
@@ -880,6 +945,45 @@ if [ "$CMD" = quarantine ]; then
         rm -rf -- "$d" && npurge=$((npurge+1))
       done < <(quar_expired)
       echo "# purged $npurge repo(s) past the ${QUARANTINE_DAYS}d window."
+      ;;
+    files)
+      # Rows for DENY_FILES: every media file a quarantined repo's delegates put on its
+      # branches and tags, history included. These are the files the copy check counts, so a
+      # row from here never names a file a stranger pushed. Printed for a person to append.
+      [ "${#QARGS[@]}" = 1 ] \
+        || { echo "usage: $(basename "$0") quarantine files <rid>" >&2; exit 2; }
+      rid=${QARGS[0]#rad:}
+      is_rid "$rid" || { echo "# not a repo id: $rid" >&2; exit 2; }
+      d="$quar/$rid"
+      [ -d "$d" ] || { echo "# not in quarantine: $rid" >&2; exit 1; }
+      read_delegates "$d"
+      [ -n "$dids" ] || { echo "# cannot read the delegates of $rid" >&2; exit 1; }
+      ours=$(GIT_DIR="$d" git for-each-ref --format='%(refname)' | delegate_branches) \
+        || { echo "# cannot list the refs of $rid" >&2; exit 1; }
+      [ -n "$ours" ] || { echo "# $rid has no branches or tags of its delegates" >&2; exit 1; }
+      listing=$(GIT_DIR="$d" git rev-list --objects --stdin --filter=object:type=blob \
+                  <<<"$ours" \
+                | GIT_DIR="$d" git cat-file \
+                    --batch-check='%(objectname) %(objecttype) %(objectsize) %(rest)') \
+        || { echo "# cannot read the history of $rid" >&2; exit 1; }
+      # Printed only once every file has been read, so a failure appends nothing half-done.
+      today=$(date -u +%F); nfiles=0; rows=""
+      while read -r oid type size _; do
+        [ "$type" = blob ] || continue
+        hex=$(od -An -tx1 -N16 -v < <(GIT_DIR="$d" git cat-file blob "$oid" 2>/dev/null))
+        hex=${hex//[$' \n']/}
+        if [ -z "$hex" ] && [ "$size" != 0 ]; then
+          echo "# cannot read file $oid of $rid; no rows printed" >&2
+          exit 1
+        fi
+        if is_media "$hex"; then
+          rows+=$(printf '%s\t%s\trad:%s\t%s' "$oid" "$size" "$rid" "$today")$'\n'
+          nfiles=$((nfiles + 1))
+        fi
+      done <<<"$listing"
+      printf '%s' "$rows"
+      echo "# $nfiles media file(s) on the branches and tags of $rid's delegates, as rows" \
+           "to append to $DENY_FILES" >&2
       ;;
     *)
       [ -n "$QVERB" ] && echo "unknown quarantine verb: $QVERB" >&2
@@ -1198,6 +1302,55 @@ sort -u -o "$tmp/deny-rids" "$tmp/deny-rids"; sort -u -o "$tmp/deny-nids" "$tmp/
 [ ! -e "$DENY_FILE" ] \
   || echo "# deny list: $(wc -l < "$tmp/deny-rids") repo(s), $(wc -l < "$tmp/deny-nids")" \
           "identit(ies) in $DENY_FILE"
+# The files denied repos carried, as "oid \t source" in $tmp/deny-oids and the ids alone in
+# $tmp/deny-oid-list. A row naming a repo that was restored is dropped here, while the file
+# keeps it as a record. A malformed row is named, as a bad deny.txt line is.
+: > "$tmp/deny-oids"; ndenyrestored=0; ndenybad=0
+if [ -e "$DENY_FILES" ] && { [ ! -f "$DENY_FILES" ] || [ ! -r "$DENY_FILES" ]; }; then
+  echo "# WARN: cannot read $DENY_FILES; no repo is pruned as a copy of what it lists." >&2
+elif [ -e "$DENY_FILES" ]; then
+  declare -A RESTORED=()
+  while IFS= read -r r; do RESTORED[$r]=1; done < "$tmp/kept"
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%$'\r'}; line=${line#$'\xef\xbb\xbf'}
+    read -r oid bytes src _ <<<"${line%%#*}"
+    [ -n "$oid" ] || continue
+    oid=${oid,,}; srcid=${src#rad:}
+    # A row missing its size column would read its source as the size, and slip past the
+    # restore check below. The source is printed to a terminal and may be somebody else's.
+    if [[ ! $oid =~ ^[0-9a-f]{40}$ ]] || [[ ! $bytes =~ ^([0-9]+|-)$ ]] \
+       || [[ ! $src =~ ^[[:graph:]]+$ ]]; then
+      ndenybad=$((ndenybad + 1))
+      [ "$ndenybad" -gt "$top_evidence" ] \
+        || printf '# WARN: %s: %q is not "%s"; ignored.\n' "$DENY_FILES" "${line%%#*}" \
+                  "<object id> <bytes or -> <source> [date]" >&2
+    # An empty key is an error to an associative array, and "rad:" alone would be one.
+    elif [ -n "$srcid" ] && [ -n "${RESTORED[$srcid]:-}" ]; then
+      ndenyrestored=$((ndenyrestored + 1))
+    else
+      printf '%s\t%s\n' "$oid" "$src" >> "$tmp/deny-oids"
+    fi
+  done < "$DENY_FILES"
+  [ "$ndenybad" -le "$top_evidence" ] \
+    || echo "# WARN: ...and $((ndenybad - top_evidence)) more malformed row(s)" \
+            "in $DENY_FILES" >&2
+fi
+sort -u -o "$tmp/deny-oids" "$tmp/deny-oids"
+cut -f1 "$tmp/deny-oids" | sort -u > "$tmp/deny-oid-list"
+# Said every run, so a cron log shows the file was read, and what a copy has to hold.
+if [ -f "$DENY_FILES" ] && [ -r "$DENY_FILES" ]; then
+  copy_min_said=$(awk -v b="$COPY_MIN_BYTES" 'BEGIN {
+    if (b >= 1048576) printf "%.1fMiB", b / 1048576; else printf "%.0fKiB", b / 1024 }')
+  restored_note=""
+  [ "$ndenyrestored" = 0 ] \
+    || restored_note=", $ndenyrestored row(s) ignored as their source is in $KEEP_FILE"
+  echo "# deny files: $(wc -l < "$tmp/deny-oid-list") file id(s) in" \
+       "$DENY_FILES$restored_note." \
+       "A repo whose delegates' branches hold >=$copy_min_said of them," \
+       ">=${COPY_MIN_PCT}% of all their bytes, is pruned as denied-copy."
+fi
+# The check below is one more walk over storage, and only runs when there is something to find.
+if [ -s "$tmp/deny-oid-list" ]; then progress_phases=$((progress_phases + 1)); fi
 echo "# excluded: $(wc -l < "$tmp/pinned") pinned," \
      "$(wc -l < "$tmp/private") private, $(wc -l < "$tmp/own") own," \
      "$(wc -l < "$tmp/kept") kept"
@@ -1516,7 +1669,7 @@ if rule_on F; then
   echo "# measuring repo trees for rule F ($JOBS workers)..." >&2
   cat > "$tmp/media.sh" <<MEDIA
 #!/usr/bin/env bash
-$(declare -f read_delegates)
+$(declare -f read_delegates is_media)
 media_exts='$MEDIA_EXTS'
 text_exts='$MEDIA_TEXT_EXTS'
 text_names='$MEDIA_TEXT_NAMES'
@@ -1530,33 +1683,6 @@ max_refs=$MEDIA_MAX_REFS
 blobs=$tmp/blobs/\$\$
 MEDIA
   cat >> "$tmp/media.sh" <<'MEDIA'
-# What the first 16 bytes say a file is, as lowercase hex, whatever its name says. Every
-# signature below either holds a byte that cannot appear in UTF-8 text or is anchored past the
-# start, so no plain text file can match one. Each `?` is one hex digit, so eight of them skip
-# 4 bytes.
-is_media() {
-  case "$1" in
-    ffd8ff*)                       return 0 ;;   # jpeg
-    89504e470d0a1a0a*)             return 0 ;;   # png
-    474946383761*|474946383961*)   return 0 ;;   # gif87a, gif89a
-    1a45dfa3*)                     return 0 ;;   # matroska, webm
-    ????????66747970*)             return 0 ;;   # "ftyp" at byte 4: mp4, mov, m4a, heic, avif
-    52494646????????57454250*)     return 0 ;;   # riff + webp
-    52494646????????57415645*)     return 0 ;;   # riff + wave
-    52494646????????41564920*)     return 0 ;;   # riff + avi
-    4f67675300*)                   return 0 ;;   # ogg
-    664c6143*)                     return 0 ;;   # flac
-    494433*|fffb*|fff3*|fff2*)     return 0 ;;   # mp3, tagged or a bare frame header
-    3026b275*)                     return 0 ;;   # asf, wmv
-    49492a00*|4d4d002a*)           return 0 ;;   # tiff, either byte order
-    38425053*)                     return 0 ;;   # psd
-    504b0304*)                     return 0 ;;   # zip, and the formats built on it
-    1f8b*)                         return 0 ;;   # gzip
-    526172211a07*)                 return 0 ;;   # rar
-    377abcaf271c*)                 return 0 ;;   # 7z
-  esac
-  return 1
-}
 # The files the given refs reach, as "<oid> <size> <path>". A branch or tag comes in as
 # "<ref>^{tree}", which lists what it holds now and nothing before it. A COB ref comes in
 # whole, so its history comes too: a COB gains one commit per op and each commit's tree holds
@@ -1723,6 +1849,207 @@ MEDIA
     || echo "# WARN: rule F left $nmediafail repo(s) unjudged: unreadable, or over" \
             "MEDIA_MAX_REFS ($MEDIA_MAX_REFS) refs." >&2
 
+fi
+
+# ------------------------------------------------------------- copies of denied files: check
+# Which repos hold the files DENY_FILES lists. Two steps per repo. First its object store is
+# asked for every listed id at once, which covers every ref and every leftover, but proves
+# nothing about the repo: any peer's push lands in that store. It costs about 15us an id in
+# each repo, so a list of 10,000 ids takes about half an hour of CPU over 11,000 repos, again
+# each time the list changes. A repo whose store holds at least COPY_MIN_BYTES of listed media
+# is then walked, across the whole history of its delegates' branches and tags, because that
+# is what ties a file to the repo's owners. A listed file those branches do not reach condemns
+# nothing, or pushing one into a repo would be a way to get it deleted.
+: > "$tmp/copy"; : > "$tmp/copy-fail"; : > "$tmp/copy-done"; : > "$tmp/copies"
+if [ -s "$tmp/deny-oid-list" ]; then
+  echo "# checking repos for copies of denied files ($JOBS workers)..." >&2
+  cat > "$tmp/copy.sh" <<COPY
+#!/usr/bin/env bash
+set -o pipefail
+$(declare -f read_delegates delegate_branches is_media)
+ids='$tmp/deny-oid-list'
+max_refs=$MEDIA_MAX_REFS
+min_bytes=$COPY_MIN_BYTES
+COPY
+  cat >> "$tmp/copy.sh" <<'COPY'
+t=$(mktemp) || exit 1
+trap 'rm -f "$t" "$t.hits" "$t.n" "$t.walk"' EXIT
+# Rows, each with the rid in field 2 for the run cache: "h" a listed file the delegates'
+# branches reach, with its size; "n" a listed id that counts for nothing, with why; "p" a repo
+# holding listed files none of those branches reach; "=" the end of a repo, with the bytes of
+# every file its delegates' branches reach. A repo's rows are printed only once it has been
+# checked to the end, so one that fails part-way leaves nothing behind but its name on fd 4.
+for d; do
+  rid=${d##*/}
+  # Every listed id the store holds, by whatever route it arrived. A missing one prints as
+  # "<oid> missing".
+  GIT_DIR="$d" git cat-file --batch-check='%(objectname) %(objecttype) %(objectsize)' \
+    < "$ids" > "$t" 2>/dev/null || { echo "$rid" >&4; continue; }
+  # An id naming a commit, a tree or a tag is a row copied from the wrong place.
+  awk -v rid="$rid" '$2 != "blob" && $2 != "missing" {
+                       printf "n\t%s\t%s\ta %s, not a file\n", rid, $1, $2 }' "$t" > "$t.n"
+  # A row is only as good as whoever wrote it. One naming a text file by mistake would make
+  # every repo holding that file a copy, so a listed file has to read as media to count. It is
+  # read before any history is walked, so a listed file that is not media costs one read in
+  # each repo holding it. An empty read of a file that is not empty is a broken store.
+  : > "$t.hits"; broken=0; stored=0
+  while read -r oid size; do
+    hex=$(od -An -tx1 -N16 -v < <(GIT_DIR="$d" git cat-file blob "$oid" 2>/dev/null))
+    hex=${hex//[$' \n']/}
+    if [ -z "$hex" ] && [ "$size" != 0 ]; then broken=1; break; fi
+    if is_media "$hex"; then
+      echo "$oid" >> "$t.hits"; stored=$((stored + size))
+    else
+      printf 'n\t%s\t%s\tnot a known media format\n' "$rid" "$oid" >> "$t.n"
+    fi
+  done < <(awk '$2 == "blob" { print $1, $3 }' "$t")
+  [ "$broken" = 0 ] || { echo "$rid" >&4; continue; }
+  # The branches can hold no more of the listed media than the whole store does, so a repo
+  # whose store holds less than the bar is no copy, and is not walked. A stock icon shared with
+  # a denied repo would otherwise send every repo holding it through a walk on each change.
+  if [ "$stored" -lt "$min_bytes" ]; then
+    cat "$t.n"; printf '=\t%s\t0\n' "$rid"; echo "$rid" >&3; continue
+  fi
+  # --count stops the listing one past rule F's cap, so a repo with 152k refs never reaches a
+  # variable. Over it the repo goes unjudged, as it does for rule F.
+  allrefs=$(GIT_DIR="$d" git for-each-ref --count=$(( max_refs + 1 )) \
+              --format='%(refname)' 2>/dev/null) || { echo "$rid" >&4; continue; }
+  [ "$(wc -l <<<"$allrefs")" -le "$max_refs" ] || { echo "$rid" >&4; continue; }
+  read_delegates "$d"
+  ours=$(delegate_branches <<<"$allrefs")
+  # Whole histories, not only tips: a file committed and then deleted is still in the repo,
+  # and every node that fetches the repo gets it. The awk keeps the listed files and adds up
+  # the bytes of every file, which is what the listed ones are measured against.
+  printf '=\t%s\t0\n' "$rid" > "$t.walk"
+  if [ -n "$ours" ]; then
+    # No --ignore-missing: a ref whose commit is gone would drop out of the walk, and its bytes
+    # out of the share, leaving the repo judged on the rest.
+    GIT_DIR="$d" git rev-list --objects --stdin \
+        --filter=object:type=blob <<<"$ours" 2>/dev/null \
+      | GIT_DIR="$d" git cat-file \
+          --batch-check='%(objectname) %(objecttype) %(objectsize) %(rest)' 2>/dev/null \
+      | awk -v hits="$t.hits" -v rid="$rid" '
+          FILENAME == hits { listed[$1] = 1; next }
+          $2 != "blob"     { next }
+          { total += $3 }
+          $1 in listed     { printf "h\t%s\t%s\t%s\n", rid, $1, $3 }
+          END              { printf "=\t%s\t%.0f\n", rid, total }' "$t.hits" - > "$t.walk"
+    # A listing that dies part-way reads as a repo holding less, which raises the share the
+    # listed files make up. Not judged at all is the safe reading of that.
+    case "${PIPESTATUS[*]}" in (*[1-9]*) echo "$rid" >&4; continue ;; esac
+  fi
+  cat "$t.n"
+  grep -q '^h' "$t.walk" || printf 'p\t%s\t%s\n' "$rid" "$(wc -l < "$t.hits")"
+  cat "$t.walk"; echo "$rid" >&3
+done
+COPY
+  # The cached rows answer for the list they were checked against. A changed list re-checks
+  # every repo without touching rule E and F's cache, which folding it into the fingerprint
+  # would throw away, costing a full cold run for every row added.
+  copy_set=$(sha1sum < "$tmp/deny-oid-list" | cut -c1-40)
+  copy_set_saved=1
+  if [ "$CACHE" = 1 ] && [ "$(cat "$CACHE_DIR/copy-set" 2>/dev/null)" = "$copy_set" ]; then
+    cache_hits copy
+  else
+    : > "$tmp/cached-copy"
+    # The old keys go before the new list is written down, so a run that dies in between
+    # checks everything again and never reuses rows checked against the old list. Keys
+    # saved under a list that could not be written down would be reused under the old one.
+    copy_set_saved=0
+    if [ "$CACHE" = 1 ] && mkdir -p "$CACHE_DIR" 2>/dev/null \
+       && rm -f "$CACHE_DIR/keys-copy" 2>/dev/null \
+       && printf '%s\n' "$copy_set" > "$CACHE_DIR/copy-set" 2>/dev/null; then
+      copy_set_saved=1
+    fi
+  fi
+  progress_start "copies" "$(repos_left copy)" "$tmp/copy-done" "$tmp/copy-fail"
+  repos_to_read "$tmp/cached-copy" \
+    | xargs -0r -P "$JOBS" -n 32 "$BASH_BIN" "$tmp/copy.sh" \
+        > "$tmp/copy" 3> "$tmp/copy-done" 4> "$tmp/copy-fail" || true
+  progress_stop
+  cache_reuse "copy" 2 copy >> "$tmp/copy"
+  cache_save  "copy" "$tmp/copy"
+  # Only a repo with its closing row was checked to the end. One that failed is not cached, so
+  # the next run tries it again.
+  awk -F'\t' '$1 == "=" { print $2 }' "$tmp/copy" | sort -u > "$tmp/answered-copy"
+  if [ "$copy_set_saved" = 1 ]; then cache_save_keys copy "$tmp/answered-copy"; fi
+
+  # rid \t listed bytes \t total bytes \t % \t files \t source \t other sources, for every
+  # repo whose delegates' branches hold a listed file. Only ids on this run's list count. The
+  # cache already checks every repo again when the list changes, and this holds should a cached
+  # row from a longer list ever get through. The source named is the one most of its
+  # files came from, ties broken by name so the same storage always prints the same plan.
+  awk -F'\t' -v src="$tmp/deny-oids" '
+      FILENAME == src            { if (!($1 in from)) from[$1] = $2; next }
+      $1 == "=" && $3 > 0        { total[$2] = $3 }
+      $1 == "h" && ($3 in from)  { held[$2] += $4; files[$2]++; per[$2 SUBSEP from[$3]]++ }
+      END {
+        for (key in per) {
+          split(key, k, SUBSEP); nsrc[k[1]]++
+          if (per[key] > most[k[1]] || (per[key] == most[k[1]] && k[2] < top[k[1]]))
+            { most[k[1]] = per[key]; top[k[1]] = k[2] }
+        }
+        for (r in held) if (r in total)
+          printf "%s\t%.0f\t%.0f\t%d\t%d\t%s\t%d\n", r, held[r], total[r],
+                 int(held[r] * 100 / total[r]), files[r], top[r], nsrc[r] - 1
+      }' "$tmp/deny-oids" "$tmp/copy" | sort -t$'\t' -k2,2nr -k1,1 > "$tmp/copies"
+
+  # Sorted into a file first: head leaving a long pipe early would fail it under pipefail.
+  sort -u -o "$tmp/copy-fail" "$tmp/copy-fail"
+  ncopyfail=$(wc -l < "$tmp/copy-fail")
+  if [ "$ncopyfail" -gt 0 ]; then
+    echo "# WARN: could not check $ncopyfail repo(s) for copies of denied files: unreadable," \
+         "or over MEDIA_MAX_REFS ($MEDIA_MAX_REFS) refs. None of them is pruned as one:" >&2
+    head -n "$top_evidence" "$tmp/copy-fail" | sed 's/^/#   /' >&2
+    [ "$ncopyfail" -le "$top_evidence" ] \
+      || echo "#   ...and $((ncopyfail - top_evidence)) more (PLAN_FULL=1 lists them)" >&2
+  fi
+  # A listed file in an issue, a patch, a stranger's push or an old leftover. Whose it is takes
+  # a human to tell.
+  # A repo in the keep file was already looked at by a person, so it is not named again.
+  awk -F'\t' -v kept="$tmp/kept" 'FILENAME == kept { k[$1] = 1; next }
+                                  $1 == "p" && !($2 in k) { printf "%s\t%s\n", $2, $3 }' \
+      "$tmp/kept" "$tmp/copy" | sort -u > "$tmp/copy-planted"
+  nplanted=$(wc -l < "$tmp/copy-planted")
+  if [ "$nplanted" -gt 0 ]; then
+    echo "# WARN: $nplanted repo(s) hold $copy_min_said or more of listed files, but not on" \
+         "their own branches or tags, so they are not pruned as copies. Check them by hand:" >&2
+    head -n "$top_evidence" "$tmp/copy-planted" \
+      | awk -F'\t' '{ printf "#   %-34s %d file(s)\n", $1, $2 }' >&2
+    [ "$nplanted" -le "$top_evidence" ] \
+      || echo "#   ...and $((nplanted - top_evidence)) more (PLAN_FULL=1 lists them)" >&2
+  fi
+  # A listed id that counts for nothing is a row somebody should fix. Sorted first, so the
+  # same storage names the same repo for it on every run.
+  awk -F'\t' '$1 == "n" { printf "%s\t%s\t%s\n", $3, $2, $4 }' "$tmp/copy" | sort -u \
+    | awk -F'\t' '!($1 in seen) { seen[$1] = 1; print }' > "$tmp/copy-notmedia"
+  nnotmedia=$(wc -l < "$tmp/copy-notmedia")
+  if [ "$nnotmedia" -gt 0 ]; then
+    echo "# WARN: $nnotmedia id(s) in $DENY_FILES count for nothing: they are not files, or" \
+         "do not start like any image, video, audio or archive format this tool knows." \
+         "Check those rows:" >&2
+    head -n "$top_evidence" "$tmp/copy-notmedia" \
+      | awk -F'\t' '{ printf "#   %s  %s (in %s)\n", $1, $3, $2 }' >&2
+    [ "$nnotmedia" -le "$top_evidence" ] \
+      || echo "#   ...and $((nnotmedia - top_evidence)) more (PLAN_FULL=1 lists them)" >&2
+  fi
+  # Enough listed media on a repo's own branches, but under the share. Padding the branches
+  # with bytes of their own is how a copy would get there, so a person should look. A repo in
+  # the keep file already has been.
+  awk -F'\t' -v kept="$tmp/kept" -v b="$COPY_MIN_BYTES" -v p="$COPY_MIN_PCT" '
+      FILENAME == kept { k[$1] = 1; next }
+      $2 >= b && $4 < p && !($1 in k)' "$tmp/kept" "$tmp/copies" > "$tmp/copy-under"
+  nunder=$(wc -l < "$tmp/copy-under")
+  if [ "$nunder" -gt 0 ]; then
+    echo "# WARN: $nunder repo(s) hold enough listed files on their own branches to be" \
+         "copies, but too small a share of the repo. Check them by hand:" >&2
+    head -n "$top_evidence" "$tmp/copy-under" \
+      | awk -F'\t' 'BEGIN { fmt = "#   %-34s %.1f MiB in %d file(s), "
+                            fmt = fmt "%d%% of the bytes on its branches\n" }
+                    { printf fmt, $1, $2 / 1048576, $5, $4 }' >&2
+    [ "$nunder" -le "$top_evidence" ] \
+      || echo "#   ...and $((nunder - top_evidence)) more (PLAN_FULL=1 lists them)" >&2
+  fi
 fi
 
 # --------------------------------------------------------------- rule G: parasite peers, scan
@@ -2121,7 +2448,7 @@ OWNED
 fi
 
 declare -A SIZE MTIME LIFE BIRTH NAME SEEDS EXCL SCANFAIL SPAM LINKSCORE MEDIA SHARED \
-           FIRSTSEEN MEDIABYTES DELEGATES DENY_RID DENY_NID
+           FIRSTSEEN MEDIABYTES DELEGATES DENY_RID DENY_NID COPY COPYHELD COPYPCT COPYROW
 while IFS=$'\t' read -r sz path; do SIZE[${path##*/}]=$sz; done < "$tmp/du"
 while IFS=$'\t' read -r rid mt;   do MTIME[$rid]=${mt%.*}; done < "$tmp/mtimes"
 # Anything that is not a plain number becomes 0, which the classify loop reads as "age
@@ -2208,6 +2535,16 @@ while IFS=$'\t' read -r rid mb ob; do
 done < "$tmp/media"
 # No unset pass over media-fail: every worker path that writes a rid there continues before
 # printing that repo's totals, so a failed repo is never in $tmp/media and never reached MEDIA.
+
+# A copy of denied files has to clear both bars. The two measures are kept for every repo
+# holding any, so the NEAR column can say which bar was close, and the whole row for the
+# report. Only digits are let through, because these reach arithmetic inside the classify loop.
+while IFS= read -r row; do
+  IFS=$'\t' read -r rid held _ pct _ <<<"$row"
+  [[ $held =~ ^[0-9]+$ && $pct =~ ^[0-9]+$ ]] || continue
+  COPYHELD[$rid]=$held; COPYPCT[$rid]=$pct; COPYROW[$rid]=$row
+  if [ "$held" -ge "$COPY_MIN_BYTES" ] && [ "$pct" -ge "$COPY_MIN_PCT" ]; then COPY[$rid]=1; fi
+done < "$tmp/copies"
 
 # ------------------------------------------------------------------- rule G: judge the peers
 # Folds the per-repo evidence into one verdict per peer. The accusation is a single file, byte
@@ -2332,6 +2669,7 @@ nblind=0; nfresh=0; nnoage=0
 : > "$tmp/deny-kept"        # rid \t why, for every denied repo an exclusion kept
 : > "$tmp/deny-nids-kept"   # listed identities that delegate one of those kept repos
 : > "$tmp/deny-why"         # rid \t why, for every denied repo in the plan
+: > "$tmp/copy-why"         # the $tmp/copies row of every copy in the plan
 while IFS=$'\t' read -r rid sz mt life birth; do
   # The deny list comes first, because it asks nothing the checks below exist to establish: no
   # readable size, no age, no settled fetch. A listed identity condemns only the repos it is a
@@ -2361,6 +2699,28 @@ while IFS=$'\t' read -r rid sz mt life birth; do
         "$rid" "${sz:-0}" "${SEEDS[$rid]:-0}" "$life" "denied" "$dname" 0 "" \
         >> "$tmp/plan"
       printf '%s\t%s\n' "$rid" "$denied" >> "$tmp/deny-why"
+    fi
+    continue
+  fi
+  # A copy of files a denied repo carried. It asks for no age and no settled fetch either:
+  # what condemns it is files on its own delegates' branches, and a copy of a leak is worth
+  # catching in the week it lands. It is the tool's inference, not a person's verdict, so it
+  # gets a reason of its own, which the runaway caps and the ratchet both count.
+  if [ -n "${COPY[$rid]:-}" ]; then
+    if [ -n "${EXCL[$rid]:-}" ]; then
+      # A repo put back with "quarantine restore" is a person overruling this inference, which
+      # is not worth a warning every week. A pinned, private or own one is named.
+      grep -qxF "$rid" "$tmp/kept" \
+        || printf '%s\t%s\n' "$rid" "copy of denied files" >> "$tmp/deny-kept"
+    else
+      dname=${NAME[$rid]:-}; [ -z "$dname" ] && dname='(?)'
+      near=""
+      near_min "${COPYHELD[$rid]}" "$COPY_MIN_BYTES" bytes
+      near_min "${COPYPCT[$rid]}" "$COPY_MIN_PCT" share
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$rid" "${sz:-0}" "${SEEDS[$rid]:-0}" "$life" "denied-copy" "$dname" 0 \
+        "${near:+${near#+}}" >> "$tmp/plan"
+      printf '%s\n' "${COPYROW[$rid]}" >> "$tmp/copy-why"
     fi
     continue
   fi
@@ -2495,8 +2855,9 @@ fi
 # Two people's words disagree here, and the one that keeps the repo wins, since a prune is the
 # one of the two that cannot be taken back. Named, so the disagreement gets settled by hand.
 if [ -s "$tmp/deny-kept" ]; then
-  echo "# WARN: $(wc -l < "$tmp/deny-kept") repo(s) on $DENY_FILE are kept anyway, because" \
-       "they are pinned, private, our own or in $KEEP_FILE:" >&2
+  echo "# WARN: $(wc -l < "$tmp/deny-kept") repo(s) on the deny list or holding copies of" \
+       "denied files are kept anyway, because they are pinned, private, our own or in" \
+       "$KEEP_FILE:" >&2
   sed 's/^/#   /; s/\t/  /' "$tmp/deny-kept" >&2
 fi
 # A repo can reach $tmp/repos without being one of the directories counted at the top of the
@@ -2658,6 +3019,18 @@ if [ "$nimports" -gt 0 ]; then
   [ "$nimports" -gt "$top_evidence" ] \
     && echo "#   ...and $((nimports - top_evidence)) more (PLAN_FULL=1 lists them)"
 fi
+# What each copy holds and where its files came from, which the plan row cannot say.
+ncopies=$(wc -l < "$tmp/copy-why")
+if [ "$ncopies" -gt 0 ]; then
+  echo
+  echo "# copies of denied files: $ncopies repo(s) in the plan:"
+  head -n "$top_evidence" "$tmp/copy-why" \
+    | awk -F'\t' '{ others = ($7 > 0) ? sprintf(" and %d other source(s)", $7) : ""
+                    printf "#   %-34s %.1f MiB in %d file(s), %d%% of the bytes on its" \
+                           " branches, from %s%s\n", $1, $2 / 1048576, $5, $4, $6, others }'
+  [ "$ncopies" -gt "$top_evidence" ] \
+    && echo "#   ...and $((ncopies - top_evidence)) more (PLAN_FULL=1 lists them)"
+fi
 
 echo
 # The plan promises only what the run will actually deliver, and says it the same way the DONE
@@ -2789,6 +3162,18 @@ if [ "$lr_ok" = 1 ]; then
   { lr_stamp
     printf '# rid\tcause\n'
     cat "$tmp/deny-why"; } > "$staging/denied.tsv" 2>/dev/null || lr_ok=0
+  { lr_stamp
+    printf '# rid\tdenied_bytes\tbranch_bytes\tpct\tfiles\tsource\tother_sources\n'
+    cat "$tmp/copy-why"; } > "$staging/denied-copies.tsv" 2>/dev/null || lr_ok=0
+  # Every listed file each copy holds, so a wrong copy can be traced to the rows behind it.
+  { lr_stamp
+    printf '# rid\toid\tbytes\n'
+    awk -F'\t' -v why="$tmp/copy-why" -v src="$tmp/deny-oid-list" '
+        FILENAME == why  { copy[$1] = 1; next }
+        FILENAME == src  { listed[$1] = 1; next }
+        $1 == "h" && ($2 in copy) && ($3 in listed) { print $2 "\t" $3 "\t" $4 }' \
+        "$tmp/copy-why" "$tmp/deny-oid-list" "$tmp/copy" | sort; } \
+    > "$staging/denied-copy-files.tsv" 2>/dev/null || lr_ok=0
   { lr_stamp
     cat "$scanerr"; } > "$staging/scan-errors.txt" 2>/dev/null || lr_ok=0
 fi
@@ -3045,6 +3430,13 @@ open_audit
   fi
   # Which line of the deny list each denied repo was pruned for, so one bad line can be traced.
   sed 's/^/# denied: /; s/\t/ /' "$tmp/deny-why"
+  # And how much of each copy is listed files, and from which source. A copy the ratchet held
+  # is not in this run's plan.
+  awk -F'\t' -v plan="$tmp/plan.sorted" '
+      FILENAME == plan { kept[$1] = 1; next }
+      $1 in kept { printf "# denied-copy: %s %s bytes in %s file(s), %s%% of the bytes" \
+                          " on its branches, from %s\n", $1, $2, $5, $4, $6 }' \
+      "$tmp/plan.sorted" "$tmp/copy-why"
   plan_header
   cat "$tmp/plan.sorted"; } >> "$audit"
 

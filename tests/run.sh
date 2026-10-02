@@ -2293,6 +2293,129 @@ out=$(RULES= MAX_PRUNE_COUNT=1 MAX_PRUNE_GB=0 "${NOTTY[@]}" "$SCRIPT" --apply </
   && ok "repos on the deny list do not count against the runaway caps" \
   || no "a deny list longer than the cap stopped the run (rc=$rc)"
 
+# --- copies of denied files: the files deny-files.tsv lists, found again in another repo ---
+# "same" pads with zeros, so every repo given leak.mp4 at 6 MiB holds one blob, which no
+# other fixture repo holds. zcode4 has it at its tip, zcode6 only in history, zcode7 beside
+# four times its bytes of other files, zpin6 is pinned, and zvictimten has it only where a
+# stranger pushed it. zrot1 holds a second listed clip, under COPY_MIN_BYTES. zrot2's listed
+# file is not media at all, and a stranger pushed zrot1's clip into it, too small to look at.
+build_fixture; assert_isolated
+e_tree zcode4 90 master "leak.mp4:6291456:same" "README.md:100"
+e_tree zcode6 90 master "leak.mp4:6291456:same"
+e_tree zcode6 90 master "README.md:100"
+e_tree zcode7 90 master "leak.mp4:6291456:same" "own.mp4:25165824:mp4"
+e_tree zpin6 90 master "leak.mp4:6291456:same" "README.md:100"
+e_tree zvictimten 90 "refs/namespaces/$STRANGER_NID/refs/heads/x" "leak.mp4:6291456:same"
+e_tree zrot1 90 master "small.mp4:3145728:same"
+e_tree zrot2 90 master "notes.md:6291456"
+e_tree zrot2 90 "refs/namespaces/$STRANGER_NID/refs/heads/x" "small.mp4:3145728:same"
+# zrot3: a stranger's patch carries the clip, and the delegate replies to it. Heartwood makes
+# the patch commit a parent of the delegate's own COB op, so the clip is in the history of a
+# ref under the delegate's namespace, and only there.
+d="$STORAGE/zrot3"
+e_tree zrot3 90 "refs/namespaces/$STRANGER_NID/refs/heads/patch" "leak.mp4:6291456:same"
+patch=$(GIT_DIR="$d" git rev-parse "refs/namespaces/$STRANGER_NID/refs/heads/patch")
+reply=$(git -c user.name=a -c user.email=a@b --git-dir="$d" commit-tree -p "$patch" -m reply \
+          "$(git --git-dir="$d" rev-parse "master^{tree}")")
+GIT_DIR="$d" git update-ref "refs/namespaces/$(dlg zrot3)/refs/cobs/xyz.radicle.patch/aaa" \
+  "$reply"
+GIT_DIR="$d" git update-ref -d "refs/namespaces/$STRANGER_NID/refs/heads/patch"
+touch -d "10 days ago" "$d"
+leak=$(GIT_DIR="$STORAGE/zcode4" git rev-parse master:leak.mp4)
+small=$(GIT_DIR="$STORAGE/zrot1" git rev-parse master:small.mp4)
+notes=$(GIT_DIR="$STORAGE/zrot2" git rev-parse master:notes.md)
+printf '# oid\tbytes\tsource\tdate\n%s\t6291456\trad:zgonesrc\t2026-10-02\n' "$leak" \
+  > "$AUDIT_DIR/deny-files.tsv"
+printf '%s - hand-list 2026-10-02\n%s - hand-list 2026-10-02\n' "$small" "$notes" \
+  >> "$AUDIT_DIR/deny-files.tsv"
+plan=$(run)
+{ grep -qE "^zcode4 .* denied-copy " <<<"$plan" \
+  && grep -qE "^#   zcode4 +6\.0 MiB in 1 file\(s\), 99% of the bytes on its branches, from rad:zgonesrc$" \
+       <<<"$plan" \
+  && grep -qE $'^zcode4\t6291456\t629[0-9]{4}\t99\t1\trad:zgonesrc\t0$' \
+       "$AUDIT_DIR/last-run/denied-copies.tsv" \
+  && grep -qx "zcode4"$'\t'"$leak"$'\t6291456' "$AUDIT_DIR/last-run/denied-copy-files.tsv"; } \
+  && ok "a repo holding a listed file is pruned as a copy, and its source is named" \
+  || no "a repo holding a listed file was not pruned as a copy, or its source went unnamed"
+grep -qE "^zcode6 .* denied-copy " <<<"$plan" \
+  && ok "a listed file committed and then deleted still makes a copy" \
+  || no "a listed file only in history was missed"
+{ ! grep -qE "^(zcode7|zrot1) .* denied-copy " <<<"$plan" \
+  && grep -qE '^#   zcode7 +6\.0 MiB in 1 file\(s\), 19% of the bytes on its branches$' <<<"$plan" \
+  && ! grep -qE '^#   zrot1 ' <<<"$plan"; } \
+  && ok "a copy needs both the bytes and the share, and one under only the share is named" \
+  || no "a repo under one of the two bars was pruned as a copy, or went unnamed"
+{ ! grep -qE "^(zvictimten|zrot3) .* denied-copy " <<<"$plan" \
+  && grep -qE '^#   zvictimten +1 file\(s\)$' <<<"$plan" \
+  && grep -qE '^#   zrot3 +1 file\(s\)$' <<<"$plan" \
+  && ! grep -qE '^#   zrot2 +[0-9]+ file\(s\)$' <<<"$plan"; } \
+  && ok "a listed file a stranger pushed condemns nobody, even under a delegate's reply" \
+  || no "a stranger's push made a copy, or the repo went unnamed"
+{ ! grep -qE "^zpin6 " <<<"$plan" && grep -qE '^#   zpin6  copy of denied files$' <<<"$plan"; } \
+  && ok "a pinned copy is kept, and the run names it" \
+  || no "a pinned copy was pruned, or kept without a word"
+{ ! grep -qE "^zrot2 .* denied-copy " <<<"$plan" \
+  && grep -qF "#   $notes  not a known media format (in zrot2)" <<<"$plan"; } \
+  && ok "a listed file that is not media counts for nothing, and its row is named" \
+  || no "a listed text file made a copy, or went unnamed"
+# The caps and the ratchet count copies: they are the tool's inference, and a wrong row has no
+# limit otherwise.
+out=$(RULES= MAX_PRUNE_COUNT=1 "${NOTTY[@]}" "$SCRIPT" --apply \
+        </dev/null 2>&1); rc=$?
+{ [ "$rc" = 3 ] && [ -e "$STORAGE/zcode4" ]; } \
+  && ok "copies of denied files count against the runaway caps" \
+  || no "copies of denied files got past the runaway caps (rc=$rc)"
+for i in 1 2 3 4; do past_run "$i" $USUAL_BUT_C stale:20; done
+plan=$(RATCHET_FLOOR=0 run)
+grep -q '^#     rule denied-copy: 2 repos' <<<"$plan" \
+  && ok "copies that jump past their usual are held back like a rule" \
+  || no "the ratchet did not count copies of denied files"
+
+# A row naming a restored repo stops condemning. A row missing its size column must not read
+# its date as the source and slip past that. The cache is warm here, so the list changing is
+# what has to send each repo to be checked again. zcode7 has lost the object of its other
+# file, and zcode6 the commit of its other branch, so a listing of their branches stops
+# part-way and would leave the leak as all they hold.
+build_fixture; assert_isolated
+e_tree zcode4 90 master "leak.mp4:6291456:same" "README.md:100"
+e_tree zcode7 90 master "leak.mp4:6291456:same" "own.mp4:25165824:mp4"
+own=$(GIT_DIR="$STORAGE/zcode7" git rev-parse master:own.mp4)
+rm -f "$STORAGE/zcode7/objects/${own:0:2}/${own:2}"
+e_tree zcode6 90 master "leak.mp4:6291456:same"
+e_tree zcode6 90 refs/heads/y "own.mp4:25165824:mp4"
+gone=$(GIT_DIR="$STORAGE/zcode6" git rev-parse refs/heads/y)
+rm -f "$STORAGE/zcode6/objects/${gone:0:2}/${gone:2}"
+leak=$(GIT_DIR="$STORAGE/zcode4" git rev-parse master:leak.mp4)
+printf '%s - hand-list\n' "$(printf 1%.0s {1..40})" > "$AUDIT_DIR/deny-files.tsv"
+plan=$(run)
+printf '%s\t6291456\trad:zgonesrc\t2026-10-02\n' "$leak" > "$AUDIT_DIR/deny-files.tsv"
+plan=$(run)
+grep -qE "^zcode4 .* denied-copy " <<<"$plan" \
+  && ok "a row added to the list reaches repos the cache already answered for" \
+  || no "the cache hid a copy from a row added since"
+{ ! grep -qE "^(zcode6|zcode7) .* denied-copy " <<<"$plan" && grep -qx '#   zcode6' <<<"$plan" \
+  && grep -qx '#   zcode7' <<<"$plan"; } \
+  && ok "a repo whose branches cannot be read to the end is named, not judged a copy" \
+  || no "a repo with a missing object was judged on part of its bytes, or went unnamed"
+echo zgonesrc > "$AUDIT_DIR/keep.txt"
+printf '%s\trad:zgonesrc\t2026-10-02\n' "$leak" >> "$AUDIT_DIR/deny-files.tsv"
+plan=$(run)
+{ ! grep -qE "^zcode4 .* denied-copy " <<<"$plan" \
+  && grep -q '1 row(s) ignored as their source is in .*keep.txt' <<<"$plan" \
+  && grep -qF 'is not "<object id> <bytes or -> <source> [date]"' <<<"$plan"; } \
+  && ok "the rows of a restored repo are ignored, and a row missing a field is named" \
+  || no "a restored repo's rows still condemned a copy, or a short row slipped through"
+# The rows "quarantine files" prints are the ones the check counts: its delegates' media, and
+# neither their text nor a stranger's push.
+e_tree zrot2 90 master "leak.mp4:6291456:same" "README.md:100"
+e_tree zrot2 90 "refs/namespaces/$STRANGER_NID/refs/heads/x" "theirs.mp4:6291456:mp4"
+mkdir -p "$AUDIT_DIR/quarantine" && mv "$STORAGE/zrot2" "$AUDIT_DIR/quarantine/"
+out=$("$SCRIPT" quarantine files zrot2 2>/dev/null); rc=$?
+{ [ "$rc" = 0 ] && grep -qE $'^'"$leak"$'\t6291456\trad:zrot2\t[0-9-]+$' <<<"$out" \
+  && [ "$(wc -l <<<"$out")" = 1 ]; } \
+  && ok "quarantine files prints a row for its delegates' media and nothing else" \
+  || no "quarantine files missed the delegates' media, or listed more (rc=$rc)"
+
 # --- the ratchet: each rule against what that rule usually prunes --- A weekly cron whose plan
 # doubles every month never touches a fixed cap, so the baseline is the audit logs the tool
 # already writes. It is per rule so that one rule's wave holds back that rule alone.

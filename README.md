@@ -138,7 +138,7 @@ Corpus verdicts (`spam-batch`, `link-farm`, `media-batch`) fold to one summary l
 
 `AGE(d)` is the age the matching rule measured: days since last activity for A, B and C, days since creation for D, E and F.
 
-`NEAR` names any threshold the row cleared by less than `NEAR_PCT` (20%), and is `-` when the row cleared every one of them comfortably. It reports the numbers the matching rule actually tested: `age` for every rule, `seeds` where the rule has a seed floor above zero, plus `import` for rule A's word branch, `size` for rule B, `media` for rule F and `score` for rule E. Those are the rows to read first, and the summary under the plan counts them. `NEAR_PCT=0` marks nothing.
+`NEAR` names any threshold the row cleared by less than `NEAR_PCT` (20%), and is `-` when the row cleared every one of them comfortably. It reports the numbers the matching rule actually tested: `age` for every rule, `seeds` where the rule has a seed floor above zero, plus `import` for rule A's word branch, `size` for rule B, `media` for rule F and `score` for rule E. For copies of denied files it reports only `bytes` and `share`. Those are the rows to read first, and the summary under the plan counts them. `NEAR_PCT=0` marks nothing.
 
 Everything a run says about itself, the progress below included, goes to stderr, and the plan to stdout, so `> plan.txt` keeps them apart.
 
@@ -180,7 +180,13 @@ Exit 5 means the tool could not see enough to be trusted; nothing was touched.
 
 ## What gets pruned
 
-A repo is pruned if it is **not excluded** and matches **at least one rule**, or if the [deny list](#deny-list) names it or one of its delegates, and it is neither pinned, private, your own nor in `keep.txt`. `RULES` (default `ABCDEFG`) selects which rules run: a letter absent from it means that rule neither scans nor puts anything in the plan, and a repo a disabled rule would have claimed falls through to the next rule.
+A repo is pruned when one of these holds, unless it is pinned, private, your own or in `keep.txt`:
+
+- it is **not [excluded](#exclusions-never-touched-by-a-rule)** and matches **at least one rule**;
+- the [deny list](#deny-list) names it or one of its delegates;
+- it holds [copies of denied files](#copies-of-denied-files).
+
+`RULES` (default `ABCDEFG`) selects which rules run: a letter absent from it means that rule neither scans nor puts anything in the plan, and a repo a disabled rule would have claimed falls through to the next rule.
 
 ### Exclusions (never touched by a rule)
 
@@ -207,6 +213,20 @@ did:key:z6Mk<nid>   # an identity: blocked, and every repo it is a delegate of i
 
 Removing a line does not undo its blocks. Run `rad unblock rad:z<rid>` or `rad unblock z6Mk<nid>`.
 
+#### Copies of denied files
+
+`$AUDIT_DIR/deny-files.tsv` lists files by git object id. A repo holding copies of them is pruned as `denied-copy`. To add a denied repo's files while it is still in the quarantine:
+
+```sh
+rad prune quarantine files z<rid> >> ~/.radicle/prune-audit/deny-files.tsv
+```
+
+Each row is `<object id> <bytes or -> <source> [date]`, fields separated by spaces or tabs, and `#` starts a comment. A list another operator shares works as is, but its ids cannot be checked by reading them, so use one only from someone you trust.
+
+A repo is a copy when its delegates' branches and tags, history included, hold at least 5 MiB of listed images, video, audio or archives, making up at least half of the bytes there. Files someone else pushed, or attached to an issue or patch, do not count. A row counts against every repo whose delegates committed that file, so list only files that are the denied repo's own.
+
+Copies are pruned like repos the deny list names by id, and no identity is blocked for one. Unlike repos the deny list names, copies count against the runaway caps and the hold-back. Rows whose source is in `keep.txt` are ignored. `last-run/denied-copies.tsv` says how much of each copy is listed files, and `last-run/denied-copy-files.tsv` lists those files.
+
 ### Rules
 
 Every rule has the same shape: **something about the repo**, *and* it is old enough, *and* enough other nodes still hold it. Defaults shown; each is an environment variable.
@@ -232,7 +252,7 @@ D, E and F measure **creation** instead, because spam that comments on its own r
 
 #### Verdicts that may delete the last copy we know of
 
-`junk-id`, `spam-batch`, `link-farm`, `media-dump` and `media-batch`, which default to a seed floor of `0`. "Other seeds" counts the nodes our routing table says announce a repo, not proof a copy exists elsewhere; these verdicts are why pruning [quarantines instead of deleting](#quarantine). `JUNK_ID_MIN_SEEDS=1 SPAM_MIN_SEEDS=1 LINK_MIN_SEEDS=1 MEDIA_MIN_SEEDS=1` restores a floor of 1 everywhere.
+`junk-id`, `spam-batch`, `link-farm`, `media-dump` and `media-batch`, which default to a seed floor of `0`. "Other seeds" counts the nodes our routing table says announce a repo, not proof a copy exists elsewhere; these verdicts are why pruning [quarantines instead of deleting](#quarantine). `JUNK_ID_MIN_SEEDS=1 SPAM_MIN_SEEDS=1 LINK_MIN_SEEDS=1 MEDIA_MIN_SEEDS=1` restores a floor of 1 for these. `denied` and `denied-copy` have no seed floor and no setting for one.
 
 #### Names that count as disposable
 
@@ -260,11 +280,11 @@ The header prints the live pressure and the effective thresholds every run. On o
 
 - **Dry run by default.** Nothing is pruned, and nothing on the deny list is blocked, without `--apply`. A peer that rule G named is blocked only under `--block-peers`.
 - **Quarantine instead of deletion.** A pruned repo stays on disk for `QUARANTINE_DAYS` (7) and is restorable with one command ([details](#quarantine)).
-- **Minimum seed counts** keep the last copy we know of, except under `junk-id`, `spam-batch`, `link-farm` and rule F's two media verdicts ([why](#verdicts-that-may-delete-the-last-copy-we-know-of)).
-- **Runaway caps** (`MAX_PRUNE_COUNT`, `MAX_PRUNE_GB`) abort a plan whose rules picked more than either cap; repos on the deny list are not counted. Two things get past them: `--force`, or a person answering `y` at the prompt, which is a human signing off on the numbers just printed. `--yes` is not one of them, so an unattended run still stops.
+- **Minimum seed counts** keep the last copy we know of, except for the [deny list](#deny-list) and [copies of denied files](#copies-of-denied-files), and under `junk-id`, `spam-batch`, `link-farm` and rule F's two media verdicts ([why](#verdicts-that-may-delete-the-last-copy-we-know-of)).
+- **Runaway caps** (`MAX_PRUNE_COUNT`, `MAX_PRUNE_GB`) abort a plan whose rules picked more than either cap; repos on the deny list are not counted, [copies of denied files](#copies-of-denied-files) are. Two things get past them: `--force`, or a person answering `y` at the prompt, which is a human signing off on the numbers just printed. `--yes` is not one of them, so an unattended run still stops.
 - **A rule that jumps is held back.** An unattended run compares each rule's part of the plan with the median that rule pruned over the last `RATCHET_RUNS` (8) applied runs. A rule that plans more than `RATCHET_FACTOR` (3) times its median, and more than `RATCHET_FLOOR` (20) repos, is held back. Its repos stay in storage, the other rules go ahead, and the run exits 4. A dry run lists what would be held, and every run writes it to `last-run/held.tsv`. `--force` or a `y` at the prompt gets past it. The median comes from the audit logs `history.log` names. A run that held a rule back, or ran without it, does not count for that rule. A rule with fewer than 3 runs that count has `RATCHET_FLOOR` as its limit, and with fewer than 3 readable logs nothing is held. The spam, link-farm and media rules usually prune nothing, so a sudden batch of more than 20 repos from one of them waits for `--force` or a `y`.
 - **A stopped run deletes nothing from quarantine.** A run the runaway caps stop, or an `n` at the prompt, leaves expired repos there ([more](#quarantine)).
-- **Freshness guard** skips any repo the [deny list](#deny-list) does not prune whose storage directory was written within `FRESH_GUARD_DAYS` (2), which is what a fetch still arriving looks like.
+- **Freshness guard** skips any repo whose storage directory was written within `FRESH_GUARD_DAYS` (2), which is what a fetch still arriving looks like. The [deny list](#deny-list) and [copies of denied files](#copies-of-denied-files) do not wait for it.
 - **Apply preflight** aborts if the node is down or exclusions cannot be read.
 - **Blind scans abort.** More than `MAX_SCAN_FAIL_PCT` (10%) of the repos in storage missed is exit 5, not a small plausible plan. Three ways to miss one, counted together: it vanished mid-scan, reading it failed, or its refs would not list, which leaves it ageless and outside every rule.
 - **Blocking a peer that rule G named needs two opt-ins:** `--block-peers`, and then a `y` to the prompt it raises for that peer. Without `--block-peers` the run only prints the `rad block` line for each peer rule G named. An unattended run has nobody to give the second opt-in, so it blocks nobody unless `--yes` gives it ([more](#rule-g-parasite-peers)).
@@ -291,6 +311,7 @@ rad prune quarantine list             # what is held, and for how long
 rad prune quarantine restore <rid>    # put it back in storage and re-seed it
 rad prune quarantine delete <rid>     # or --all: delete now, for good
 rad prune quarantine purge            # delete whatever is past its window
+rad prune quarantine files <rid>      # its images, video, audio and archives, as deny-files.tsv rows
 ```
 
 `restore` moves the repo back into storage, clears the block, re-seeds it, and adds it to the keep list, `$AUDIT_DIR/keep.txt`, so the next run leaves it alone. The keep list is one repo id per line, editable by hand; repos listed there are excluded from every rule.
@@ -411,7 +432,7 @@ Every knob is an environment variable. Defaults shown.
 | `QUARANTINE`         | `1`     | Quarantine pruned repos instead of deleting (`0` deletes, with no way back) |
 | `QUARANTINE_DAYS`    | `7`     | Days a quarantined repo stays recoverable before a later run purges it     |
 | `KEEP_FILE`          | `$AUDIT_DIR/keep.txt` | Repos excluded from every rule, one id per line; `quarantine restore` appends to it |
-| `CACHE`              | `1`     | Reuse what rules E, F and G read out of repos that have not changed (`0` reads everything, every run) |
+| `CACHE`              | `1`     | Reuse what rules E, F and G, and the check for copies, read out of repos that have not changed (`0` reads everything, every run) |
 | `CACHE_DIR`          | `$AUDIT_DIR/cache` | Where that reading is kept                                      |
 | `PLAN_COLLAPSE_ROWS` | `20`    | Group size at which a corpus verdict folds to one summary line             |
 | `PLAN_FULL`          | `0`     | `1` lists every plan row and every evidence table entry, untruncated       |
@@ -456,7 +477,8 @@ Anything this tool does is written to `$RAD_HOME/prune-audit/` (default `~/.radi
 - **`quarantine/<rid>`**: every pruned repo, held for `QUARANTINE_DAYS` ([more](#quarantine)).
 - **`keep.txt`**: repos excluded from every rule, one id per line, editable by hand; `quarantine restore` appends to it.
 - **`deny.txt`**: repos and identities to prune and block on sight ([more](#deny-list)). The tool only reads it. The audit log names the entry each repo was pruned for on a `# denied:` line, and records each new block of an identity, or of a repo not yet fetched, on a `blocked-denied` line.
-- **`cache/`**: what rules E, F and G last read out of each repo. Safe to delete at any time; the next run reads everything again.
+- **`deny-files.tsv`**: files whose copies are pruned too ([more](#copies-of-denied-files)). The tool only reads it. The audit log says how much of each copy was listed files, and from which source, on a `# denied-copy:` line.
+- **`cache/`**: what rules E, F and G, and the check for copies, last read out of each repo. Safe to delete at any time; the next run reads everything again.
 - **`history.log`**: append-only, one line per applied run: timestamp, repos pruned, GiB moved out of storage, whether the quarantine was on, disk pressure, and the run's audit log. An unattended run reads the audit logs named here to learn what each rule usually prunes.
 - **`cron.log`**: with the cron recipe above, the full console output of every run.
 - **`first-seen.tsv`**: the creation-date ledger rules D, E and F read. Written on every run, dry or not.
@@ -469,6 +491,8 @@ Anything this tool does is written to `$RAD_HOME/prune-audit/` (default `~/.radi
   - `parasite-peers.tsv`: every peer rule G accused, with the evidence each accusation rests on.
   - `media-unjudged.tsv`: every repo rule F could not read, or gave up on for holding more than `MEDIA_MAX_REFS` refs. These are the repos its warning counts.
   - `denied.tsv`: every repo pruned for the deny list, with the entry that named it: `listed`, or `delegate` and the identity.
+  - `denied-copies.tsv`: every copy of denied files in the plan: bytes of listed files, bytes on its delegates' branches and tags, the share, how many files, the source most of them came from, and how many other sources.
+  - `denied-copy-files.tsv`: every listed file each of those copies holds, by object id, with its bytes.
   - `held.tsv`: every rule an unattended run would hold back for planning far more than usual, with its planned count, its usual and its limit. Its repos are still listed in `plan.tsv`, since `--force` or a yes would prune them.
   - `scan-errors.txt`: everything the run could not read.
 

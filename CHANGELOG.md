@@ -11,6 +11,7 @@ Replace the script. Nothing else has to change.
 ### Added
 
 - **You can list repos and identities to prune and block on sight.** Put one repo id or identity (`did:key:z6Mk...`) per line in `deny.txt` in the audit directory, and a list another operator shares works as is. `--apply` prunes and blocks every listed repo and every repo a listed identity maintains, unless it is pinned, private, your own or in `keep.txt`.
+- **Repos holding copies of a denied repo's files are pruned too.** `rad prune quarantine files <rid>` prints the images, video, audio and archives a quarantined repo's owners committed, as rows to append to `deny-files.tsv` in the audit directory. A repo is pruned when its owners committed at least 5 MiB of listed files to its branches, half or more of the bytes there, even if they deleted them later.
 
 ### Changed
 
