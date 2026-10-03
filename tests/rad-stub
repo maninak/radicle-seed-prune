@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Test double for `rad`, driven by env: RSP_HOME, RSP_NID, RSP_MANIFEST, RSP_NODE_DOWN,
-# RSP_NO_ROUTING, RSP_NO_LS, RSP_DELEGATES, RSP_BLOCK_FAIL. Manifest columns: rid name seeds
-# vis own days size desc
+# RSP_NO_ROUTING, RSP_NO_LS, RSP_LS_FAIL, RSP_DELEGATES, RSP_BLOCK_FAIL. Manifest columns: rid
+# name seeds vis own days size desc
 set -uo pipefail
 # Real rad takes its home from the ENVIRONMENT, so record what we were actually handed: that is
 # the only way a test can tell an exported RAD_HOME from one the script merely set as a shell
@@ -13,6 +13,7 @@ case "$sub" in
   self) echo "did:key:$RSP_NID" ;;            # `rad self --did`
   ls)
     [ "${RSP_NO_LS:-0}" = 1 ] && exit 0        # `rad ls` yields nothing: rule D goes blind
+    [ "${RSP_LS_FAIL:-0}" = 1 ] && { echo "Error: invalid repository id 'notarid'" >&2; exit 1; }
     priv=0; allf=0
     for a in "$@"; do [ "$a" = --private ] && priv=1; [ "$a" = --all ] && allf=1; done
     while IFS=$'\t' read -r rid name seeds vis own days size desc; do

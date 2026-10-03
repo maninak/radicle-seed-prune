@@ -6,7 +6,7 @@ All notable changes to this project are documented here. The format is based on 
 
 ### Upgrading
 
-Replace the script. Nothing else has to change.
+Replace the script, then do a dry run. If it exits `5` because `rad ls` failed, every run stops the same way until `rad ls` works again. A directory in storage whose name is not a repo id is enough to make `rad ls` fail, so move any such directory out of storage.
 
 ### Added
 
@@ -21,10 +21,12 @@ Replace the script. Nothing else has to change.
 
 ### Fixed
 
+- **Your own and private repos stay out of the plan even if `rad ls` leaves them out.** Every repo is also checked on disk, and a warning counts the ones kept that way and names the first few. They used to be recognised only from `rad ls`, whose output a rad release can change. This also keeps your own repos this node no longer seeds, which used to be prunable.
+- **A run stops with exit `5` when `rad ls` fails, and prints its error.** A directory in storage whose name is not a repo id is enough to make it fail. A run used to go on as if this node had no own or private repos. A malformed node id stops the run the same way.
 - **The media and peer rules no longer mistake an identity named in a repo's description for one of its owners.** The media rule counted that identity's uploads as the repo's own, and the peer rule never flagged it.
+- **With `PRESSURE_CRIT_*` set above `PRESSURE_RELAX_*`, a disk at or under the critical watermark counts as full pressure.** A run used to report `pressure=0%` and keep its relaxed thresholds while it emptied the quarantine. Such settings now also print a warning.
 - **A stopped run no longer deletes expired repos from quarantine.** Stopping at the runaway caps or with an `n` at the prompt used to delete them first.
 - **`MAX_PRUNE_COUNT` and the `RATCHET_*` settings must be whole numbers, and `DISK_AWARE` must be `0` or `1`.** Anything else now exits `2`. A typo used to switch a check off without a word.
-- **With `PRESSURE_CRIT_*` set above `PRESSURE_RELAX_*`, a disk at or under the critical watermark counts as full pressure.** A run used to report `pressure=0%` and keep its relaxed thresholds while it emptied the quarantine. Such settings now also print a warning.
 - **An unexpected failure always exits `1`.** It used to pass on the failed command's status, which could look like exit `3`, `4` or `5`.
 - **The tool keeps working once `rad` drops `rad self --nid`.** rad 1.10 deprecates the flag, and once it is gone every prune run would stop with exit `5`.
 

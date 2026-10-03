@@ -174,7 +174,7 @@ A phase counts the repos it has to read this run, not everything in storage, so 
 | `2`  | Bad argument, `MAX_PRUNE_COUNT` or a `RATCHET_*` setting that is not a whole number, or `DISK_AWARE` other than `0` or `1`          |
 | `3`  | The plan tripped a runaway cap; nothing was pruned. Read it, then re-run with `--force`                                              |
 | `4`  | A rule planned far more than usual, so its repos were held back; anything else in the plan was pruned. Read it, then `--force`       |
-| `5`  | Refused to guess: node unreachable, NID unknown, routing table empty, exclusions unreadable, or too much of storage could not be read |
+| `5`  | Refused to guess: node unreachable, NID unknown or malformed, `rad ls` failed, routing table empty, exclusions unreadable, or too much of storage could not be read |
 
 Exit 5 means the tool could not see enough to be trusted; nothing was touched.
 
@@ -193,8 +193,8 @@ A repo is pruned when one of these holds, unless it is pinned, private, your own
 | Exclusion       | Source                                                |
 | --------------- | ----------------------------------------------------- |
 | Pinned repos    | `config.web.pinned.repositories`                      |
-| Private repos   | `rad ls --private`                                    |
-| Your own repos  | `rad ls` (repos you initialized or forked / delegate) |
+| Private repos   | `rad ls --private`, or a private identity document    |
+| Your own repos  | `rad ls`, or this node's signed refs in the repo      |
 | Kept repos      | `$AUDIT_DIR/keep.txt`, one repo id per line ([more](#quarantine)) |
 | Freshly written | storage dir modified within `FRESH_GUARD_DAYS`        |
 | Unknown age     | no readable refs (also counted against `MAX_SCAN_FAIL_PCT`) |
@@ -285,7 +285,7 @@ The header prints the live pressure and the effective thresholds every run. On o
 - **A rule that jumps is held back.** An unattended run compares each rule's part of the plan with the median that rule pruned over the last `RATCHET_RUNS` (8) applied runs. A rule that plans more than `RATCHET_FACTOR` (3) times its median, and more than `RATCHET_FLOOR` (20) repos, is held back. Its repos stay in storage, the other rules go ahead, and the run exits 4. A dry run lists what would be held, and every run writes it to `last-run/held.tsv`. `--force` or a `y` at the prompt gets past it. The median comes from the audit logs `history.log` names. A run that held a rule back, or ran without it, does not count for that rule. A rule with fewer than 3 runs that count has `RATCHET_FLOOR` as its limit, and with fewer than 3 readable logs nothing is held. The spam, link-farm and media rules usually prune nothing, so a sudden batch of more than 20 repos from one of them waits for `--force` or a `y`.
 - **A stopped run deletes nothing from quarantine.** A run the runaway caps stop, or an `n` at the prompt, leaves expired repos there ([more](#quarantine)).
 - **Freshness guard** skips any repo whose storage directory was written within `FRESH_GUARD_DAYS` (2), which is what a fetch still arriving looks like. The [deny list](#deny-list) and [copies of denied files](#copies-of-denied-files) do not wait for it.
-- **Apply preflight** aborts if the node is down or exclusions cannot be read.
+- **Preflight** aborts any run if the node is down or `rad ls` fails, and an `--apply` also if exclusions cannot be read.
 - **Blind scans abort.** More than `MAX_SCAN_FAIL_PCT` (10%) of the repos in storage missed is exit 5, not a small plausible plan. Three ways to miss one, counted together: it vanished mid-scan, reading it failed, or its refs would not list, which leaves it ageless and outside every rule.
 - **Blocking a peer that rule G named needs two opt-ins:** `--block-peers`, and then a `y` to the prompt it raises for that peer. Without `--block-peers` the run only prints the `rad block` line for each peer rule G named. An unattended run has nobody to give the second opt-in, so it blocks nobody unless `--yes` gives it ([more](#rule-g-parasite-peers)).
 - **Audit log** records every prune and every block, with the evidence behind it.

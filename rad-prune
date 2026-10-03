@@ -32,8 +32,8 @@
 #
 #   Exclusions (never touched by a rule):
 #     - pinned repos        (config web.pinned.repositories)
-#     - private repos       (rad ls --private)
-#     - our own repos       (rad ls: repos we initialized or forked / delegate)
+#     - private repos       (rad ls --private, or the identity document says private)
+#     - our own repos       (rad ls, or this node has signed refs in the repo)
 #     - freshly written     (storage dir mtime within FRESH_GUARD_DAYS; in-flight fetch)
 #     - unknown age         (no readable refs; left alone out of caution, and counted
 #                            against MAX_SCAN_FAIL_PCT: a whole storage of it is a
@@ -615,18 +615,20 @@ JUNK_WORD_REGEX="(^|[-_.])($JUNK_WORDS)([-_.]|$)"
 JUNK_EXACT_REGEX='^(foo|bar|baz)$'
 JUNK_ID_MIN_LEN="${JUNK_ID_MIN_LEN:-8}"
 
-# Sets $dids to a repo's delegates, space-separated, and to nothing when they cannot be read.
-# $1 = the repo's git dir. They come from the identity document's "delegates" list and nowhere
-# else. refs/rad/id is written by the local node only after it verifies the document's
-# signatures, so no stranger can add a name. The rest of that ref's tree is free text the
-# delegates wrote, a description or a revision's title, and a did:key quoted there is not a
-# delegate. The document is canonical JSON, which sorts its keys, so the first "delegates" in
-# it is the top-level one. Sets a variable rather than printing, because the activity scan
-# calls it once per repo in storage and a command substitution would fork for each one.
+# Sets $dids to a repo's delegates, space-separated, and to nothing when they cannot be read,
+# and $iddoc to the identity document they come from. $1 = the repo's git dir. They come from
+# the identity document's "delegates" list and nowhere else. refs/rad/id is written by the
+# local node only after it verifies the document's signatures, so no stranger can add a name.
+# The rest of that ref's tree is free text the delegates wrote, a description or a revision's
+# title, and a did:key quoted there is not a delegate. The document is canonical JSON, which
+# sorts its keys, so the first "delegates" in it is the top-level one. Sets variables and
+# prints nothing, because the activity scan calls it once per repo in storage and a command
+# substitution would fork for each one.
 read_delegates() {
   local doc list re_list='"delegates":\[([^]]*)\]' re_did='did:key:(z[1-9A-HJ-NP-Za-km-z]+)(.*)'
-  dids=""
+  dids=""; iddoc=""
   doc=$(GIT_DIR="$1" git cat-file blob refs/rad/id:embeds/radicle.json 2>/dev/null) || return 0
+  iddoc=$doc
   [[ $doc =~ $re_list ]] || return 0
   list=${BASH_REMATCH[1]}
   while [[ $list =~ $re_did ]]; do
@@ -1002,13 +1004,13 @@ for knob in MAX_PRUNE_COUNT RATCHET_FACTOR RATCHET_RUNS RATCHET_FLOOR; do
     ''|0*|*[!0-9]*) echo "# $knob must be a whole number, not '${!knob}'." >&2; exit 2 ;;
   esac
 done
-
-# disk pressure p in [0,1] on the storage filesystem
 # Any other value would switch disk pressure on and the critical purge off.
 case $DISK_AWARE in
   0|1) ;;
   *) echo "# DISK_AWARE must be 0 or 1, not '$DISK_AWARE'." >&2; exit 2 ;;
 esac
+
+# disk pressure p in [0,1] on the storage filesystem
 read -r disk_total disk_avail < <(df -Pk "$STORAGE" \
   | awk 'NR==2{printf "%.0f %.0f\n", $2*1024, $4*1024}')
 : "${disk_total:=0}"; : "${disk_avail:=0}"
@@ -1016,6 +1018,8 @@ relax_free=$(awk -v t="$disk_total" -v p="$PRESSURE_RELAX_PCT" -v g="$PRESSURE_R
   'BEGIN{a=t*p/100;b=g*1e9;print (a>b)?a:b}')
 crit_free=$(awk  -v t="$disk_total" -v p="$PRESSURE_CRIT_PCT"  -v g="$PRESSURE_CRIT_GB" \
   'BEGIN{a=t*p/100;b=g*1e9;print (a<b)?a:b}')
+# Watermarks set the wrong way round leave no band to interpolate over. The critical one still
+# empties the quarantine at or under it, so pressure is full there and none above it.
 p=$(awk -v av="$disk_avail" -v r="$relax_free" -v c="$crit_free" -v on="$DISK_AWARE" 'BEGIN{
   if(on=="0"){print 0;exit} if(r<=c){print (av<=c)?1:0;exit}
   x=(r-av)/(r-c); if(x<0)x=0; if(x>1)x=1; printf "%.3f",x }')
@@ -1025,8 +1029,6 @@ if [ "$DISK_AWARE" = 1 ] \
     " (PRESSURE_RELAX_*, %.1f GB free) is not above the critical one (PRESSURE_CRIT_*," \
     " %.1f GB), so pressure is either 0%% or 100%%.\n", r/1e9, c/1e9}' >&2
 fi
-# Watermarks set the wrong way round leave no band to interpolate over. The critical one still
-# empties the quarantine at or under it, so pressure is full there and none above it.
 
 # interpolate each knob relaxed->aggressive by p
 lerp(){ awk -v a="$1" -v b="$2" -v p="$p" 'BEGIN{printf "%d", a+(b-a)*p+0.5}'; }
@@ -1273,10 +1275,18 @@ trap 'progress_kill; rm -rf "$tmp"' EXIT
 # ------------------------------------------------------------------------------ exclusion sets
 jq -r '.web.pinned.repositories[]?' "$CONFIG" 2>/dev/null \
   | sed 's/^rad://' | sort -u > "$tmp/pinned" || true
-"$RAD" ls --all --private 2>/dev/null \
-  | grep -oE 'rad:z[1-9A-HJ-NP-Za-km-z]+' | sed 's/^rad://' | sort -u > "$tmp/private" || true
-"$RAD" ls 2>/dev/null \
-  | grep -oE 'rad:z[1-9A-HJ-NP-Za-km-z]+' | sed 's/^rad://' | sort -u > "$tmp/own" || true
+# `rad ls` gives up on the whole listing over a single storage entry, such as a directory whose
+# name is not a repo id. The activity scan finds own and private repos on disk as well, but a
+# storage the node itself cannot list is not one to prune by guesswork, so a failure stops the
+# run further down, once the run knows its mode.
+ls_failed=""
+"$RAD" ls --all --private > "$tmp/ls-private" 2> "$tmp/ls-err" \
+  || ls_failed="$RAD ls --all --private"
+[ -n "$ls_failed" ] || "$RAD" ls > "$tmp/ls-own" 2> "$tmp/ls-err" || ls_failed="$RAD ls"
+grep -oE 'rad:z[1-9A-HJ-NP-Za-km-z]+' "$tmp/ls-private" \
+  | sed 's/^rad://' | sort -u > "$tmp/private" || true
+grep -oE 'rad:z[1-9A-HJ-NP-Za-km-z]+' "$tmp/ls-own" 2>/dev/null \
+  | sed 's/^rad://' | sort -u > "$tmp/own" || true
 # The keep list is the operator's own verdict on a repo, so it is read the same way as a pin:
 # comments and blank lines out, ids in. Both spellings are taken, because every other id this
 # tool prints carries the rad: prefix and this is the one list a person writes by hand.
@@ -1378,6 +1388,15 @@ mode=$([ "$APPLY" = 1 ] && echo apply || echo dry-run)
   || { echo "# ABORT($mode): node unreachable via '$RAD' (home=$RAD_HOME)." >&2; exit 5; }
 [ -n "$OUR_NID" ] \
   || { echo "# ABORT($mode): no NID from '$RAD' (home=$RAD_HOME)." >&2; exit 5; }
+# A malformed NID matches none of this node's signed refs, so its own repos could be planned.
+[[ $OUR_NID =~ ^z6Mk[1-9A-HJ-NP-Za-km-z]{44}$ ]] \
+  || { printf '# ABORT(%s): our node id is malformed: %q\n' "$mode" "$OUR_NID" >&2; exit 5; }
+[ -z "$ls_failed" ] \
+  || { echo "# ABORT($mode): '$ls_failed' failed (home=$RAD_HOME):" \
+            "$(head -c 300 "$tmp/ls-err" | LC_ALL=C tr -c '[:print:]' ' ')" >&2
+         echo "# A directory in storage whose name is not a repo id is enough to cause it." \
+              "Move any such directory out of storage." >&2
+         exit 5; }
 
 if [ "$APPLY" = 1 ]; then
   npin_cfg=$(jq -r '.web.pinned.repositories[]?' "$CONFIG" 2>/dev/null | wc -l)
@@ -1529,12 +1548,14 @@ repos_to_read() {                 # $1 = file listing rids the cache already ans
   find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -print0 2>>"$scanerr" \
     | grep -zvxFf "$tmp/cached-paths"
 }
-{ printf '#!/usr/bin/env bash\n'; declare -f read_delegates; cat <<'LIFE'
+{ printf '#!/usr/bin/env bash\n'; declare -f read_delegates
+  printf 'our_nid=%q\n' "$OUR_NID"; cat <<'LIFE'
 # The ref listing is written to a file rather than a shell variable because one repo on a real
-# seed has 152k refs. It is read twice: once for the dates, once for the fingerprint the run
-# cache keys on.
+# seed has 152k refs. It is read once for the dates, once for the fingerprint the run cache
+# keys on, and once for this node's signed refs.
 t=$(mktemp) || exit 1
 trap 'rm -f "$t"' EXIT
+re_private='"visibility":\{("allow":\[[^]]*\],)?"type":"private"\}\}$'
 for d; do
   GIT_DIR="$d" git for-each-ref --sort=creatordate \
     --format='%(creatordate:unix) %(objectname) %(refname)' 2>/dev/null > "$t" || true
@@ -1551,7 +1572,20 @@ for d; do
   refhash=$(sha1sum < "$t" | cut -c1-40)
   # The repo's delegates, comma-separated, for the deny list.
   read_delegates "$d"
-  printf '%s\t%s\t%s\t%s\n' "${d##*/}" "${bl:-0	0}" "$refhash" "${dids// /,}"
+  # Whether the repo is ours or private, read from the repo itself, so that a `rad ls` this
+  # run misreads is not the only thing keeping it from the rules. Ours when this node has
+  # signed refs in it, which nobody else can sign; a ref name holds no space, so the match is
+  # the whole name. A delegate list naming us is not enough, since anybody can publish one.
+  # Private when the document ends on a private visibility, written the way rad writes it.
+  # Only the top-level object's last member can end right before the document's final "}",
+  # because a JSON string cannot hold an unescaped quote, so a payload cannot say it instead.
+  vis=-
+  if grep -q " refs/namespaces/$our_nid/refs/rad/sigrefs\$" "$t"; then vis=ours
+  elif [[ $iddoc =~ $re_private ]]; then vis=private
+  fi
+  # The delegates go last: they may be empty, and `read` with a tab IFS folds an empty field
+  # into the next one.
+  printf '%s\t%s\t%s\t%s\t%s\n' "${d##*/}" "${bl:-0	0}" "$refhash" "$vis" "${dids// /,}"
 done
 LIFE
 } > "$tmp/life.sh"
@@ -2470,11 +2504,28 @@ while IFS=$'\t' read -r rid mt;   do MTIME[$rid]=${mt%.*}; done < "$tmp/mtimes"
 # lock on the one door through which a non-number could reach an arithmetic comparison and
 # leave a repo either unjudgeable or judged on nonsense.
 ncoerced=0
-while IFS=$'\t' read -r rid bt lf _ dl; do
+while IFS=$'\t' read -r rid bt lf _ _ dl; do
   case $bt in ''|*[!0-9]*) bt=0; ncoerced=$((ncoerced + 1)) ;; esac
   case $lf in ''|*[!0-9]*) lf=0; ncoerced=$((ncoerced + 1)) ;; esac
   BIRTH[$rid]=$bt; LIFE[$rid]=$lf; DELEGATES[$rid]=$dl
 done < "$tmp/lives"
+# What the scan found to be ours or private and nothing above excluded yet. `rad ls` lists only
+# repos this node seeds and can read, so a stopped seed explains an own one, but a release
+# that changes its table would explain them all, so they are kept and named.
+awk -F'\t' 'FILENAME == ARGV[1] { gone[$1] = 1; next }
+            ($5 == "ours" || $5 == "private") && !($1 in gone) { print $1 "\t" $5 }' \
+  "$tmp/excluded" "$tmp/lives" | sort > "$tmp/unlisted"
+if [ -s "$tmp/unlisted" ]; then
+  nunlisted=$(wc -l < "$tmp/unlisted")
+  echo "# WARN: $nunlisted repo(s) are ours or private on disk, but '$RAD ls' did not list" \
+       "them; they are kept. 'rad seed' the ones marked ours that you want, 'rad rm' what you" \
+       "do not, or add them to $KEEP_FILE:" >&2
+  head -n "$top_evidence" "$tmp/unlisted" | sed 's/^/#   /; s/\t/  /' >&2
+  [ "$nunlisted" -le "$top_evidence" ] \
+    || echo "#   ...and $((nunlisted - top_evidence)) more (PLAN_FULL=1 lists them)" >&2
+  cut -f1 "$tmp/unlisted" | sort -u - "$tmp/excluded" > "$tmp/excluded.new"
+  mv "$tmp/excluded.new" "$tmp/excluded"
+fi
 while read -r r; do DENY_RID[$r]=1; done < "$tmp/deny-rids"
 while read -r r; do DENY_NID[$r]=1; done < "$tmp/deny-nids"
 # Reaching this lock at all means the worker's filter let something through, and the repos it

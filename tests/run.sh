@@ -360,14 +360,18 @@ _build_fixture(){
     local iddesc=$desc
     [ "$rid" = zmediapeer ] && iddesc="$desc, thanks did:key:$STRANGER_NID"
     mkdir -p "$w/embeds"
-    printf '{"delegates":["did:key:%s"],"payload":{"xyz.radicle.project":%s},"threshold":1}\n' \
+    local idvis=""; [ "$vis" = private ] && idvis=',"visibility":{"type":"private"}'
+    printf '{"delegates":["did:key:%s"],"payload":{"xyz.radicle.project":%s},"threshold":1%s}\n' \
            "$(dlg "$rid")" \
            "{\"defaultBranch\":\"master\",\"description\":\"$iddesc\",\"name\":\"$name\"}" \
-           > "$w/embeds/radicle.json"
+           "$idvis" > "$w/embeds/radicle.json"
     git -C "$w" add -A
     GIT_AUTHOR_DATE="@$ts +0000" GIT_COMMITTER_DATE="@$ts +0000" git -C "$w" commit -q -m id
     git -C "$w" push -q "$d" master:refs/rad/id 2>/dev/null
     rm -rf "$w"
+    # A repo is ours when this node has signed refs in it, as rad ls decides.
+    [ "$own" = 1 ] && GIT_DIR="$d" git update-ref "refs/namespaces/$RSP_NID/refs/rad/sigrefs" \
+                        "$(GIT_DIR="$d" git rev-parse refs/rad/id)"
     touch -d "10 days ago" "$d"        # keep every dir out of the freshness guard
   done < "$RSP_MANIFEST"
 
@@ -1399,6 +1403,35 @@ out=$(RSP_NO_LS=1 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 run)
 { grep -q "WARN: .*returned no repos" <<<"$out" && ! grep -q '^# spam batches' <<<"$out"; } \
   && ok "an empty repo listing is reported, not silently read as 'no spam'" \
   || no "empty repo listing warns"
+# With no listing, own and private repos are known only from the repo itself; an --apply would
+# otherwise quarantine and block them. zbig2's document names this node as a delegate and nests
+# a private visibility in its payload, and zbig2 has a root branch named like this node's
+# signed refs. Its delegates can publish all three, so it stays in the plan. zpriv7's delegate
+# is on the deny list, and kept with its repo, it is not blocked.
+d="$STORAGE/zbig2"
+w=$(mktemp -d -p "$ROOT")
+printf '%s' "{\"delegates\":[\"did:key:$(dlg zbig2)\",\"did:key:$RSP_NID\"]," \
+  '"payload":{"x.y":{"visibility":{"type":"private"}}},"threshold":1}' > "$w/doc"
+# Dated like the document it replaces, so the repo's age does not move.
+ts=$(GIT_DIR="$d" git log -1 --format=%ct refs/rad/id)
+c=$(GIT_DIR="$d" GIT_AUTHOR_DATE="@$ts +0000" GIT_COMMITTER_DATE="@$ts +0000" \
+      git -c user.name=a -c user.email=a@b commit-tree -p refs/rad/id -m id \
+      "$(printf '100644 blob %s\tradicle.json\n' "$(GIT_DIR="$d" git hash-object -w "$w/doc")" \
+         | GIT_DIR="$d" git mktree | xargs printf '040000 tree %s\tembeds\n' \
+         | GIT_DIR="$d" git mktree)")
+GIT_DIR="$d" git update-ref refs/rad/id "$c"; rm -rf "$w"
+GIT_DIR="$d" git update-ref "refs/heads/refs/namespaces/$RSP_NID/refs/rad/sigrefs" refs/rad/id
+touch -d "10 days ago" "$d"
+printf 'did:key:%s\n' "$(dlg zpriv7)" > "$AUDIT_DIR/deny.txt"
+out=$(RSP_NO_LS=1 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 run)
+{ ! has "$out" zown22 && ! has "$out" zpriv7 && has "$out" zbig2 \
+  && grep -qE '^#   zown22 +ours$' <<<"$out" && grep -qE '^#   zpriv7 +private$' <<<"$out"; } \
+  && ok "own and private repos stay out of the plan when rad ls lists nothing, and only they" \
+  || no "an empty rad ls put own or private repos in the plan, or a forged ref kept one"
+! grep -q "$(dlg zpriv7)" <<<"$(grep '^#     ' <<<"$out")" \
+  && ok "a listed delegate of a repo kept as private is not blocked" \
+  || no "the deny list would block the delegate of a repo kept as private"
+rm -f "$AUDIT_DIR/deny.txt"
 
 # --- RAD_HOME reaches rad as ENVIRONMENT, not just as a shell variable --- Regression: the
 # script resolved RAD_HOME but never exported it, so every rad call queried the default home
@@ -1426,6 +1459,15 @@ out=$(RSP_NODE_DOWN=1 DISK_AWARE=0 "$SCRIPT" 2>&1); rc=$?
 { [ "$rc" = 5 ] && grep -q 'ABORT(dry-run)' <<<"$out" && ! grep -q '# PLAN:' <<<"$out"; } \
   && ok "node-down aborts dry-run too (exit 5, no plan)" \
   || no "node-down aborts dry-run (got exit $rc)"
+out=$(RSP_LS_FAIL=1 DISK_AWARE=0 "$SCRIPT" 2>&1); rc=$?
+{ [ "$rc" = 5 ] && grep -qE "ABORT\(dry-run\): '[^']* ls[^']*' failed" <<<"$out" \
+  && grep -q "invalid repository id 'notarid'" <<<"$out"; } \
+  && ok "a failing rad ls aborts: it is what keeps own and private repos out of the plan" \
+  || no "a failing rad ls did not abort with its error (got exit $rc)"
+out=$(OUR_NID=z6Mknotanid DISK_AWARE=0 "$SCRIPT" 2>&1); rc=$?
+{ [ "$rc" = 5 ] && grep -q 'ABORT(dry-run): our node id is malformed' <<<"$out"; } \
+  && ok "a malformed node id aborts" \
+  || no "a malformed node id did not abort (got exit $rc)"
 
 out=$(RSP_NO_ROUTING=1 DISK_AWARE=0 "$SCRIPT" 2>&1); rc=$?
 { [ "$rc" = 5 ] && grep -q 'routing table empty' <<<"$out" \
@@ -2228,6 +2270,11 @@ out=$(DISK_AWARE=1 PRESSURE_CRIT_PCT=100 PRESSURE_CRIT_GB=999999 ABS_SIZE_FLOOR_
 { [ ! -e "$Q/zfreshquar" ] && grep -q 'emptied the whole quarantine' <<<"$out"; } \
   && ok "a critical disk empties the whole quarantine, window or not" \
   || no "quarantine held disk hostage at the critical watermark"
+# The critical watermark here sits above the relax one, and the run must still act, and say it
+# acts, at full pressure.
+{ grep -q ' pressure=100% ' <<<"$out" && grep -q 'WARN: the relax watermark' <<<"$out"; } \
+  && ok "a critical disk is full pressure even with the watermarks inverted" \
+  || no "the banner said less than full pressure while the quarantine was emptied"
 
 # --- the deny list: a person's verdict, acted on wherever it turns up ---
 # zcode4 is listed by id. zfarm1 is listed through its delegate. The stranger who pushed into
@@ -2270,11 +2317,6 @@ out=$(RATCHET_FLOOR=0 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
   && grep -qx "$STRANGER_NID" "$RSP_HOME/.stub_block" \
   && grep -q $'^blocked-denied\trad:zUnfetchedRepo9$' "$AUDIT_DIR"/prune-2*Z.log; } \
   && ok "a listed id with no repo here is blocked ahead of it, and the block is logged" \
-# The critical watermark here sits above the relax one, and the run must still act, and say it
-# acts, at full pressure.
-{ grep -q ' pressure=100% ' <<<"$out" && grep -q 'WARN: the relax watermark' <<<"$out"; } \
-  && ok "a critical disk is full pressure even with the watermarks inverted" \
-  || no "the banner said less than full pressure while the quarantine was emptied"
   || no "the deny list left an unfetched repo or an identity unblocked"
 grep -q "not-an-id is neither a repo id nor an identity" <<<"$out" \
   && ok "a deny line that names nothing is called out" \
