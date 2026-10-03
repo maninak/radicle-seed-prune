@@ -36,7 +36,7 @@ chmod +x rad-prune
 sudo mv rad-prune /usr/local/bin/
 ```
 
-Needs `bash`, `git`, `jq`, `rad`, `gzip` and OpenSSL 3 on `PATH`. Run it as the user that owns the Radicle home you want pruned, or set `RAD_HOME` to that home.
+Needs `bash`, `git`, `jq` and `rad` on `PATH`, and for the media rule `gzip` and OpenSSL 3. Run it as the user that owns the Radicle home you want pruned, or set `RAD_HOME` to that home.
 
 Anywhere on `PATH` under the name `rad-prune`, `rad` runs it as one of its own subcommands, which is what the examples below use. `rad-prune ...` does the same thing, and so does `./rad-prune ...` from wherever you put it.
 
@@ -243,7 +243,7 @@ Every rule has the same shape: **something about the repo**, *and* it is old eno
 | **F, media-ratio** | a great deal of images, video or audio beside one short file ([more](#rule-f-media-dumps))             | `MEDIA_STALE_DAYS`, 7d    | ≥ `MEDIA_MIN_SEEDS`, 0   |
 | **F, media-batch** | the same media files, published across many repos ([more](#rule-f-media-dumps))                        | `MEDIA_STALE_DAYS`, 7d    | ≥ `MEDIA_MIN_SEEDS`, 0   |
 
-Rule G is missing from the table because it judges a **peer**, not a repo, and prunes nothing: it names peers who use repos they do not own as file hosting of their own, and prints the `rad block` line for each such peer ([more](#rule-g-parasite-peers)). Rule H is missing for the same reason: it names identities, and single repos, for a person to review ([more](#rule-h-malware-operations)).
+Rule G is missing from the table because it judges a **peer**, not a repo, and prunes nothing: it names peers who use repos they do not own as file hosting of their own, and prints the `rad block` line for each such peer ([more](#rule-g-parasite-peers)). Rule H is missing because it prunes nothing either. It names identities, and single repos, for a person to review ([more](#rule-h-malware-operations)).
 
 #### How age is measured
 
@@ -552,11 +552,18 @@ A repo is flagged when all of:
 4. it is older than `MEDIA_STALE_DAYS` (7d, since creation);
 5. it has at least `MEDIA_MIN_SEEDS` (0) other seeds, so by default the seed count does not spare it.
 
-A README of 2048 bytes or more is enough to fail condition 2. The **ratio path** reaches such a repo anyway: it is flagged `media-ratio` when it meets every condition but 2, *and* the images, video and audio at the tips of its branches and tags come to at least `MEDIA_RATIO_MIN_BYTES` (6 MiB), everything else adds up to less than 0.1% of that, the repo holds no archive, and the tips hold nothing besides the media but a single README (`README`, alone or with `.md`, `.markdown`, `.txt`, `.rst`, `.adoc` or `.org`). A README and a licence are two files, and spare the repo from this path.
+A README of 2048 bytes or more is enough to fail condition 2. The **ratio path** reaches such a repo anyway. It is flagged `media-ratio` when it meets every condition but 2, *and*:
 
-A repo whose name starts with a hostname (`seed.example.org`, `seed.example.org-avatar`) and that holds under 1 MiB of media is a seed's logo, and rule F never flags it. A name ending in a media extension, such as `wallpapers.png`, does not count as a hostname.
+- the images, video and audio at the tips of its branches and tags come to at least `MEDIA_RATIO_MIN_BYTES` (6 MiB);
+- everything else adds up to less than 0.1% of that;
+- the repo holds no archive;
+- the tips hold nothing besides the media but a single README (`README`, alone or with `.md`, `.markdown`, `.txt`, `.rst`, `.adoc` or `.org`).
 
-What a file *is* decides, not what it is called. Extensions (`MEDIA_EXTS`, `MEDIA_TEXT_EXTS`, `MEDIA_TEXT_NAMES`) are only a fast path: an unrecognised file has its first 16 bytes matched against media signatures, so renaming a video to `.dat` does not hide it, and a gzipped text file such as `rows.csv.gz` is judged by what it unpacks to: binary data counts as media. Archives (zip, gzip, rar, 7z) count as media; a file matching no signature counts as text and spares the repo. Reading is capped at `MEDIA_SNIFF_MAX_FILES` (200) per repo, and files past the cap count as text.
+A README and a licence are two files, so this path does not flag a repo holding both.
+
+A repo whose name starts with a hostname (`seed.example.org`, `seed.example.org-avatar`) and that holds under 1 MiB of media is read as a seed's logo, and rule F never flags it. A name ending in a media extension, such as `wallpapers.png`, does not count as a hostname.
+
+What a file *is* decides, not what it is called. Extensions (`MEDIA_EXTS`, `MEDIA_TEXT_EXTS`, `MEDIA_TEXT_NAMES`) are only a fast path: an unrecognised file has its first 16 bytes matched against media signatures, so renaming a video to `.dat` does not hide it, and a gzipped file named like text, such as `rows.csv.gz`, is judged by what it unpacks to, so binary data inside it counts as media. Archives (zip, gzip, rar, 7z) count as media; a file matching no signature counts as text and spares the repo. Reading is capped at `MEDIA_SNIFF_MAX_FILES` (200) per repo, and files past the cap count as text.
 
 Only the repo's own content counts: the canonical branches and tags, plus the namespaces of the delegates named in `refs/rad/id`, including every issue and patch comment a delegate signed, older ones too. Every other peer's namespace is ignored, and so is a stranger's patch or comment a delegate replied to, so a stranger pushing a video onto somebody's repo cannot put that repo in the plan. A repo with a branch whose commit is missing from storage is not judged.
 
@@ -592,17 +599,17 @@ A `RULES` without `G` turns it off.
 
 ## Rule H: malware operations
 
-Rule H names an **identity** whose repos are named or described like a malware operation: a stealer, a drainer, a botnet and the panel that runs it. It prunes and blocks nothing. Only repos the identity is a delegate of and signed refs in count, so a repo that merely lists it as a delegate does not, and neither does one it only cloned. An identity is named when, across the names and descriptions of those repos:
+Rule H names an **identity** whose repos are named or described like a malware operation: a stealer, a drainer, a botnet and the panel that runs it. It prunes and blocks nothing. Only repos the identity is a delegate of and signed refs in count. A repo that only lists it as a delegate does not count, and neither does one it only cloned. An identity is named when, across the names and descriptions of those repos:
 
 1. at least one strong word appears (`MALWARE_STRONG_WORDS`: `hvnc`, `stealer`, `crypter`, `drainer`, `keylogger`, `ransomware`, `botnet`, `scam`);
 2. at least 3 different words appear, counting the strong ones and the weak ones (`MALWARE_WEAK_WORDS`: `c2`, `payload`, `panel`, `loader`, `zombie`, `rat`, `exploit`);
 3. at least 2 of those repos, and at least half of them, use any of the words.
 
-A word matches whole or with one trailing `s`, so `stealers` matches and `pirate` does not match `rat`. Words joined together, like `TokenStealer` or `infostealer`, do not match. An identity that is a delegate of a pinned, kept or your own repo is never named, and neither is one the deny list already names. A private repo vouches for nobody: its delegates chose this seed, not the other way round.
+A word matches whole or with one trailing `s`, so `stealers` matches and `pirate` does not match `rat`. Words joined together, like `TokenStealer` or `infostealer`, do not match. An identity that is a delegate of a pinned, kept or your own repo is never named, and neither is one the deny list already names. Being a delegate of a private repo does not spare an identity.
 
-Security research is named like this too, and so is somebody who cloned a malware repo and was then made its delegate, which its owner can do without them, so a person decides. The run lists each identity with the repos that matched, their names and the words found, and the `did:key:` line to add to the [deny list](#deny-list). That line prunes every repo the identity is a delegate of, not only the repos listed, except private ones, and blocks it unless it delegates a private repo. `last-run/malware-identities.tsv` lists every matching repo. To stop an identity you have cleared from being named, add the same line to `keep.txt`. That keeps none of its repos. Keeping one of its repos instead would clear every delegate of that repo, the owner who made it a delegate included.
+Security research is named like this too, and so is somebody who cloned a malware repo and was then made its delegate without being asked, so a person decides. The run lists each identity with the repos that matched, their names and the words found, and the `did:key:` line to add to the [deny list](#deny-list). In the deny list, that line prunes every repo the identity is a delegate of, not only the repos that matched. The identity's private repos are not pruned. The line also blocks the identity, unless the identity is a delegate of a private repo. `last-run/malware-identities.tsv` lists every matching repo. To stop an identity you have cleared from being named, add the same line to `keep.txt`. That line keeps none of the identity's repos. Keeping one of its repos instead would clear every delegate of that repo, the owner who made it a delegate included.
 
-An operation can also be a single repo. Rule H names the **repo** when a strong word in its name or description is joined by one, the same or another, in a file path on its branches and tags or in a commit subject, and its first commit is at most 7 days older than the repo, so a mirror of somebody else's security tool is left out. Pinned, kept, private, deny-listed and your own repos are never named, nor one already listed under its identity, nor one signed by an identity the rules above leave out. The run prints a `rad:` line for each repo with the words and the path or subject found after a `#`. In the deny list that line prunes and blocks the repo alone. In `keep.txt` it stops the repo being named, and also keeps it from every rule and clears all its delegates of rule H, those who never signed it too, so a repo that only looks like a false positive can shield the identity behind it. `last-run/malware-repos.tsv` lists every repo named. A `RULES` without `H` turns rule H off.
+An operation can also be a single repo. Rule H names the **repo** when a strong word in its name or description is joined by a strong word, the same or another, in a file path on its branches and tags or in a commit subject. Its first commit must also be at most 7 days older than the repo, so a mirror of somebody else's security tool is left out. Pinned, kept, private, deny-listed and your own repos are never named, nor one already listed under its identity, nor one signed by an identity the paragraphs above exempt from being named. The run prints a `rad:` line for each repo with the words and the path or subject found after a `#`. In the deny list that line prunes and blocks the repo alone. In `keep.txt` it stops the repo being named, keeps it out of every rule, and clears all its delegates of rule H, including any who never signed it. Keeping a repo that only looks like a false positive can shield its delegates. `last-run/malware-repos.tsv` lists every repo named. A `RULES` without `H` turns rule H off.
 
 ## Development
 

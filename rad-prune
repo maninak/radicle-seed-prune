@@ -973,7 +973,7 @@ if [ "$CMD" != quarantine ] && rule_on F; then
     -sigfile "$vec/sig" >/dev/null 2>&1 && ed_ok=1 || ed_ok=0
   rm -rf "$vec"
   [ "$ed_ok" = 1 ] || {
-    echo "openssl here cannot check ed25519 signatures, which rule F needs; OpenSSL 3 can." >&2
+    echo "openssl here cannot check ed25519 signatures, which rule F needs. OpenSSL 3 can." >&2
     echo "To run without rule F, leave F out of RULES." >&2
     exit 1
   }
@@ -1598,7 +1598,7 @@ if [ -f "$DENY_FILES" ] && [ -r "$DENY_FILES" ]; then
     || restored_note=", $ndenyrestored row(s) ignored as their source is in $KEEP_FILE"
   echo "# deny files: $(wc -l < "$tmp/deny-oid-list") file id(s) in" \
        "$DENY_FILES$restored_note." \
-       "A repo whose delegates' branches hold >=$copy_min_said of them," \
+       "A repo whose delegates' branches and tags hold >=$copy_min_said of them," \
        ">=${COPY_MIN_PCT}% of all their bytes, is pruned as denied-copy."
 fi
 # The check below is one more walk over storage, and only runs when there is something to find.
@@ -1677,8 +1677,9 @@ if [ -s "$tmp/meta-twice" ]; then
 fi
 if [ -s "$tmp/meta-foreign" ]; then
   echo "# WARN: '$RAD ls --all' listed $(wc -l < "$tmp/meta-foreign") repo(s) that are not in" \
-       "storage, such as $(head -3 "$tmp/meta-foreign" | sed 's/^/rad:/' | xargs): rows a" \
-       "description forged, or repos removed while it ran. They are ignored." >&2
+       "storage, such as $(head -3 "$tmp/meta-foreign" | sed 's/^/rad:/' | xargs). These are" \
+       "rows forged by a line break in a description, or repos removed while '$RAD ls' ran." \
+       "They are ignored." >&2
 fi
 # Losing this is not fatal but it is not nothing either: the plan's NAME column goes blank and
 # rule D has no corpus to reason about, which would look exactly like "no spam here". Say so.
@@ -3287,9 +3288,9 @@ nmalware_undated=$(wc -l < "$tmp/malware-undated")
 if [ "$nmalware_undated" -gt 0 ]; then
   echo "# WARN: $nmalware_undated repo(s) hold a strong malware word in the name or" \
        "description and in a file path or commit subject, but rule H could not read their" \
-       "commit dates to tell an original from a mirror. Read them. A line below in" \
-       "$DENY_FILE prunes and blocks that repo; in $KEEP_FILE it keeps the repo and clears" \
-       "all its delegates of rule H:" >&2
+       "commit dates to tell an original from a mirror. Read them. Adding a line below to" \
+       "$DENY_FILE prunes and blocks its repo. In $KEEP_FILE the line keeps the repo and" \
+       "clears all its delegates of rule H:" >&2
   head -n "$top_evidence" "$tmp/malware-undated" \
     | while IFS=$'\t' read -r rid found evidence rname; do
         printf '#   rad:%s  # %s (%s; %s)\n' "$rid" "$rname" "$found" "$evidence"
@@ -3755,9 +3756,9 @@ if [ "$nmalware" -gt 0 ]; then
     fi
   done
   echo "#   last-run/malware-identities.tsv lists every matching repo. Adding an identity's"
-  echo "#   line to $DENY_FILE prunes every repo it is a delegate of but the private ones, and"
-  echo "#   blocks it unless it delegates one. The same line in $KEEP_FILE stops it being"
-  echo "#   named and keeps none of its repos:"
+  echo "#   line to $DENY_FILE prunes every repo the identity is a delegate of except private"
+  echo "#   ones, and blocks the identity unless it is a delegate of a private repo. The same"
+  echo "#   line in $KEEP_FILE stops the identity being named and keeps none of its repos:"
   cut -f1 "$tmp/malware" | sort -u | sed 's/^/#     did:key:/'
 fi
 # Each line is the one to act on: the deny list and the keep list both read what follows a #
@@ -3767,10 +3768,10 @@ if [ "$nmalware_repos" -gt 0 ]; then
   echo "# REVIEW, MALWARE REPOS: $nmalware_repos repo(s) (rule H). Nothing here is pruned" \
        "or blocked."
   echo "#   a strong word in the name or description, one in a file path or commit subject,"
-  echo "#   and a history that starts with the repo; read them before acting. A line below in"
-  echo "#   $DENY_FILE prunes and blocks that repo. In $KEEP_FILE it stops the repo being"
-  echo "#   named, and also keeps it from every rule and clears all its delegates of rule H,"
-  echo "#   those who never signed it too:"
+  echo "#   and a history that starts with the repo; read them before acting. Adding a line"
+  echo "#   below to $DENY_FILE prunes and blocks its repo. In $KEEP_FILE the line stops the"
+  echo "#   repo being named, keeps it out of every rule, and clears all its delegates of"
+  echo "#   rule H, including any who never signed it:"
   head -n "$top_evidence" "$tmp/malware-repos" \
     | while IFS=$'\t' read -r rid found evidence rname; do
         printf '#     rad:%s  # %s (%s; %s)\n' "$rid" "$rname" "$found" "$evidence"
