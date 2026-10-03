@@ -315,7 +315,7 @@ rad prune quarantine purge            # delete whatever is past its window
 rad prune quarantine files <rid>      # its images, video, audio and archives, as deny-files.tsv rows
 ```
 
-`restore` moves the repo back into storage, clears the block, re-seeds it, and adds it to the keep list, `$AUDIT_DIR/keep.txt`, so the next run leaves it alone. The keep list is one repo id per line, editable by hand; repos listed there are excluded from every rule. A `did:key:` line there only stops [rule H](#rule-h-malware-operations) naming that identity and the repos it signed.
+`restore` moves the repo back into storage, clears the block, re-seeds it, and adds it to the keep list, `$AUDIT_DIR/keep.txt`, so the next run leaves it alone. The keep list is one repo id per line, editable by hand; repos listed there are excluded from every rule, and rule H names none of their delegates. A `did:key:` line there only stops [rule H](#rule-h-malware-operations) naming that identity and the repos it signed.
 
 ### Undoing a prune
 
@@ -561,13 +561,13 @@ A README of 2048 bytes or more is enough to fail condition 2. The **ratio path**
 
 A README and a licence are two files, so this path does not flag a repo holding both.
 
-A repo whose name starts with a hostname (`seed.example.org`, `seed.example.org-avatar`) and that holds under 1 MiB of media is read as a seed's logo, and rule F never flags it. A name ending in a media extension, such as `wallpapers.png`, does not count as a hostname.
+A repo whose name starts with a hostname (`seed.example.org`, `seed.example.org-avatar`) and that holds under 1 MiB of media is read as a seed's logo, and rule F never flags it. A name ending in a media extension, such as `wallpapers.png`, does not count as a hostname. A repo the run has no name for, because `rad ls` left it out or listed it twice, is spared the same way under 1 MiB of media.
 
 What a file *is* decides, not what it is called. Extensions (`MEDIA_EXTS`, `MEDIA_TEXT_EXTS`, `MEDIA_TEXT_NAMES`) are only a fast path: an unrecognised file has its first 16 bytes matched against media signatures, so renaming a video to `.dat` does not hide it, and a gzipped file named like text, such as `rows.csv.gz`, is judged by what it unpacks to, so binary data inside it counts as media. Archives (zip, gzip, rar, 7z) count as media; a file matching no signature counts as text and spares the repo. Reading is capped at `MEDIA_SNIFF_MAX_FILES` (200) per repo, and files past the cap count as text.
 
 Only the repo's own content counts: the canonical branches and tags, plus the namespaces of the delegates named in `refs/rad/id`, including every issue and patch comment a delegate signed, older ones too. Every other peer's namespace is ignored, and so is a stranger's patch or comment a delegate replied to, so a stranger pushing a video onto somebody's repo cannot put that repo in the plan. A repo with a branch whose commit is missing from storage is not judged.
 
-A branch or tag is read at its tip, so media committed and then deleted in a later commit is missed. A repo whose listing dies part-way, or with more than `MEDIA_MAX_REFS` (10000) refs, is left unjudged.
+A branch or tag is read at its tip, so media committed and then deleted in a later commit is missed. A repo whose listing dies part-way, with more than `MEDIA_MAX_REFS` (10000) refs, or whose tips list as more than `MEDIA_TIP_BYTES` (16 MiB) of file names, is left unjudged.
 
 The **batch path** reaches repos the other two miss, such as one with a script, or with a README too long for the dump path, as long as everything besides the media stays under the wider budget below. A repo is flagged `media-batch` when it meets conditions 1, 4 and 5 above, *and*:
 

@@ -229,6 +229,19 @@ sign_op(){
 # different size than asked for, and the force-push leaves the manifest loop's own commit
 # UNREACHABLE: a rule F that read the object store instead of the tree would still see it and
 # reach a different verdict.
+# Prints a tree that names one subtree twice, and that one the next twice, $2 levels down:
+# 2^$2 paths from $2 small trees, written into git dir $1. Each name is $3 bytes long.
+bomb_tree(){
+  local t mode=100644 kind=blob i pad
+  pad=$(printf "%$(( ${3:-1} - 1 ))s" '' | tr ' ' x)
+  t=$(printf '' | GIT_DIR="$1" git hash-object -w --stdin)
+  for ((i = 0; i < $2; i++)); do
+    t=$(printf '%s %s %s\ta%s\n%s %s %s\tb%s\n' "$mode" "$kind" "$t" "$pad" \
+               "$mode" "$kind" "$t" "$pad" | GIT_DIR="$1" git mktree)
+    mode=040000; kind=tree
+  done
+  printf '%s\n' "$t"
+}
 e_tree(){
   local rid=$1 days=$2 ref=$3; shift 3
   local w spec; w=$(mktemp -d -p "$ROOT")
@@ -1261,13 +1274,24 @@ touch -d "10 days ago" "$d"
 e_tree zmediacob 60 extra "README.md:4096"
 gone=$(GIT_DIR="$STORAGE/zmediacob" git rev-parse extra)
 rm -f "$STORAGE/zmediacob/objects/${gone:0:2}/${gone:2}"
+# zmediaone's dump gains a directory of a few small trees that lists as only 2^11 paths, but
+# ones 11 KB long, more than MEDIA_TIP_BYTES in all.
+d="$STORAGE/zmediaone"
+root=$({ GIT_DIR="$d" git ls-tree master
+         printf '040000 tree %s\tx\n' "$(bomb_tree "$d" 11 1000)"; } | GIT_DIR="$d" git mktree)
+c=$(GIT_DIR="$d" GIT_AUTHOR_DATE="@$ts +0000" GIT_COMMITTER_DATE="@$ts +0000" \
+      git -c user.name=a -c user.email=a@b commit-tree -p master -m more "$root")
+GIT_DIR="$d" git update-ref refs/heads/master "$c"; touch -d "10 days ago" "$d"
 plan=$(run)
 ! has "$plan" "zmediapeer" \
   && ok "a stranger's op a delegate replied to is not the repo's, whoever it names as author" \
   || no "rule F counted a stranger's op reached through a delegate's reply"
-{ ! has "$plan" "zmediacob" && grep -q 'left 2 repo(s) unjudged' <<<"$plan"; } \
+{ ! has "$plan" "zmediacob" && grep -q 'left 3 repo(s) unjudged' <<<"$plan"; } \
   && ok "a branch whose tip is gone leaves the repo unjudged, not judged on the rest" \
   || no "rule F judged a repo on the branches it could still read"
+! has "$plan" "zmediaone" \
+  && ok "a repo whose tips list as too many paths is left unjudged" \
+  || no "rule F judged a repo whose tree repeats itself into 22 MB of paths"
 
 
 build_fixture; assert_isolated
@@ -1490,6 +1514,10 @@ out=$(RSP_NO_LS=1 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 run)
 { grep -q "WARN: .*returned no repos" <<<"$out" && ! grep -qE '^zspam[1-9] ' <<<"$out"; } \
   && ok "an empty repo listing is reported, not silently read as 'no spam'" \
   || no "empty repo listing warns"
+# With no names, zmediahost's hostname cannot spare its logo, so its size has to.
+{ ! grep -qE '^zmediahost ' <<<"$out" && grep -qE '^zmediahostbig .*media-dump' <<<"$out"; } \
+  && ok "a repo with no name this run and only a logo's worth of media is not a dump" \
+  || no "an empty rad ls left a seed's logo repo to rule F"
 # With no listing, own and private repos are known only from the repo itself; an --apply would
 # otherwise quarantine and block them. zbig2's document names this node as a delegate and nests
 # a private visibility in its payload, which it puts first, and zbig2 has a root branch named
@@ -2297,7 +2325,14 @@ fresh_master(){   # $1 = rid, $2 = age in days, $3 = a path, $4 = the subject, $
 }
 fresh_master zrot3 0 src/client.py 'add client'
 fresh_master zrot3 0 src/hvnc/client.py 'add client' refs/tags/v1
-fresh_master zfarm2 0 main.py "feat(stealers): save$(printf '\033')[2J results"
+fresh_master zfarm2 0 main.py 'feat(stealers): save results'
+# The subject's escapes include a C1 pair nested in another, written raw, since `git commit`
+# would re-encode the stray bytes.
+d="$STORAGE/zfarm2"
+c=$({ GIT_DIR="$d" git cat-file commit master | sed '/^$/q'
+      printf 'feat(stealers): save\033[2J\302\302\233\2332J results\n'; } \
+    | GIT_DIR="$d" git hash-object -t commit -w --stdin)
+GIT_DIR="$d" git update-ref refs/heads/master "$c"; touch -d "10 days ago" "$d"
 fresh_master zrot1 0 notes/stealer.md 'notes'
 fresh_master zbatch2 400 botnet/main.go 'import'
 fresh_master zcode6 0 drainer.py 'add drainer'
@@ -2332,7 +2367,7 @@ out=$("$SCRIPT" 2>&1); rc=$?
 { [ "$rc" = 0 ] \
   && grep -q 'REVIEW, MALWARE OPERATIONS: 1 identity(s) (rule H)' <<<"$out" \
   && grep -q "#   $OPS, 2 of the 3 repos it is a delegate of and signed refs in:" <<<"$out" \
-  && grep -q "#       rad:zcode4  c2-panel  (c2,panel,loader)" <<<"$out" \
+  && grep -q "#       rad:zcode4  # c2-panel (c2,panel,loader)" <<<"$out" \
   && grep -qx "#     did:key:$OPS" <<<"$out"; } \
   && ok "an identity whose repos read like a malware operation is named for review" \
   || no "rule H missed the operation's identity"
@@ -2345,16 +2380,16 @@ out=$("$SCRIPT" 2>&1); rc=$?
 { grep -q 'REVIEW, MALWARE REPOS: 2 repo(s) (rule H)' <<<"$out" \
   && grep -qxF "#     rad:zrot3  # hvnc-panel (hvnc,panel,loader; path: src/hvnc/client.py)" \
        <<<"$out" \
-  && grep -qxF "#     rad:zfarm2  # stealer (stealer; subject: feat(stealers): save[2J results)" \
+  && grep -qxF "#     rad:zfarm2  # stealer (stealer; subject: feat(stealers): save[2J2J results)" \
        <<<"$out" \
-  && ! grep -q $'\033' <<<"$out"; } \
+  && ! grep -q $'\033' <<<"$out" && ! grep -q $'\302\233' <<<"$out"; } \
   && ok "one repo with a strong word in its name and its files or commits is named" \
   || no "rule H missed a single malware repo, or named a mirror or an operation's repo again"
 { grep -q 'WARN: 1 repo(s) hold a strong malware word' <<<"$out" \
   && grep -qxF '#   rad:zheavy  # keylogger (keylogger; path: keylogger.c)' <<<"$out"; } \
   && ok "a repo with words and evidence but no commit dates to judge by is called out" \
   || no "rule H passed over a repo it could not date without a word, or warned with no evidence"
-grep -qxF "zfarm2"$'\t'"stealer"$'\t'"subject: feat(stealers): save[2J results"$'\t'"stealer" \
+grep -qxF "zfarm2"$'\t'"stealer"$'\t'"subject: feat(stealers): save[2J2J results"$'\t'"stealer" \
   "$AUDIT_DIR/last-run/malware-repos.tsv" \
   && ok "last-run/malware-repos.tsv holds every single repo named" \
   || no "rule H's single repos did not reach last-run"
@@ -2410,6 +2445,14 @@ long=docs/cryptergui/notes/$(printf 'deep%.0s/' $(seq 16))crypter.c
 fresh_master zhexid23 0 "$long" 'init'
 for t in 1 2 3; do fresh_master zhexid23 0 "README$t" 'docs' "refs/tags/v$t"; done
 sed -i "$(rename zhexid23 crypter 'a tool' | tail -1)" "$RSP_MANIFEST"
+# zspaced26's strong word is in a path that sorts after 2^18 others, past MALWARE_BYTES.
+d="$STORAGE/zspaced26"
+root=$(printf '040000 tree %s\ta\n100644 blob %s\tstealer.c\n' "$(bomb_tree "$d" 18)" \
+         "$(printf x | GIT_DIR="$d" git hash-object -w --stdin)" | GIT_DIR="$d" git mktree)
+GIT_DIR="$d" git update-ref refs/heads/master \
+  "$(GIT_DIR="$d" git -c user.name=a -c user.email=a@b commit-tree -m init "$root")"
+touch -d "10 days ago" "$d"
+sed -i "$(rename zspaced26 stealer-kit 'a tool' | tail -1)" "$RSP_MANIFEST"
 sed 's/^MALWARE_TREES=50 /MALWARE_TREES=1 /' "$SCRIPT" > "$ROOT/one-tree"
 chmod +x "$ROOT/one-tree"
 out=$("$ROOT/one-tree" 2>&1)
@@ -2419,6 +2462,9 @@ trees=$(GIT_DIR="$STORAGE/zhexid23" git rev-parse 'refs/tags/v1^{tree}' 'master^
        <<<"$out"; } \
   && ok "branches are read before tags, and a long path is cut around its word" \
   || no "MALWARE_TREES dropped the branch's tree, or the cut lost the word"
+! grep -q '^#     rad:zspaced26 ' <<<"$out" \
+  && ok "rule H reads a repo's paths only so far" \
+  || no "rule H read past MALWARE_BYTES into a tree that repeats itself"
 
 # --- the deny list: a person's verdict, acted on wherever it turns up ---
 # zcode4 is listed by id. zfarm1 is listed through its delegate. The stranger who pushed into

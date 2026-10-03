@@ -483,6 +483,10 @@ MEDIA_SNIFF_MAX_FILES=200                        # most files read in any one re
 # that a repo half the network replicates is not a dump. Four repos there are over this cap,
 # and the next one down has 2942 refs, so it sits in a wide gap rather than near real repos.
 MEDIA_MAX_REFS="${MEDIA_MAX_REFS:-10000}"
+# A tree can name one subtree twice, and that one the next twice, so a repo of a few hundred
+# bytes can list as millions of paths, or as long ones, each held in memory while the tips are
+# read. A repo whose tips list as more bytes than this, names and object ids, is left unjudged.
+MEDIA_TIP_BYTES=16777216
 # The archives among MEDIA_EXTS. The ratio path leaves them out of the media it weighs, and
 # spares a repo holding one: a release tarball or a mirrored binary sits beside a short README
 # too.
@@ -556,6 +560,7 @@ MALWARE_MIN_SHARE_PCT=50     # of the identity's signed repos in storage, the sh
 MALWARE_ORIGINAL_DAYS=7      # most days the first commit may predate the repo's `rad init`
 MALWARE_SUBJECTS=1000        # newest commit subjects read per repo, to bound a big mirror
 MALWARE_TREES=50             # distinct trees at branch and tag tips listed per repo, likewise
+MALWARE_BYTES=4194304        # of paths and subjects read per repo in all; a tree can repeat
 
 # Which rules may run at all. One spelling for every rule, because enable/disable is the knob
 # an operator reaches for first and it used to be spelled four different ways (a sentinel here,
@@ -1117,7 +1122,8 @@ if [ "$CMD" = quarantine ]; then
         keep_add "$rid" \
           || { echo "#   WARN could not write $KEEP_FILE; the next run may prune $rid" >&2
                continue; }
-        echo "# restored $rid; added to $KEEP_FILE so the next run leaves it alone"
+        echo "# restored $rid; added to $KEEP_FILE so the next run leaves it alone, and so" \
+             "rule H names none of the identities its document lists as delegates"
       done
       echo "# restart the node to announce them again: sudo systemctl restart $SERVICE"
       ;;
@@ -1641,9 +1647,10 @@ fi
 # description are each independently missing on some rows. A name and a description are
 # whatever a repo's delegates wrote, and both reach the terminal, so control characters go
 # first, in their UTF-8 spelling (C1) too: an escape sequence there could rewrite what the
-# operator reads.
+# operator reads. Taking one C1 pair out of a run like \xc2\xc2\x9b\x9b would join the bytes
+# around it into another, so the whole run goes at once.
 "$RAD" ls --all 2>/dev/null | LC_ALL=C tr -d '\000-\010\013-\037\177' \
-  | LC_ALL=C sed $'s/\xc2[\x80-\x9f]//g' | awk '
+  | LC_ALL=C sed $'s/\xc2\xc2*[\x80-\x9f][\x80-\x9f]*//g' | awk '
   /rad:z[1-9A-HJ-NP-Za-km-z]+/ {
     ridi=0; for (i=1;i<=NF;i++) if ($i ~ /^rad:z[1-9A-HJ-NP-Za-km-z]+$/) { ridi=i; break }
     if (ridi<2) next
@@ -1673,7 +1680,8 @@ if [ -s "$tmp/meta-twice" ]; then
   echo "# WARN: '$RAD ls --all' listed $(wc -l < "$tmp/meta-twice") repo(s) twice, such as" \
        "$(head -3 "$tmp/meta-twice" | sed 's/^/rad:/' | xargs). A description with a line" \
        "break in it forges rows, and the repo that wrote them usually sits just above them in" \
-       "'$RAD ls --all'. These repos go unnamed and join no batch this run." >&2
+       "'$RAD ls --all'. These repos go unnamed this run, so rules A, D and H pass over" \
+       "them." >&2
 fi
 if [ -s "$tmp/meta-foreign" ]; then
   echo "# WARN: '$RAD ls --all' listed $(wc -l < "$tmp/meta-foreign") repo(s) that are not in" \
@@ -2006,6 +2014,7 @@ text_ceil=$(( MEDIA_TEXT_MAX_BYTES > MEDIA_TEXT_CEIL_BYTES ? MEDIA_TEXT_MAX_BYTE
 sniff_big=$MEDIA_SNIFF_TEXT_BYTES
 sniff_max=$MEDIA_SNIFF_MAX_FILES
 max_refs=$MEDIA_MAX_REFS
+tip_bytes=$MEDIA_TIP_BYTES
 archive_exts='$MEDIA_ARCHIVE_EXTS'
 source_exts='$MEDIA_SOURCE_EXTS'
 build_names='$MEDIA_BUILD_NAMES'
@@ -2227,10 +2236,12 @@ for d; do
     read -r src build others readmes tipmedia < <(
       for t in $(sort -u <<<"$trees"); do
         GIT_DIR="$d" git ls-tree -r -z "$t" 2>/dev/null || printf '!\0'
-      done | tr '\0' '\n' | awk -F'\t' -v src="$source_exts" -v bld="$build_names" '
+      done | tr '\0' '\n' \
+        | awk -F'\t' -v src="$source_exts" -v bld="$build_names" -v cap="$tip_bytes" '
         function known(list, key) { return index("|" list "|", "|" key "|") > 0 }
         FILENAME == ARGV[1] { media[$1] = $2; next }
         $0 == "!" { failed = 1; next }
+        (listed += length($0) + 1) > cap { failed = 1; exit }
         {
           split($1, head, " "); oid = head[3]; path = substr($0, index($0, "\t") + 1)
           if (oid in media) {
@@ -2285,8 +2296,9 @@ MEDIA
   # Which repos these are is said where the file holding them is written, near the end of the
   # run. Naming it here would name a path that a run aborting in between never creates.
   [ "$nmediafail" = 0 ] \
-    || echo "# WARN: rule F left $nmediafail repo(s) unjudged: unreadable, or over" \
-            "MEDIA_MAX_REFS ($MEDIA_MAX_REFS) refs." >&2
+    || echo "# WARN: rule F left $nmediafail repo(s) unjudged: unreadable, over" \
+            "MEDIA_MAX_REFS ($MEDIA_MAX_REFS) refs, or listing over MEDIA_TIP_BYTES" \
+            "($MEDIA_TIP_BYTES) bytes at their tips." >&2
 
 fi
 
@@ -2987,7 +2999,9 @@ while IFS=$'\t' read -r rid mb ob av others readmes tipmedia src build; do
   MEDIABYTES[$rid]=$mb
   name=${NAME[$rid]:-}
   # A seed's logo, under a name like the seed's hostname. A name ending in a media extension,
-  # such as wallpapers.png, is shaped like a hostname too, but it names a file.
+  # such as wallpapers.png, is shaped like a hostname too, but it names a file. A repo this run
+  # has no name for, because `rad ls` left it out or listed it twice, may be such a logo.
+  if [ -z "$name" ] && [ "$mb" -lt "$MEDIA_HOST_MAX_BYTES" ]; then continue; fi
   if [[ ${name,,} =~ $MEDIA_HOST_NAME_RE ]] && [ "$mb" -lt "$MEDIA_HOST_MAX_BYTES" ]; then
     case "|$MEDIA_EXTS|" in
       (*"|${BASH_REMATCH[2]}|"*) ;;
@@ -3221,8 +3235,9 @@ import_cut=$(( IMPORT_SPARE_DAYS * 86400 ))
 # before tags, and only the first MALWARE_TREES of them, so thousands of tags cost no more than
 # a few and cannot push the branches out. Paths and subjects are whatever the repo's authors
 # wrote, and the line found reaches the terminal, so control characters go first. awk stops at
-# the first match, the listing loop then stops on the broken pipe, and the caller ignores the
-# status that leaves.
+# the first match and head at MALWARE_BYTES, the listing then stops on the broken pipe, and the
+# caller ignores the status that leaves. Path quoting and subject encoding are pinned, because
+# git takes both from the caller's config, and the same repo would read differently by user.
 malware_evidence() {   # $1 = rid
   local d="$STORAGE/$1" tree
   { GIT_DIR="$d" git for-each-ref --format='%(objectname)^{tree}' refs/heads refs/tags \
@@ -3230,12 +3245,14 @@ malware_evidence() {   # $1 = rid
       | GIT_DIR="$d" git cat-file --batch-check='%(objectname)' 2>/dev/null \
       | grep -E '^[0-9a-f]{40,64}$' | awk '!seen[$0]++' | head -n "$MALWARE_TREES" \
       | while read -r tree; do
-          GIT_DIR="$d" git ls-tree -r --name-only "$tree" 2>/dev/null | sed 's/^/path: /' \
+          GIT_DIR="$d" git -c core.quotePath=true ls-tree -r --name-only "$tree" 2>/dev/null \
+            | sed 's/^/path: /' \
             || break
         done
-    GIT_DIR="$d" git log --no-show-signature --branches --tags --format='subject: %s' \
-      -n "$MALWARE_SUBJECTS" 2>/dev/null
-  } | LC_ALL=C tr -d '\000-\010\011\013-\037\177' | LC_ALL=C sed $'s/\xc2[\x80-\x9f]//g' \
+    GIT_DIR="$d" git log --no-show-signature --encoding=UTF-8 --branches --tags \
+      --format='subject: %s' -n "$MALWARE_SUBJECTS" 2>/dev/null
+  } | head -c "$MALWARE_BYTES" | LC_ALL=C tr -d '\000-\010\011\013-\037\177' \
+    | LC_ALL=C sed $'s/\xc2\xc2*[\x80-\x9f][\x80-\x9f]*//g' \
     | awk -v strong="$MALWARE_STRONG_WORDS" '
       function known(list, key) { return key != "" && index("|" list "|", "|" key "|") > 0 }
       {
@@ -3749,7 +3766,7 @@ if [ "$nmalware" -gt 0 ]; then
            "$nid" "$nhit" "$nall"
     head -n "$top_evidence" "$tmp/malware-one" \
       | while IFS=$'\t' read -r _ _ _ rid found rname; do
-          printf '#       rad:%s  %s  (%s)\n' "$rid" "$rname" "$found"
+          printf '#       rad:%s  # %s (%s)\n' "$rid" "$rname" "$found"
         done
     if [ "$nhit" -gt "$top_evidence" ]; then
       echo "#       ...and $((nhit - top_evidence)) more (PLAN_FULL=1 lists them)"
