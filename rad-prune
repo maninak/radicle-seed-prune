@@ -1004,6 +1004,11 @@ for knob in MAX_PRUNE_COUNT RATCHET_FACTOR RATCHET_RUNS RATCHET_FLOOR; do
 done
 
 # disk pressure p in [0,1] on the storage filesystem
+# Any other value would switch disk pressure on and the critical purge off.
+case $DISK_AWARE in
+  0|1) ;;
+  *) echo "# DISK_AWARE must be 0 or 1, not '$DISK_AWARE'." >&2; exit 2 ;;
+esac
 read -r disk_total disk_avail < <(df -Pk "$STORAGE" \
   | awk 'NR==2{printf "%.0f %.0f\n", $2*1024, $4*1024}')
 : "${disk_total:=0}"; : "${disk_avail:=0}"
@@ -1012,7 +1017,16 @@ relax_free=$(awk -v t="$disk_total" -v p="$PRESSURE_RELAX_PCT" -v g="$PRESSURE_R
 crit_free=$(awk  -v t="$disk_total" -v p="$PRESSURE_CRIT_PCT"  -v g="$PRESSURE_CRIT_GB" \
   'BEGIN{a=t*p/100;b=g*1e9;print (a<b)?a:b}')
 p=$(awk -v av="$disk_avail" -v r="$relax_free" -v c="$crit_free" -v on="$DISK_AWARE" 'BEGIN{
-  if(on=="0"||r<=c){print 0;exit} x=(r-av)/(r-c); if(x<0)x=0; if(x>1)x=1; printf "%.3f",x }')
+  if(on=="0"){print 0;exit} if(r<=c){print (av<=c)?1:0;exit}
+  x=(r-av)/(r-c); if(x<0)x=0; if(x>1)x=1; printf "%.3f",x }')
+if [ "$DISK_AWARE" = 1 ] \
+   && awk -v r="$relax_free" -v c="$crit_free" 'BEGIN{exit !(r<=c)}'; then
+  awk -v r="$relax_free" -v c="$crit_free" 'BEGIN{printf "# WARN: the relax watermark" \
+    " (PRESSURE_RELAX_*, %.1f GB free) is not above the critical one (PRESSURE_CRIT_*," \
+    " %.1f GB), so pressure is either 0%% or 100%%.\n", r/1e9, c/1e9}' >&2
+fi
+# Watermarks set the wrong way round leave no band to interpolate over. The critical one still
+# empties the quarantine at or under it, so pressure is full there and none above it.
 
 # interpolate each knob relaxed->aggressive by p
 lerp(){ awk -v a="$1" -v b="$2" -v p="$p" 'BEGIN{printf "%d", a+(b-a)*p+0.5}'; }

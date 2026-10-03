@@ -23,7 +23,8 @@ Replace the script. Nothing else has to change.
 
 - **The media and peer rules no longer mistake an identity named in a repo's description for one of its owners.** The media rule counted that identity's uploads as the repo's own, and the peer rule never flagged it.
 - **A stopped run no longer deletes expired repos from quarantine.** Stopping at the runaway caps or with an `n` at the prompt used to delete them first.
-- **`MAX_PRUNE_COUNT` and the `RATCHET_*` settings must be whole numbers.** Anything else now exits `2`. A typo used to switch the check off without a word.
+- **`MAX_PRUNE_COUNT` and the `RATCHET_*` settings must be whole numbers, and `DISK_AWARE` must be `0` or `1`.** Anything else now exits `2`. A typo used to switch a check off without a word.
+- **With `PRESSURE_CRIT_*` set above `PRESSURE_RELAX_*`, a disk at or under the critical watermark counts as full pressure.** A run used to report `pressure=0%` and keep its relaxed thresholds while it emptied the quarantine. Such settings now also print a warning.
 - **An unexpected failure always exits `1`.** It used to pass on the failed command's status, which could look like exit `3`, `4` or `5`.
 - **The tool keeps working once `rad` drops `rad self --nid`.** rad 1.10 deprecates the flag, and once it is gone every prune run would stop with exit `5`.
 

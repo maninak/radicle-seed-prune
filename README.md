@@ -171,7 +171,7 @@ A phase counts the repos it has to read this run, not everything in storage, so 
 | ---- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | `0`  | Success, including a dry run and an `--apply` you declined at the prompt                                                             |
 | `1`  | Storage missing or unreadable, or an unexpected failure (the run prints the line, the command and its status)                        |
-| `2`  | Bad argument, or `MAX_PRUNE_COUNT` or a `RATCHET_*` setting that is not a whole number                                              |
+| `2`  | Bad argument, `MAX_PRUNE_COUNT` or a `RATCHET_*` setting that is not a whole number, or `DISK_AWARE` other than `0` or `1`          |
 | `3`  | The plan tripped a runaway cap; nothing was pruned. Read it, then re-run with `--force`                                              |
 | `4`  | A rule planned far more than usual, so its repos were held back; anything else in the plan was pruned. Read it, then `--force`       |
 | `5`  | Refused to guess: node unreachable, NID unknown, routing table empty, exclusions unreadable, or too much of storage could not be read |
@@ -260,7 +260,7 @@ D, E and F measure **creation** instead, because spam that comments on its own r
 
 ### Disk pressure
 
-The thresholds above are the **relaxed** values. As free disk falls, pressure `p` rises from `0` to `1` linearly between a relax watermark (`max(PRESSURE_RELAX_PCT%, PRESSURE_RELAX_GB)` free) and a critical one (`min(PRESSURE_CRIT_PCT%, PRESSURE_CRIT_GB)` free), and every knob is interpolated from its relaxed value toward an aggressive one:
+The thresholds above are the **relaxed** values. As free disk falls, pressure `p` rises from `0` to `1` linearly between a relax watermark (`max(PRESSURE_RELAX_PCT%, PRESSURE_RELAX_GB)` free) and a critical one (`min(PRESSURE_CRIT_PCT%, PRESSURE_CRIT_GB)` free), and every knob is interpolated from its relaxed value toward an aggressive one. With the relax watermark at or below the critical one, `p` is `0` above the critical watermark and `1` at or under it:
 
 | knob                 | relaxed (`p=0`) | aggressive (`p=1`) |
 | -------------------- | --------------- | ------------------ |
@@ -274,7 +274,7 @@ The thresholds above are the **relaxed** values. As free disk falls, pressure `p
 
 The header prints the live pressure and the effective thresholds every run. On one node, pruning scaled from ~1.3k repos / 18 GiB at `p=0` to ~7.1k repos / 92 GiB at `p=1`.
 
-**Hard floors never scale.** `MIN_OTHER_SEEDS` bottoms out at 1, every exclusion holds at any pressure, and none of rule E's thresholds move with pressure at all. `DISK_AWARE=0` turns the scaling off entirely, so every knob keeps its relaxed value.
+**Hard floors never scale.** `MIN_OTHER_SEEDS` bottoms out at 1, every exclusion holds at any pressure, and none of rule E's thresholds move with pressure at all. `DISK_AWARE=0` turns the scaling off entirely, so every knob keeps its relaxed value, and a disk at the critical watermark does not empty the quarantine.
 
 ## Safety and recovery
 

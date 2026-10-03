@@ -2224,7 +2224,7 @@ build_fixture; assert_isolated
 Q="$RSP_HOME/prune-audit/quarantine"
 mkdir -p "$Q/zfreshquar"
 out=$(DISK_AWARE=1 PRESSURE_CRIT_PCT=100 PRESSURE_CRIT_GB=999999 ABS_SIZE_FLOOR_MB=1 \
-        "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1)
+        PRESSURE_RELAX_PCT=1 PRESSURE_RELAX_GB=0 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1)
 { [ ! -e "$Q/zfreshquar" ] && grep -q 'emptied the whole quarantine' <<<"$out"; } \
   && ok "a critical disk empties the whole quarantine, window or not" \
   || no "quarantine held disk hostage at the critical watermark"
@@ -2270,6 +2270,11 @@ out=$(RATCHET_FLOOR=0 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
   && grep -qx "$STRANGER_NID" "$RSP_HOME/.stub_block" \
   && grep -q $'^blocked-denied\trad:zUnfetchedRepo9$' "$AUDIT_DIR"/prune-2*Z.log; } \
   && ok "a listed id with no repo here is blocked ahead of it, and the block is logged" \
+# The critical watermark here sits above the relax one, and the run must still act, and say it
+# acts, at full pressure.
+{ grep -q ' pressure=100% ' <<<"$out" && grep -q 'WARN: the relax watermark' <<<"$out"; } \
+  && ok "a critical disk is full pressure even with the watermarks inverted" \
+  || no "the banner said less than full pressure while the quarantine was emptied"
   || no "the deny list left an unfetched repo or an identity unblocked"
 grep -q "not-an-id is neither a repo id nor an identity" <<<"$out" \
   && ok "a deny line that names nothing is called out" \
