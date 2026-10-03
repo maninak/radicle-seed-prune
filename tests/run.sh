@@ -66,7 +66,7 @@ zmediazero\tlonelyclip\t0\tpublic\t0\t60\t100\ta clip nobody else seeds
 zmediapeer\tpeerpushed\t2\tpublic\t0\t60\t100\ta stranger pushed a clip
 zmediaraw\tunknownfile\t2\tpublic\t0\t60\t100\tone file of nothing in particular
 zmediamd\tnotesonly\t2\tpublic\t0\t60\t100\tone big markdown file
-zmediacob\tissueclip\t2\tpublic\t0\t60\t100\ta clip in the owner own issue
+zmediacob\tissueclip\t2\tpublic\t0\t60\t100\ta clip in the delegate own issue
 zmediapast\toldattach\t2\tpublic\t0\t60\t100\ta clip in an older comment
 zmediazip\tzippedclip\t2\tpublic\t0\t60\t100\tone archive
 zbatch1\tgallery\t2\tpublic\t0\t60\t100\tholiday pictures
@@ -268,6 +268,9 @@ e_tree(){
             head -c "$((bytes-12))" /dev/urandom >> "$w/$name" ;;
       same) printf '\0\0\0\40ftypisom' > "$w/$name"
             head -c "$((bytes-12))" /dev/zero >> "$w/$name" ;;
+      # An MPEG transport stream opening on the SDT packet, as ffmpeg and OBS write one.
+      ts)   printf '\107\100\021\020' > "$w/$name"
+            head -c "$((bytes-4))" /dev/urandom >> "$w/$name" ;;
       zip)  printf 'PK\3\4' > "$w/$name"
             head -c "$((bytes-4))" /dev/urandom >> "$w/$name" ;;
       zip0) printf 'PK\3\4' > "$w/$name"
@@ -563,8 +566,8 @@ _build_fixture(){
   e_tree zmediafresh  5 master "clip.mp4:40000"                  # too young           -> kept
   e_tree zmediazero  60 master "clip.mp4:40000"                  # no other seeds      -> kept
   # The same clip in a namespace, twice over. zmediacob's is the delegate's own, a dump hiding
-  # in its owner's issue thread. zmediapeer's belongs to a passing stranger, and counting that
-  # would let anybody delete anybody else's near-empty repo by pushing them a video. Both
+  # in the delegate's issue thread. zmediapeer's belongs to a passing stranger, and counting
+  # that would let anybody delete anybody else's near-empty repo by pushing them a video. Both
   # canonical trees hold 100 bytes of text, so whose namespace it is, is the ONLY difference
   # between them.
   e_tree zmediacob   60 master "notes.txt:100"
@@ -648,10 +651,10 @@ _build_fixture(){
   rm -f "$STORAGE/zmediacut/objects/${cut_tree:0:2}/${cut_tree:2}"
   e_tree zmediapeer  60 master "notes.txt:100"
   local stranger=$STRANGER_NID
-  # A project with a README on its branch and a clip attached to its owner's own issue, which
-  # one peer replicates: replicating mirrors the branch, so the README is a blob a stranger's
-  # refs hold too. Subtract on that and the README is gone while the un-mirrored clip stays,
-  # leaving a real repo looking exactly like a dump.
+  # A project with a README on its branch and a clip attached to its delegate's own issue,
+  # which one peer replicates: replicating mirrors the branch, so the README is a blob a
+  # stranger's refs hold too. Subtract on that and the README is gone while the un-mirrored
+  # clip stays, leaving a real repo looking exactly like a dump.
   e_tree zmediamirr  60 master "README.md:8192"
   e_tree zmediamirr  60 "refs/namespaces/$(dlg zmediamirr)/refs/cobs/xyz.radicle.issue/aaa" \
                         "clip.mp4:40000"
@@ -660,7 +663,7 @@ _build_fixture(){
     "$(GIT_DIR="$STORAGE/zmediamirr" git rev-parse master)"
   e_tree zmediapeer  60 "refs/namespaces/$stranger/refs/cobs/xyz.radicle.issue/aaa" \
                         "clip.mp4:40000"
-  # The same trap one layer in. This repo's text is not on its branch but in its owner's own
+  # The same trap one layer in. This repo's text is not on its branch but in its delegate's own
   # issue thread, and replicating mirrors COB refs as well as branches, so those op payloads
   # are blobs a stranger's refs hold too. Subtract on that and the repo's own writing is gone
   # while the clip on its branch stays, which is the dump shape exactly.
@@ -673,9 +676,9 @@ _build_fixture(){
         "refs/namespaces/$(dlg zmediacobm)/refs/cobs/xyz.radicle.issue/aaa")"
 
   # Rule G fixture. Three peers push the very same clip ("same" pads with zeros, so all three
-  # push one blob) into three repos none of them owns. Only the first is a parasite: the
-  # second delegates zparaown, and the third also wrote something. Each repo keeps a README on
-  # its own branch, so none of them is a media dump in its own right.
+  # push one blob) into three repos none of them is a delegate of. Only the first is a
+  # parasite: the second is a delegate of zparaown, and the third also wrote something. Each
+  # repo keeps a README on its own branch, so none of them is a media dump in its own right.
   local para=zPARASITExxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
   local writer=zWRITERxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
   local contrib; contrib=$(dlg zparaown)
@@ -713,7 +716,8 @@ past_run(){
     case $spec in rules:*) rules="  rules=${spec#rules:}" ;; held:*) held+=" ${spec#held:}" ;; esac
   done
   mkdir -p "$AUDIT_DIR"
-  { printf '# 2026-01-0%sT00:00:00Z  pressure=0%%%s\n' "$i" "$rules"
+  { printf '# What one rad prune run removed from storage or blocked, one repo per row.\n'
+    printf '# 2026-01-0%sT00:00:00Z  pressure=0%%%s\n' "$i" "$rules"
     for r in $held; do printf '# held back: rule %s, 99 repos (usual 0, limit 20)\n' "$r"; done
     for spec in "$@"; do
       case $spec in rules:*|held:*) continue ;; esac
@@ -946,7 +950,7 @@ for spec in zjunk1:20 zbar8:12; do
 done
 plan=$(run)
 { ! has "$plan" "zjunk1" && grep -qE '^#   zjunk1 +test-old$' <<<"$plan" \
-  && [ "$(grep -v '^#' "$AUDIT_DIR/last-run/imports.tsv")" = "$(printf 'zjunk1\ttest-old')" ]; } \
+  && [ "$(grep -v '^#' "$AUDIT_DIR/last-run/A-junk-name-kept-imports.tsv")" = "$(printf 'zjunk1\ttest-old')" ]; } \
   && ok "rule A spares a junk-named import, and names it" \
   || no "rule A spares a junk-named import"
 grep -qE "^zbar8 .*junk-name +[^ ]*import" <<<"$plan" \
@@ -1090,7 +1094,7 @@ plan_ex=$(LINK_MIN_REPOS=3 LINK_MIN_SCORE=2 LINK_DELEGATE_CHECK=0 run)
 grep -qE "^zvictimten .*link-farm" <<<"$plan_ex" \
   && ok "LINK_DELEGATE_CHECK=0 does flag it, so the spare above is the check working" \
   || no "LINK_DELEGATE_CHECK is vacuous"
-spared_msg='# rule E: 1 repo(s) spared, the spam links were pushed by peers that are not'
+spared_msg='# the link-farm rule (E): 1 repo(s) spared, the spam links were pushed by peers'
 # Without a delegate list there is no way to tell a repo's own links from a stranger's, so the
 # repo leaves the plan rather than staying in it on evidence nobody can attribute.
 grep -v "^zfarm1"$'\t' "$RSP_DELEGATES" > "$ROOT/deleg.partial"
@@ -1101,7 +1105,7 @@ plan_eu=$(RSP_DELEGATES="$ROOT/deleg.partial" LINK_MIN_REPOS=3 LINK_MIN_SCORE=2 
   || no "unreadable delegates leave the plan"
 # ...and the two outcomes are counted apart: zfarm1 could not be attributed at all, zvictimten
 # was attributed and cleared. Reporting both under one heading would misname one of them.
-{ grep -qF 'rule E: 1 repo(s) spared, their delegates could not be read' <<<"$plan_eu" \
+{ grep -qF 'the link-farm rule (E): 1 repo(s) spared, their delegates could not be read' <<<"$plan_eu" \
   && grep -qF "$spared_msg" <<<"$plan_eu"; } \
   && ok "an unattributable repo is counted apart from a cleared one" \
   || no "the two rule E outcomes are counted apart"
@@ -1419,8 +1423,8 @@ build_fixture; assert_isolated
 export PARASITE_MIN_REPOS=3 PARASITE_MIN_BYTES=65536 PARASITE_TEXT_MAX_BYTES=4096
 gplan=$(run)
 grep -q "PARASITE PEERS: 1" <<<"$gplan" && grep -q "$PARA" <<<"$gplan" \
-  && ok "a peer posting one file into repos it does not own is reported (rule G)" \
-  || no "rule G missed a peer republishing one file across repos it does not own"
+  && ok "a peer posting one file into repos it is not a delegate of is reported (rule G)" \
+  || no "rule G missed a peer republishing one file across repos it is not a delegate of"
 ! grep -q "$CONTRIB" <<<"$gplan" \
   && ok "a peer who delegates a repo somewhere in storage is never accused" \
   || no "rule G accused a delegate, whose block would stop their own repo replicating"
@@ -1460,6 +1464,7 @@ build_fixture; assert_isolated
 
 # --- the clocks a row is judged on --- The ledger and the freshness guard both read one
 # default plan, built here rather than inherited, so this section runs on its own.
+fs_rows=$(grep -v '^#' "$AUDIT_DIR/first-seen.tsv")
 plan=$(run)
 
 # --- the creation clock cannot be reset by a push --- Every date inside a repo is set by
@@ -1476,6 +1481,18 @@ plan_fs=$(FIRST_SEEN=/dev/null run)
 grep -q "^zjunk1"$'\t' "$AUDIT_DIR/first-seen.tsv" \
   && ok "the ledger records repos it had not seen before, on a dry run too" \
   || no "the ledger is written on a dry run"
+# The fixture's ledger was written with no header, as an older version writes it, and the first
+# run above added one by rewriting the file. A rewrite that dropped a row would hand the age
+# rules back to dates a pusher sets, and the dropped row would come back dated today, so a
+# second run planning zspamaged as a year-old batch member is what shows its row survived.
+nhead=$(grep -c '^#' "$AUDIT_DIR/first-seen.tsv")
+plan_fs2=$(run)
+{ head -n1 "$AUDIT_DIR/first-seen.tsv" | grep -q '^# ' \
+  && grep -qE "^zspamaged .*spam-batch" <<<"$plan_fs2" \
+  && ! grep -vxFf "$AUDIT_DIR/first-seen.tsv" <<<"$fs_rows" \
+  && [ "$(grep -c '^#' "$AUDIT_DIR/first-seen.tsv")" = "$nhead" ]; } \
+  && ok "a ledger without a header gets one, once, and keeps every row it had" \
+  || no "adding the ledger's header lost rows or stacked a second header"
 ! grep -q 'integer expression' <<<"$plan" \
   && ok "a torn ledger line is skipped, not fed to an arithmetic comparison" \
   || no "a torn ledger line is skipped"
@@ -1635,15 +1652,17 @@ planned=$(sed -n 's/^# PLAN: prune \([0-9]*\) repos.*/\1/p' <<<"$short")
 screenrows=$(grep -cE '^z[1-9A-HJ-NP-Za-km-z]+ ' <<<"$short")
 cols=$(printf '# rid\tsize_bytes\tother_seeds\tlast_activity_unix\treason')
 cols=$cols$(printf '\tname\tage_from_unix\tnear_threshold')
-# Read months later a file of repo ids says nothing about which run condemned them, so every
-# one of them opens with the same stamp naming that run.
+# Read months later a file of repo ids says nothing about what it is or which run condemned
+# them, so every one of them opens with a line saying what it holds and the stamp of that run.
 stamped=1
-for f in plan spam-batches spam-domains media-review imports parasite-peers; do
+for f in "$L"/*; do
+  head -n1 "$f" | grep -qE '^# [A-Z][a-z]' || stamped=0
   grep -qE '^# [0-9-]+T[0-9:]+Z  version=[0-9.]+  mode=DRY-RUN  rules=[A-H]+  storage=/' \
-       "$L/$f.tsv" || stamped=0
+       "$f" || stamped=0
 done
 { grep -q "the untrimmed plan and the evidence behind it: $L/" <<<"$short" \
-  && [ "$(sed -n '2p' "$L/plan.tsv")" = "$cols" ] \
+  && grep -qxF "$cols" "$L/plan.tsv" \
+  && [ "$(ls "$L" | wc -l)" -ge 14 ] \
   && [ "$(grep -vc '^#' "$L/plan.tsv")" = "${planned:-0}" ] \
   && [ "${planned:-0}" -gt "$screenrows" ] \
   && [ "$stamped" = 1 ] && [ ! -e "$L.new" ]; } \
@@ -1668,8 +1687,8 @@ reviewrows() { awk '/^# review:/ { inb = 1; next }
                     inb { inb = 0 }
                     END { print n + 0 }'; }
 { [ "${kept:-0}" -gt 5 ] \
-  && [ "$(grep -vc '^#' "$L/media-review.tsv")" = "$kept" ] \
-  && [ "$(sed -n '2p' "$L/media-review.tsv")" = "$(printf '# rid\tverdict\tname')" ] \
+  && [ "$(grep -vc '^#' "$L/F-media-kept-few-seeds.tsv")" = "$kept" ] \
+  && grep -qxF "$(printf '# rid\tverdict\tname')" "$L/F-media-kept-few-seeds.tsv" \
   && [ "$(reviewrows <<<"$screen")" = 5 ] \
   && grep -q "^#   ...and $((kept - 5)) more (PLAN_FULL=1 lists them)" <<<"$screen" \
   && [ "$(reviewrows <<<"$full")" = "$kept" ] \
@@ -1680,13 +1699,49 @@ reviewrows() { awk '/^# review:/ { inb = 1; next }
 # A count of repos rule F gave up on is a warning nobody can act on until it names them. Every
 # repo in the fixture is over the ref ceiling below, so the walk gives up on all of them.
 unj=$(DISK_AWARE=0 MEDIA_MAX_REFS=0 CACHE=0 run)
-nunj=$(sed -n 's/^# WARN: rule F left \([0-9]*\) repo(s) unjudged.*/\1/p' <<<"$unj")
+nunj=$(sed -n 's/^# WARN: the media rule (F) left \([0-9]*\) repo(s) unjudged.*/\1/p' <<<"$unj")
 { [ "${nunj:-0}" -gt 0 ] \
-  && grep -q "^#   the $nunj repo(s) rule F left unjudged: $L/media-unjudged.tsv$" <<<"$unj" \
-  && [ "$(grep -vc '^#' "$L/media-unjudged.tsv")" = "$nunj" ] \
-  && grep -qx 'zmediamd' "$L/media-unjudged.tsv"; } \
+  && grep -q "^#   the $nunj repo(s) the media rule (F) left unjudged: $L/F-media-unjudged.tsv$" <<<"$unj" \
+  && [ "$(grep -vc '^#' "$L/F-media-unjudged.tsv")" = "$nunj" ] \
+  && grep -qx 'zmediamd' "$L/F-media-unjudged.tsv"; } \
   && ok "the repos rule F gave up on are named, not only counted" \
   || no "rule F warned about $nunj unjudged repos and named none of them"
+
+# A recording saved as .ts shares its extension with TypeScript, so only its bytes say it is
+# video. Over MEDIA_SNIFF_TEXT_BYTES a file named like text is read, and this one must not
+# pass for code. The copies below have no name in rad ls, so each holds over the 1 MiB of
+# media under which an unnamed repo is spared.
+build_fixture; assert_isolated
+L="$RSP_HOME/prune-audit/last-run"
+cp -a "$STORAGE/zmediamd" "$STORAGE/zmediats"
+e_tree zmediats 60 master "rec.ts:1200000:ts"
+# Past MEDIA_SNIFF_MAX_FILES (200) files of unknown type, the smallest go unread. 200 clips
+# and one unread file: unread bytes that could be text past the smallest budget leave the
+# repo unjudged, and a few that could not are counted as text and change nothing. The unread
+# file sorts first by name, so only reading the biggest first leaves it the one unread.
+cap=(); for i in $(seq -w 1 200); do cap+=("clip$i.bin:6000:mp4"); done
+cp -a "$STORAGE/zmediamd" "$STORAGE/zmediacap"
+e_tree zmediacap 60 master "${cap[@]}" "0tail.bin:2500"
+cp -a "$STORAGE/zmediamd" "$STORAGE/zmediacap2"
+e_tree zmediacap2 60 master "${cap[@]}" "0tail.bin:100"
+# A video beside 200 small files of text already past the widest budget: no verdict is in
+# reach whatever the one unread file is, so the repo is spared, not reported as unjudged.
+many=(); for i in $(seq -w 1 200); do many+=("t$i.bin:400"); done
+cp -a "$STORAGE/zmediamd" "$STORAGE/zmediamany"
+e_tree zmediamany 60 master "big.mp4:1200000:mp4" "${many[@]}" "0tail.bin:300"
+plan=$(DISK_AWARE=0 CACHE=0 run)
+grep -qE "^zmediats .*media-dump" <<<"$plan" \
+  && ok "an MPEG recording named .ts is read as video, not trusted as TypeScript" \
+  || no "an MPEG transport stream named .ts passed for text"
+{ ! has "$plan" "zmediacap" && grep -qx 'zmediacap' "$L/F-media-unjudged.tsv"; } \
+  && ok "files past the read cap that could change the verdict leave the repo unjudged" \
+  || no "a repo was judged on the 200 files read when the rest could have changed it"
+grep -qE "^zmediacap2 .*media-dump" <<<"$plan" \
+  && ok "a few unread bytes that cannot change the verdict do not block it" \
+  || no "a repo with a tiny unread file was left unjudged"
+{ ! has "$plan" "zmediamany" && ! grep -qx 'zmediamany' "$L/F-media-unjudged.tsv"; } \
+  && ok "a repo no verdict can reach is spared without being reported as unjudged" \
+  || no "unread files were reported as able to change a verdict nothing could reach"
 
 
 build_fixture; assert_isolated
@@ -2047,7 +2102,8 @@ out=$("$SCRIPT" quarantine restore zjunk1 2>&1)
   && grep -qx 'rad:zjunk1' "$RSP_HOME/.stub_unseed" \
   && grep -qx 'rad:zjunk1' "$RSP_HOME/.stub_seed" \
   && grep -qx 'zjunk1' "$RSP_HOME/prune-audit/keep.txt" \
-  && grep -qx 'zkeepme' "$RSP_HOME/prune-audit/keep.txt"; } \
+  && grep -qx 'zkeepme' "$RSP_HOME/prune-audit/keep.txt" \
+  && [ "$(head -c1 "$RSP_HOME/prune-audit/keep.txt")" = z ]; } \
   && ok "quarantine restore puts the repo back, clears its block and keeps it" \
   || no "quarantine restore left the repo blocked, gone, or still condemned"
 
@@ -2199,7 +2255,7 @@ out=$(DISK_AWARE=0 RULES= "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1)
   && ok "RULES= means no rules, not the default set" \
   || no "an empty RULES fell back to running every rule"
 
-# At the critical watermark a recovery copy is a luxury the disk cannot buy.
+# At the critical free-space threshold a recovery copy is a luxury the disk cannot buy.
 build_fixture; assert_isolated
 Q="$RSP_HOME/prune-audit/quarantine"
 mkdir -p "$Q/zfreshquar"
@@ -2207,11 +2263,11 @@ out=$(DISK_AWARE=1 PRESSURE_CRIT_PCT=100 PRESSURE_CRIT_GB=999999 ABS_SIZE_FLOOR_
         PRESSURE_RELAX_PCT=1 PRESSURE_RELAX_GB=0 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1)
 { [ ! -e "$Q/zfreshquar" ] && grep -q 'emptied the whole quarantine' <<<"$out"; } \
   && ok "a critical disk empties the whole quarantine, window or not" \
-  || no "quarantine held disk hostage at the critical watermark"
-# The critical watermark here sits above the relax one, and the run must still act, and say it
-# acts, at full pressure.
-{ grep -q ' pressure=100% ' <<<"$out" && grep -q 'WARN: the relax watermark' <<<"$out"; } \
-  && ok "a critical disk is full pressure even with the watermarks inverted" \
+  || no "quarantine held disk hostage at the critical free-space threshold"
+# The critical free-space threshold here sits above the relaxed one, and the run must still
+# act, and say it acts, at full pressure.
+{ grep -q ' pressure=100% ' <<<"$out" && grep -q 'WARN: the relaxed free-space threshold' <<<"$out"; } \
+  && ok "a critical disk is full pressure even with the free-space thresholds inverted" \
   || no "the banner said less than full pressure while the quarantine was emptied"
 
 # The keep list is written by hand, sometimes on Windows: a byte-order mark before the first id
@@ -2365,7 +2421,7 @@ mapfile -t edits < <(
 sed -i "${edits[@]}" "$RSP_MANIFEST"
 out=$("$SCRIPT" 2>&1); rc=$?
 { [ "$rc" = 0 ] \
-  && grep -q 'REVIEW, MALWARE OPERATIONS: 1 identity(s) (rule H)' <<<"$out" \
+  && grep -q 'REVIEW, MALWARE OPERATIONS: 1 identity(s), from the malware rule (H)' <<<"$out" \
   && grep -q "#   $OPS, 2 of the 3 repos it is a delegate of and signed refs in:" <<<"$out" \
   && grep -q "#       rad:zcode4  # c2-panel (c2,panel,loader)" <<<"$out" \
   && grep -qx "#     did:key:$OPS" <<<"$out"; } \
@@ -2377,7 +2433,7 @@ out=$("$SCRIPT" 2>&1); rc=$?
 ! grep -qE "$RES|$FEW|$THIN|$ONE" <<<"$out" \
   && ok "no strong word, two words, two repos of five, or one repo: nobody else is named" \
   || no "rule H named an identity under one of its bars"
-{ grep -q 'REVIEW, MALWARE REPOS: 2 repo(s) (rule H)' <<<"$out" \
+{ grep -q 'REVIEW, MALWARE REPOS: 2 repo(s), from the malware rule (H)' <<<"$out" \
   && grep -qxF "#     rad:zrot3  # hvnc-panel (hvnc,panel,loader; path: src/hvnc/client.py)" \
        <<<"$out" \
   && grep -qxF "#     rad:zfarm2  # stealer (stealer; subject: feat(stealers): save[2J2J results)" \
@@ -2390,12 +2446,12 @@ out=$("$SCRIPT" 2>&1); rc=$?
   && ok "a repo with words and evidence but no commit dates to judge by is called out" \
   || no "rule H passed over a repo it could not date without a word, or warned with no evidence"
 grep -qxF "zfarm2"$'\t'"stealer"$'\t'"subject: feat(stealers): save[2J2J results"$'\t'"stealer" \
-  "$AUDIT_DIR/last-run/malware-repos.tsv" \
-  && ok "last-run/malware-repos.tsv holds every single repo named" \
+  "$AUDIT_DIR/last-run/H-malware-repos.tsv" \
+  && ok "last-run/H-malware-repos.tsv holds every single repo named" \
   || no "rule H's single repos did not reach last-run"
 row=$(printf '%s\t2\t3\tzcode6\tdrainer,payload\twallet_drainers' "$OPS")
-grep -qxF "$row" "$AUDIT_DIR/last-run/malware-identities.tsv" \
-  && ok "last-run/malware-identities.tsv holds every repo that matched" \
+grep -qxF "$row" "$AUDIT_DIR/last-run/H-malware-identities.tsv" \
+  && ok "last-run/H-malware-identities.tsv holds every repo that matched" \
   || no "rule H's evidence did not reach last-run"
 # A kept repo vouches for every delegate it names, one who never signed there included, since
 # the deny list would not block them either.
@@ -2505,11 +2561,11 @@ iddoc zcode7 "{\"delegates\":[\"$escaped\"],\"payload\":{},\"threshold\":1}"
 dry=$(RATCHET_FLOOR=0 "$SCRIPT" 2>&1)
 { [ ! -e "$RSP_HOME/.stub_block" ] && grep -q '#   deny list: block 3 id(s)' <<<"$dry" \
   && grep -qx '#     rad:zUnfetchedRepo9' <<<"$dry" \
-  && grep -qx "zfarm1"$'\t'"delegate $(dlg zfarm1)" "$AUDIT_DIR/last-run/denied.tsv"; } \
+  && grep -qx "zfarm1"$'\t'"delegate $(dlg zfarm1)" "$AUDIT_DIR/last-run/deny-repos.tsv"; } \
   && ok "a dry run lists what the deny list would block and why, and blocks nothing" \
   || no "a dry run blocked something, or hid what --apply would block"
-{ grep -qx "zcode7"$'\t'"delegate $(dlg zfarm1)" "$AUDIT_DIR/last-run/denied.tsv" \
-  && ! grep -q '^zcode6' "$AUDIT_DIR/last-run/denied.tsv"; } \
+{ grep -qx "zcode7"$'\t'"delegate $(dlg zfarm1)" "$AUDIT_DIR/last-run/deny-repos.tsv" \
+  && ! grep -q '^zcode6' "$AUDIT_DIR/last-run/deny-repos.tsv"; } \
   && ok "a repo's delegates are read from its document's top level, however it is written" \
   || no "a listed delegate was missed in an escaped did:key, or found in a nested list"
 out=$(RATCHET_FLOOR=0 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
@@ -2517,7 +2573,7 @@ out=$(RATCHET_FLOOR=0 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
   && grep -qE $'^zcode4\t.*\tdenied\t' "$AUDIT_DIR"/prune-2*Z.log \
   && grep -qE $'^zfarm1\t.*\tdenied\t' "$AUDIT_DIR"/prune-2*Z.log \
   && grep -qx "# denied: zfarm1 delegate $(dlg zfarm1)" "$AUDIT_DIR"/prune-2*Z.log; } \
-  && ok "a repo on the deny list, or one its listed delegate owns, is pruned as denied" \
+  && ok "a denied repo, or one a denied identity is a delegate of, is pruned as denied" \
   || no "the deny list did not prune what it names (rc=$rc)"
 ! grep -qE $'^zmediapeer\t.*\tdenied\t' "$AUDIT_DIR"/prune-2*Z.log \
   && ok "a listed stranger condemns no repo it is only named in or pushed into" \
@@ -2585,8 +2641,8 @@ printf '%s - hand-list 2026-10-02\n%s - hand-list 2026-10-02\n' "$small" "$notes
 plan=$(run)
 { grep -qE "^zcode4 .* denied-copy " <<<"$plan" \
   && grep -qE $'^zcode4\t6291456\t629[0-9]{4}\t99\t1\trad:zgonesrc\t0$' \
-       "$AUDIT_DIR/last-run/denied-copies.tsv" \
-  && grep -qx "zcode4"$'\t'"$leak"$'\t6291456' "$AUDIT_DIR/last-run/denied-copy-files.tsv"; } \
+       "$AUDIT_DIR/last-run/deny-copies.tsv" \
+  && grep -qx "zcode4"$'\t'"$leak"$'\t6291456' "$AUDIT_DIR/last-run/deny-copy-files.tsv"; } \
   && ok "a repo holding a listed file is pruned as a copy, and its source is named" \
   || no "a repo holding a listed file was not pruned as a copy, or its source went unnamed"
 grep -qE "^zcode6 .* denied-copy " <<<"$plan" \
@@ -2674,12 +2730,12 @@ out=$("$SCRIPT" quarantine files zrot2 2>/dev/null); rc=$?
 build_fixture; assert_isolated
 for i in 1 2 3 4; do past_run "$i" $USUAL_BUT_C; done
 dry=$(RATCHET_FLOOR=0 "$SCRIPT" 2>&1)
-grep -q 'HELD BACK unless --force' <<<"$dry" && grep -q '#     rule C: ' <<<"$dry" \
-  && ! grep -q '#     rule A: ' <<<"$dry" \
+grep -q 'HELD BACK unless --force' <<<"$dry" && grep -q '#     the stale rule (C): ' <<<"$dry" \
+  && ! grep -q '#     the junk-name rule (A): ' <<<"$dry" \
   && ok "a dry run says which rule an unattended apply would hold back" \
   || no "the dry run did not name the rule the ratchet would hold"
 out=$(RATCHET_FLOOR=0 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
-{ [ "$rc" = 4 ] && grep -q '^# HELD BACK rule C: ' <<<"$out" \
+{ [ "$rc" = 4 ] && grep -q '^# HELD BACK the stale rule (C): ' <<<"$out" \
   && [ -e "$STORAGE/ztwoyr3" ] && [ ! -e "$STORAGE/zjunk1" ]; } \
   && ok "a rule far over its usual is held back while the rest of the plan is pruned" \
   || no "the ratchet held the wrong rules, or held the whole run (rc=$rc)"
@@ -2801,24 +2857,24 @@ if command -v script >/dev/null 2>&1; then
     && ok "the confirmation prompt says quarantine, not reclaim, while quarantine is on" \
     || no "the apply prompt promised disk the quarantine is still holding"
 
-  # A quarantine is a recovery copy, and at the critical watermark the run empties it whole
-  # rather than wait out the window. That emptying used to happen before the human was asked
-  # anything, so answering no destroyed every recovery copy in a run that pruned nothing.
+  # A quarantine is a recovery copy, and at the critical free-space threshold the run empties
+  # it whole rather than wait out the window. That emptying used to happen before the human was
+  # asked anything, so answering no destroyed every recovery copy in a run that pruned nothing.
   CRIT="env DISK_AWARE=1 PRESSURE_CRIT_PCT=100 PRESSURE_CRIT_GB=999999 ABS_SIZE_FLOOR_MB=1"
   build_fixture; assert_isolated
   Q="$RSP_HOME/prune-audit/quarantine"; mkdir -p "$Q/zkeepme"
   printf 'n\n' | script -qec "$CRIT '$SCRIPT' --apply" /dev/null >"$ROOT/ncrit.out" 2>&1
   { grep -q aborted "$ROOT/ncrit.out" && [ -d "$Q/zkeepme" ]; } \
-    && ok "answering no leaves the quarantine standing, critical watermark or not" \
+    && ok "answering no leaves the quarantine standing, critical free-space threshold or not" \
     || no "an aborted run had already emptied the whole quarantine before asking"
 
   # And the other direction, so the check above cannot pass by the wipe never happening.
   build_fixture; assert_isolated
   Q="$RSP_HOME/prune-audit/quarantine"; mkdir -p "$Q/zkeepme"
   printf 'y\n' | script -qec "$CRIT '$SCRIPT' --apply" /dev/null >"$ROOT/ycrit.out" 2>&1
-  { grep -q 'critical watermark' "$ROOT/ycrit.out" && [ ! -e "$Q/zkeepme" ]; } \
-    && ok "answering yes at the critical watermark still empties the whole quarantine" \
-    || no "the critical watermark left the quarantine holding disk the run needed"
+  { grep -q 'critical free-space threshold' "$ROOT/ycrit.out" && [ ! -e "$Q/zkeepme" ]; } \
+    && ok "answering yes at the critical free-space threshold still empties the whole quarantine" \
+    || no "the critical free-space threshold left the quarantine holding disk the run needed"
 
   # Rule C would be held back unattended, and a yes is a human signing off on that too.
   build_fixture; assert_isolated

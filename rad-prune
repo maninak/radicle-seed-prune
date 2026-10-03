@@ -3,7 +3,7 @@
 # radicle-seed-prune - automatically detect and prune lower-value repos, spam and abuse from
 # a Radicle (heartwood) node's storage. Two jobs at once: it reclaims disk from stale giants,
 # abandoned repos and disposable ones, and it moderates mass-generated spam, link farms, media
-# dumps and peers who push their own files into repos they do not own.
+# dumps and peers who push their own files into repos they are not a delegate of.
 #
 # DRY-RUN by default - it only prints the plan and changes nothing. Pass --apply to act.
 #
@@ -249,16 +249,16 @@
 #   nobody sees is a standing exemption for anyone who makes sure nobody else seeds their dump.
 #
 # RULE G JUDGES A PEER, NOT A REPO, and nothing it finds is ever deleted or pruned. A peer
-#   who pushes into repos it does not own is normally a contributor, so the only evidence that
-#   counts here is ONE FILE, byte for byte, appearing in PARASITE_MIN_REPOS repos where that
-#   peer is not a delegate and where the repo's own refs do not hold it. A person attaching a
-#   screenshot to an issue posts a different file each time; the same object id turning up in
-#   unrelated repos is a campaign. Totals alone are deliberately not enough: someone active
-#   across many repos accumulates megabytes honestly.
+#   who pushes into repos it is not a delegate of is normally a contributor, so the only
+#   evidence that counts here is ONE FILE, byte for byte, appearing in PARASITE_MIN_REPOS
+#   repos where that peer is not a delegate and where the repo's own refs do not hold it. A
+#   person attaching a screenshot to an issue posts a different file each time; the same
+#   object id turning up in unrelated repos is a campaign. Totals alone are deliberately not
+#   enough: someone active across many repos accumulates megabytes honestly.
 #
 #   A DELEGATE IS NEVER ACCUSED, wherever in storage they are one. The node runs delegate refs
 #   through the same block list before it checks the signature threshold, so blocking a
-#   delegate stops the repos they own from replicating properly.
+#   delegate stops the repos they are a delegate of from replicating properly.
 #
 #   THE ACT IS SEPARATE FROM THE FINDING, and takes two opt-ins. A block is permanent, applies
 #   to every repo at once, and the person blocked is never told, so --block-peers asks for each
@@ -472,8 +472,8 @@ MEDIA_MIN_BATCH="${MEDIA_MIN_BATCH:-5}"          # repos holding one blob to cal
 MEDIA_STALE_DAYS="${MEDIA_STALE_DAYS:-7}"        # minimum age, from creation like D and E
 MEDIA_MIN_SEEDS="${MEDIA_MIN_SEEDS:-0}"          # 0 may prune the last copy; 1 keeps it
 # How much of each repo to look at. Only the first bytes of a file are ever read, and only
-# while the repo could still be a dump, so these bound an already small cost. A file past
-# either bound counts as text, which spares the repo.
+# while the repo could still be a dump, so these bound an already small cost. The biggest files
+# are read first, and a repo whose unread files could change its verdict goes unjudged.
 # A "text" file this big is read too: it may be a video wearing a .md, which would otherwise
 # both hide itself and blow the very budget that spares the repo.
 MEDIA_SNIFF_TEXT_BYTES=262144
@@ -527,9 +527,10 @@ MEDIA_RATIO_MAX_FILES=1            # READMEs at the tips of branches and tags; n
 # are never told. So this rule is built to be nearly impossible to trip by accident, and every
 # threshold below buys confidence rather than reach. It reports by default and blocks only
 # under --block-peers, so the operator reads the evidence before anyone is blocked.
-# The evidence is one file, byte for byte, pushed into repos the peer does not own. A person
-# attaching a screenshot to an issue posts a DIFFERENT file each time; the same oid landing in
-# unrelated repos is a campaign, and it is the one thing a single repo cannot manufacture.
+# The evidence is one file, byte for byte, pushed into repos the peer is not a delegate of.
+# A person attaching a screenshot to an issue posts a DIFFERENT file each time; the same oid
+# landing in unrelated repos is a campaign, and it is the one thing a single repo cannot
+# manufacture.
 PARASITE_MIN_REPOS="${PARASITE_MIN_REPOS:-10}"   # repos one blob must reach to accuse a peer
 PARASITE_MIN_BYTES="${PARASITE_MIN_BYTES:-1048576}"
 # A peer who writes is a contributor, whatever else they push. This is generous on purpose: it
@@ -570,6 +571,20 @@ MALWARE_BYTES=4194304        # of paths and subjects read per repo in all; a tre
 # reading it as "all of them" fails in the one direction that cannot be undone.
 RULES="${RULES-ABCDEFGH}"
 rule_on(){ case "$RULES" in (*"$1"*) return 0 ;; (*) return 1 ;; esac; }
+# How the output names a rule: by what it does, and by the letter RULES takes.
+rule_label() {
+  case $1 in
+    A) echo "the junk-name rule (A)" ;;
+    B) echo "the size rule (B)" ;;
+    C) echo "the stale rule (C)" ;;
+    D) echo "the spam-batch rule (D)" ;;
+    E) echo "the link-farm rule (E)" ;;
+    F) echo "the media rule (F)" ;;
+    G) echo "the parasite-peer rule (G)" ;;
+    H) echo "the malware rule (H)" ;;
+    *) echo "rule $1" ;;
+  esac
+}
 
 MAX_PRUNE_COUNT="${MAX_PRUNE_COUNT:-1000}"       # runaway guards (abort unless --force)
 MAX_PRUNE_GB="${MAX_PRUNE_GB:-80}"
@@ -587,12 +602,11 @@ RATCHET_RUNS="${RATCHET_RUNS:-8}"                # past runs the usual is taken 
 RATCHET_FLOOR="${RATCHET_FLOOR:-20}"             # repos per rule, per run
 MAX_SCAN_FAIL_PCT="${MAX_SCAN_FAIL_PCT:-10}"     # abort if this share of storage is unreadable
 
-# --- disk-pressure adaptivity ---
-# The thresholds above are the RELAXED (plenty-of-space) values. As free disk on the storage
-# filesystem falls from the relax watermark down to the critical one, every knob is
-# interpolated toward its AGGRESSIVE value, so the tool self-tightens with no human retuning.
-# Set DISK_AWARE=0 to disable and always use the relaxed values. Hard safety floors (>=1 other
-# seed, the exclusions) never scale.
+# --- disk-pressure adaptivity --- The thresholds above are the RELAXED (plenty-of-space)
+# values. As free disk on the storage filesystem falls from the relaxed free-space threshold
+# down to the critical one, every knob is interpolated toward its AGGRESSIVE value, so the tool
+# self-tightens with no human retuning. Set DISK_AWARE=0 to disable and always use the relaxed
+# values. Hard safety floors (>=1 other seed, the exclusions) never scale.
 DISK_AWARE="${DISK_AWARE:-1}"
 PRESSURE_RELAX_PCT="${PRESSURE_RELAX_PCT:-20}"   # >= max(pct,gb) free  -> pressure 0 (relaxed)
 PRESSURE_RELAX_GB="${PRESSURE_RELAX_GB:-20}"
@@ -844,6 +858,8 @@ is_media() {
     3026b275*)                     return 0 ;;   # asf, wmv
     49492a00*|4d4d002a*)           return 0 ;;   # tiff, either byte order
     38425053*)                     return 0 ;;   # psd
+    474000*|474011*)               return 0 ;;   # mpeg transport stream, opening on PAT or SDT
+    000001ba*|000001b3*)           return 0 ;;   # mpeg program stream, mpeg video
   esac
   is_archive "$1"
 }
@@ -891,7 +907,7 @@ USAGE
 
 OPTIONS
   --apply          carry out the plan: unseed, block and quarantine every repo in it
-  --block-peers    act on rule G as well, asking before each peer is blocked
+  --block-peers    act on the parasite-peer rule (G) as well, asking before each peer is blocked
   --yes, -y        answer y to every prompt this run asks, so it needs nobody present
   --force          carry on past the runaway caps and the hold on a rule that jumps
   --restart-node   restart the node service afterwards, to flush its inventory
@@ -944,12 +960,12 @@ esac
 # a live node - so the calls below discard their own errors and carry on. A command that is not
 # installed fails in that same shape for every repo at once, and the run then reports storage
 # as unreadable when one binary is missing from PATH. Name it here, before a repo is read.
-# What the quarantine verbs call, checked whatever the command is. `restore` reaches dirname
-# through the keep file it writes. `files` adds what it reads a repo with.
-need="basename cut date dirname du grep mkdir mv rm stat"
+# What the quarantine verbs call, checked whatever the command is. `restore` reaches dirname,
+# sync and tail through the keep file it writes. `files` adds what it reads a repo with.
+need="basename cut date dirname du grep mkdir mv rm stat sync tail"
 # What a scan adds on top. `nproc` is left out of both: its one call has a fallback value.
 if [ "$CMD" != quarantine ]; then
-  need="$need awk cat df find git head jq mktemp od sed sha1sum sort tail touch tr"
+  need="$need awk cat cp df find git head jq mktemp od sed sha1sum sort tail touch tr"
   need="$need uniq wc xargs"
 fi
 if [ "$QVERB" = files ]; then need="$need awk git jq od"; fi
@@ -961,6 +977,11 @@ done
 [ -z "$missing" ] || {
   echo "missing required command(s):$missing" >&2
   echo "PATH=$PATH" >&2
+  case " $missing " in
+    (*" base64 "*|*" gzip "*|*" openssl "*)
+      echo "To run without the media rule (F), which needs base64, gzip and openssl," \
+           "leave F out of RULES." >&2 ;;
+  esac
   exit 1
 }
 # Rule F counts an issue or patch op only once openssl has checked its signature. An openssl
@@ -978,8 +999,8 @@ if [ "$CMD" != quarantine ] && rule_on F; then
     -sigfile "$vec/sig" >/dev/null 2>&1 && ed_ok=1 || ed_ok=0
   rm -rf "$vec"
   [ "$ed_ok" = 1 ] || {
-    echo "openssl here cannot check ed25519 signatures, which rule F needs. OpenSSL 3 can." >&2
-    echo "To run without rule F, leave F out of RULES." >&2
+    echo "openssl here cannot check ed25519 signatures, which the media rule (F) needs. OpenSSL 3 can." >&2
+    echo "To run without the media rule (F), leave F out of RULES." >&2
     exit 1
   }
 fi
@@ -1013,10 +1034,50 @@ fresh_cut=$(( now - FRESH_GUARD_DAYS*86400 ))
 # in the quarantine was unseeded and blocked before it was moved there, so the node holds no
 # reference to any of it: deleting the directory by hand costs the ability to restore and
 # nothing else.
+# Puts lines saying what a file is at the top of a file this tool keeps adding to, for somebody
+# who opens the audit directory with no README at hand. A file from a version that wrote none
+# gets them too. A file that already opens with "#" is left alone, so a later change of wording
+# never stacks a second header on the first. The new copy is written beside the file and moved
+# over it in one step, so a disk too full to write it costs the header and never the file.
+# Anything but a plain file is left alone: moving a file over a symlink would undo whatever it
+# points at, and over FIRST_SEEN=/dev/null, run as root, would replace /dev/null itself.
+# Returns non-zero when it could not write, for the caller to say so.
+add_header() {  # $1 = file, then one argument per line of the header
+  local file=$1 first=""
+  shift
+  if [ -L "$file" ] || { [ -e "$file" ] && [ ! -f "$file" ]; }; then return 0; fi
+  if [ -s "$file" ]; then
+    { IFS= read -r first < "$file"; } 2>/dev/null || true
+    [[ $first == '#'* ]] && return 0
+  fi
+  # A leftover $file.new, or a symlink planted there, is removed rather than written through.
+  # cp -p starts the copy with the file's owner and mode, so a run as root does not leave a
+  # file the seed user's cron can no longer append to. sync flushes the copy before the move,
+  # so a crash right after it cannot leave an empty file.
+  rm -f -- "$file.new" 2>/dev/null
+  if { [ ! -e "$file" ] || cp -p -- "$file" "$file.new" 2>/dev/null; } \
+     && { printf '# %s\n' "$@"; [ ! -e "$file" ] || cat "$file"; } > "$file.new" 2>/dev/null \
+     && sync -- "$file.new" 2>/dev/null && mv -f "$file.new" "$file" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$file.new" 2>/dev/null
+  return 1
+}
+
 # Returns non-zero rather than dying, so an unwritable keep file costs one warning and the
 # rest of a "restore a, b, c" still runs.
 keep_add() {
   mkdir -p "$(dirname "$KEEP_FILE")" 2>/dev/null || return 1
+  # Only a keep file this creates gets the lines saying what it is. One that already exists is
+  # the operator's, written by hand or by their config management, and is never rewritten.
+  # The lines only explain; the id below is what protects the repo, so it goes in regardless.
+  if [ ! -e "$KEEP_FILE" ]; then
+    add_header "$KEEP_FILE" \
+      "Repos rad prune never prunes, one repo id per line. Edit it by hand at any time." \
+      "A did:key: line instead stops the malware rule (H) naming that identity." \
+      "rad prune quarantine restore adds each repo it puts back." \
+      || echo "# WARN: could not write the header of a new $KEEP_FILE" >&2
+  fi
   grep -qxF "$1" "$KEEP_FILE" 2>/dev/null && return 0
   # A last line saved without its newline, as some editors do, would run into the new id.
   if [ -s "$KEEP_FILE" ] && [ -n "$(tail -c1 "$KEEP_FILE")" ]; then
@@ -1054,9 +1115,9 @@ quar_purge_expired() {
                             "${QUARANTINE_DAYS}d; they are gone for good now."
   return 0
 }
-# The window is ignored outright once the disk is at the critical watermark: a recovery copy is
-# a luxury a full disk cannot buy. Kept as a function because the two moments that can afford
-# to do this sit far apart in the apply path below.
+# The window is ignored outright once free space is at the critical threshold: a recovery copy
+# is a luxury a full disk cannot buy. Kept as a function because the two moments that can
+# afford to do this sit far apart in the apply path below.
 quar_purge_all_if_critical() {
   [ "$QUARANTINE" = 1 ] && [ "$DISK_AWARE" = 1 ] \
     && awk -v a="$disk_avail" -v c="$crit_free" 'BEGIN{exit !(a <= c)}' || return 0
@@ -1066,7 +1127,8 @@ quar_purge_all_if_critical() {
     rm -rf -- "$d" && purged=$((purged+1))
   done
   [ "$purged" = 0 ] \
-    || echo "# disk is at the critical watermark: emptied the whole quarantine ($purged)."
+    || echo "# disk is at the critical free-space threshold: emptied the whole quarantine" \
+            "($purged)."
   return 0
 }
 
@@ -1123,7 +1185,7 @@ if [ "$CMD" = quarantine ]; then
           || { echo "#   WARN could not write $KEEP_FILE; the next run may prune $rid" >&2
                continue; }
         echo "# restored $rid; added to $KEEP_FILE so the next run leaves it alone, and so" \
-             "rule H names none of the identities its document lists as delegates"
+             "the malware rule (H) names none of the identities its document lists as delegates"
       done
       echo "# restart the node to announce them again: sudo systemctl restart $SERVICE"
       ;;
@@ -1234,15 +1296,15 @@ relax_free=$(awk -v t="$disk_total" -v p="$PRESSURE_RELAX_PCT" -v g="$PRESSURE_R
   'BEGIN{a=t*p/100;b=g*1e9;print (a>b)?a:b}')
 crit_free=$(awk  -v t="$disk_total" -v p="$PRESSURE_CRIT_PCT"  -v g="$PRESSURE_CRIT_GB" \
   'BEGIN{a=t*p/100;b=g*1e9;print (a<b)?a:b}')
-# Watermarks set the wrong way round leave no band to interpolate over. The critical one still
-# empties the quarantine at or under it, so pressure is full there and none above it.
+# Free-space thresholds set the wrong way round leave no band to interpolate over. The critical
+# one still empties the quarantine at or under it, so pressure is full there and none above it.
 p=$(awk -v av="$disk_avail" -v r="$relax_free" -v c="$crit_free" -v on="$DISK_AWARE" 'BEGIN{
   if(on=="0"){print 0;exit} if(r<=c){print (av<=c)?1:0;exit}
   x=(r-av)/(r-c); if(x<0)x=0; if(x>1)x=1; printf "%.3f",x }')
 if [ "$DISK_AWARE" = 1 ] \
    && awk -v r="$relax_free" -v c="$crit_free" 'BEGIN{exit !(r<=c)}'; then
-  awk -v r="$relax_free" -v c="$crit_free" 'BEGIN{printf "# WARN: the relax watermark" \
-    " (PRESSURE_RELAX_*, %.1f GB free) is not above the critical one (PRESSURE_CRIT_*," \
+  awk -v r="$relax_free" -v c="$crit_free" 'BEGIN{printf "# WARN: the relaxed free-space" \
+    " threshold (PRESSURE_RELAX_*, %.1f GB free) is not above the critical one (PRESSURE_CRIT_*," \
     " %.1f GB), so pressure is either 0%% or 100%%.\n", r/1e9, c/1e9}' >&2
 fi
 
@@ -1310,7 +1372,8 @@ rule_f="$rule_f held by >=${MEDIA_MIN_BATCH} repos,"
 rule_f="$rule_f <${MEDIA_TEXT_CEIL_BYTES}B of anything else)"
 rule_on F      || rule_f="$rule_f [DISABLED: not in RULES]"
 echo "# rule $rule_f"
-rule_g="G parasite-peer(one file of theirs in >=${PARASITE_MIN_REPOS} repos they do not own,"
+rule_g="G parasite-peer(one file of theirs in >=${PARASITE_MIN_REPOS} repos"
+rule_g="$rule_g they are not a delegate of,"
 rule_g="$rule_g >=$((PARASITE_MIN_BYTES/1048576))MB media,"
 rule_g="$rule_g <${PARASITE_TEXT_MAX_BYTES}B of anything else)"
 rule_on G         || rule_g="$rule_g [DISABLED: not in RULES]"
@@ -1410,7 +1473,7 @@ progress_start() {
     # name, and an unset variable under `set -u` would reach the error trap and print into a
     # run that is merely ending a phase.
     trap 'kill "${napper:-}" 2>/dev/null || true; exit 0' TERM
-    local done_n elapsed pct rest line napper=""
+    local done_n elapsed pct rest line head tail cells napper=""
     while :; do
       sleep "$every" & napper=$!
       wait "$napper" || exit 0
@@ -1435,11 +1498,20 @@ progress_start() {
         rest="starting"
       fi
       if [ "$live" = 1 ]; then
-        line=$(printf '  [%d/%d] %-9s [%-*.*s] %3d%% %d/%d repos %s %s' \
-               "$n" "$progress_phases" "$phase" \
-               "$progress_bar_cells" "$(( pct * progress_bar_cells / 100 ))" \
-               "$progress_bar_full" "$pct" "$done_n" "$total" \
-               "$(duration "$elapsed")" "$rest")
+        # The bar gives up its width before anything else does, so the counts and the estimate
+        # still fit an 80-column terminal under the longest phase name. Under 5 cells it says
+        # nothing the percentage does not, and is left out.
+        head=$(printf '  [%d/%d] %s' "$n" "$progress_phases" "$phase")
+        tail=$(printf '%3d%% %d/%d repos %s %s' "$pct" "$done_n" "$total" \
+                 "$(duration "$elapsed")" "$rest")
+        cells=$(( cols - ${#head} - ${#tail} - 4 ))
+        [ "$cells" -le "$progress_bar_cells" ] || cells=$progress_bar_cells
+        if [ "$cells" -ge 5 ]; then
+          line=$(printf '%s [%-*.*s] %s' "$head" "$cells" "$(( pct * cells / 100 ))" \
+                   "$progress_bar_full" "$tail")
+        else
+          line="$head $tail"
+        fi
         printf '\r\033[K%.*s' "$cols" "$line" >&2
       else
         printf '#   [%d/%d] %s: %d of %d repos (%d%%), %s elapsed, %s\n' \
@@ -1611,7 +1683,7 @@ fi
 if [ -s "$tmp/deny-oid-list" ]; then progress_phases=$((progress_phases + 1)); fi
 echo "# excluded: $(wc -l < "$tmp/pinned") pinned," \
      "$(wc -l < "$tmp/private") private, $(wc -l < "$tmp/own") own," \
-     "$(wc -l < "$tmp/kept") kept; $(wc -l < "$tmp/kept-nids") identity(s) cleared of rule H"
+     "$(wc -l < "$tmp/kept") kept; $(wc -l < "$tmp/kept-nids") identity(s) cleared of the malware rule (H)"
 
 # fail-safe: with no reachable node the exclusion sets and seed counts all come back empty.
 # Under --apply that risks deleting our own/pinned repos; in dry-run it forces a plan of zero
@@ -1680,8 +1752,8 @@ if [ -s "$tmp/meta-twice" ]; then
   echo "# WARN: '$RAD ls --all' listed $(wc -l < "$tmp/meta-twice") repo(s) twice, such as" \
        "$(head -3 "$tmp/meta-twice" | sed 's/^/rad:/' | xargs). A description with a line" \
        "break in it forges rows, and the repo that wrote them usually sits just above them in" \
-       "'$RAD ls --all'. These repos go unnamed this run, so rules A, D and H pass over" \
-       "them." >&2
+       "'$RAD ls --all'. These repos go unnamed this run, so the junk-name (A)," \
+       "spam-batch (D) and malware (H) rules pass over them." >&2
 fi
 if [ -s "$tmp/meta-foreign" ]; then
   echo "# WARN: '$RAD ls --all' listed $(wc -l < "$tmp/meta-foreign") repo(s) that are not in" \
@@ -1692,7 +1764,7 @@ fi
 # Losing this is not fatal but it is not nothing either: the plan's NAME column goes blank and
 # rule D has no corpus to reason about, which would look exactly like "no spam here". Say so.
 [ -s "$tmp/meta" ] \
-  || echo "# WARN: '$RAD ls --all' returned no repos; rules D and H cannot run." >&2
+  || echo "# WARN: '$RAD ls --all' returned no repos; the spam-batch (D) and malware (H) rules cannot run." >&2
 
 # -------------------------------------------------------------- rule D: generated-bulk batches
 # Skeletonise every name and description in storage - digit runs become #, random-id tokens
@@ -2001,7 +2073,7 @@ cache_save_keys() {                 # $1 = rule's cache name, $2 = rids it answe
 : > "$tmp/media"; : > "$tmp/media-fail"
 mkdir -p "$tmp/blobs"
 if rule_on F; then
-  echo "# measuring repo trees for rule F ($JOBS workers)..." >&2
+  echo "# measuring repo trees for the media rule (F) ($JOBS workers)..." >&2
   cat > "$tmp/media.sh" <<MEDIA
 #!/usr/bin/env bash
 $(declare -f read_delegates is_media is_archive unhex did_key_hex delegate_ops)
@@ -2013,6 +2085,7 @@ text_ceil=$(( MEDIA_TEXT_MAX_BYTES > MEDIA_TEXT_CEIL_BYTES ? MEDIA_TEXT_MAX_BYTE
                                                            : MEDIA_TEXT_CEIL_BYTES ))
 sniff_big=$MEDIA_SNIFF_TEXT_BYTES
 sniff_max=$MEDIA_SNIFF_MAX_FILES
+text_max=$MEDIA_TEXT_MAX_BYTES
 max_refs=$MEDIA_MAX_REFS
 tip_bytes=$MEDIA_TIP_BYTES
 archive_exts='$MEDIA_ARCHIVE_EXTS'
@@ -2168,12 +2241,11 @@ for d; do
   # clears the widest budget any path allows, nothing an unread file turns out to be can
   # change the verdict.
   if [ "$text" -lt "$text_ceil" ]; then
-    n=0
+    n=0; unread=0
     while read -r kind oid size; do
       n=$((n+1))
-      # Past the cap a file counts as text, sparing the repo: one too big to read through must
-      # not be deleted on the strength of the part we did read.
-      if [ "$n" -gt "$sniff_max" ]; then text=$((text+size)); continue; fi
+      # The biggest files are read first, so the cap leaves only the smallest unread.
+      if [ "$n" -gt "$sniff_max" ]; then unread=$((unread+size)); continue; fi
       # od closes the pipe after 16 bytes and git dies of SIGPIPE, so a 500MB video costs a few
       # pipe buffers rather than 500MB. Stripping the spaces in bash saves a fork per file.
       hex=""; unpacked=""
@@ -2206,7 +2278,21 @@ for d; do
       else
         text=$((text+size))
       fi
-    done < <(awk '$1=="?" || $1=="z"' <<<"$sums")
+    done < <(awk '$1=="?" || $1=="z"' <<<"$sums" | sort -k3,3nr)
+    # What the cap left unread may be media or text. Counting it as text never condemns a
+    # repo, but it could hide a dump behind its smallest files, so it is done only where it
+    # cannot: the text stays under MEDIA_TEXT_MAX_BYTES even with those files in it, so the
+    # dump verdict comes out the same; the text read already clears the widest budget; or
+    # those files as media would still leave the repo under MEDIA_MIN_BYTES. Anywhere else
+    # the repo goes unjudged, since left out, a project would be judged on what nobody read.
+    if [ "$unread" -gt 0 ]; then
+      if [ $(( text + unread )) -lt "$text_max" ] || [ "$text" -ge "$text_ceil" ] \
+         || [ $(( media + unread )) -lt "$media_min" ]; then
+        text=$(( text + unread ))
+      else
+        echo "$rid" >&4; continue
+      fi
+    fi
   else
     text=$((text + unk))
   fi
@@ -2270,7 +2356,7 @@ MEDIA
   cache_hits media
   # Both files, because a repo the worker could not read writes only to the failure one, and a
   # phase full of unreadable repos would otherwise look stalled.
-  progress_start "rule F" "$(repos_left media)" "$tmp/media" "$tmp/media-fail"
+  progress_start "media rule (F)" "$(repos_left media)" "$tmp/media" "$tmp/media-fail"
   repos_to_read "$tmp/cached-media" \
     | xargs -0r -P "$JOBS" -n 32 "$BASH_BIN" "$tmp/media.sh" \
         > "$tmp/media" 4> "$tmp/media-fail" || true
@@ -2296,9 +2382,10 @@ MEDIA
   # Which repos these are is said where the file holding them is written, near the end of the
   # run. Naming it here would name a path that a run aborting in between never creates.
   [ "$nmediafail" = 0 ] \
-    || echo "# WARN: rule F left $nmediafail repo(s) unjudged: unreadable, over" \
-            "MEDIA_MAX_REFS ($MEDIA_MAX_REFS) refs, or listing over MEDIA_TIP_BYTES" \
-            "($MEDIA_TIP_BYTES) bytes at their tips." >&2
+    || echo "# WARN: the media rule (F) left $nmediafail repo(s) unjudged: unreadable, over" \
+            "MEDIA_MAX_REFS ($MEDIA_MAX_REFS) refs, listing over MEDIA_TIP_BYTES" \
+            "($MEDIA_TIP_BYTES) bytes at their tips, or with more files of unknown type than" \
+            "MEDIA_SNIFF_MAX_FILES ($MEDIA_SNIFF_MAX_FILES) and too many unread bytes to judge." >&2
 
 fi
 
@@ -2309,8 +2396,8 @@ fi
 # each repo, so a list of 10,000 ids takes about half an hour of CPU over 11,000 repos, again
 # each time the list changes. A repo whose store holds at least COPY_MIN_BYTES of listed media
 # is then walked, across the whole history of its delegates' branches and tags, because that
-# is what ties a file to the repo's owners. A listed file those branches do not reach condemns
-# nothing, or pushing one into a repo would be a way to get it deleted.
+# is what ties a file to the repo's delegates. A listed file those branches do not reach
+# condemns nothing, or pushing one into a repo would be a way to get it deleted.
 : > "$tmp/copy"; : > "$tmp/copy-fail"; : > "$tmp/copy-done"; : > "$tmp/copies"
 if [ -s "$tmp/deny-oid-list" ]; then
   echo "# checking repos for copies of denied files ($JOBS workers)..." >&2
@@ -2511,7 +2598,7 @@ fi
 # media; only where that finds some is the work repeated per peer to learn whose it is.
 : > "$tmp/peer"
 if rule_on G; then
-  echo "# looking for parasite peers for rule G ($JOBS workers)..." >&2
+  echo "# looking for parasite peers for the parasite-peer rule (G) ($JOBS workers)..." >&2
   cat > "$tmp/peer.sh" <<PEER
 #!/usr/bin/env bash
 $(declare -f read_delegates)
@@ -2622,7 +2709,7 @@ for d; do
 done
 PEER
   cache_hits peer
-  progress_start "rule G" "$(repos_left peer)" "$tmp/peer-done"
+  progress_start "parasite-peer rule (G)" "$(repos_left peer)" "$tmp/peer-done"
   repos_to_read "$tmp/cached-peer" \
     | xargs -0r -P "$JOBS" -n 32 "$BASH_BIN" "$tmp/peer.sh" \
         > "$tmp/peer" 3> "$tmp/peer-done" || true
@@ -2705,7 +2792,7 @@ HOSTS
   # not read included, so adding the failure stream would count those repos twice. The host
   # stream holds one line per LINK, which would race ahead and then stall on a repo that
   # links nowhere.
-  progress_start "rule E" "$(repos_left hosts)" "$tmp/hosts-done"
+  progress_start "link-farm rule (E)" "$(repos_left hosts)" "$tmp/hosts-done"
   repos_to_read "$tmp/cached-hosts" \
     | xargs -0r -P "$JOBS" -n 32 "$BASH_BIN" "$tmp/hosts.sh" \
         > "$tmp/hosts" 3> "$tmp/hosts-code" 4> "$tmp/hosts-fail" 5> "$tmp/hosts-done" || true
@@ -2836,8 +2923,9 @@ for rid in "$@"; do
   # the one that errs toward sparing.
   nids=$("$RAD" inspect "rad:$rid" --delegates 2>/dev/null \
          | grep -oE 'z[1-9A-HJ-NP-Za-km-z]{40,}' | tr '\n' ' ')
-  # No delegate list: ownership unknown. The done marker goes out on this path too, so the
-  # progress count below is repos finished rather than repos that turned out to be readable.
+  # No delegate list, so the repo's own links cannot be told from a stranger's. The done
+  # marker goes out on this path too, so the progress count below is repos finished rather
+  # than repos that turned out to be readable.
   [ -n "$nids" ] || { echo "$rid" >&3; printf '%s\n' "$rid" >&4; continue; }
   # The blob filter keeps trees out of the reader below, which only ever wanted blobs.
   GIT_DIR="$d" git for-each-ref --format='%(objectname) %(refname)' 2>/dev/null \
@@ -2891,10 +2979,10 @@ OWNED
   nspared=$(( $(wc -l < "$tmp/linkfarm") - $(wc -l < "$tmp/linkfarm.owned") - nunreadable ))
   mv "$tmp/linkfarm.owned" "$tmp/linkfarm"
   [ "$nspared" -le 0 ] \
-    || echo "# rule E: $nspared repo(s) spared, the spam links were pushed by peers" \
+    || echo "# the link-farm rule (E): $nspared repo(s) spared, the spam links were pushed by peers" \
             "that are not their delegates"
   [ "$nunreadable" = 0 ] \
-    || echo "# WARN: rule E: $nunreadable repo(s) spared," \
+    || echo "# WARN: the link-farm rule (E): $nunreadable repo(s) spared," \
             "their delegates could not be read" >&2
 fi
 
@@ -2955,6 +3043,11 @@ while IFS=$'\t' read -r rid sc; do [ -n "$rid" ] && LINKSCORE[$rid]=$sc; done < 
   FIRSTSEEN[$rid]=$ts
 done < "$FIRST_SEEN"
 if mkdir -p "$AUDIT_DIR" 2>/dev/null && { : >> "$FIRST_SEEN"; } 2>/dev/null; then
+  add_header "$FIRST_SEEN" \
+    "The day this seed first saw each repo: repo id, then Unix time. It tells the spam-batch" \
+    "(D), link-farm (E) and media (F) rules how old a repo really is. Deleting it leaves" \
+    "them only the commit dates, which whoever pushed the repo can set to anything." \
+    || echo "# WARN: could not add a header to $FIRST_SEEN; its rows are unaffected." >&2
   for rid in "${!SIZE[@]}"; do
     [ -n "${FIRSTSEEN[$rid]:-}" ] && continue
     FIRSTSEEN[$rid]=$now; printf '%s\t%s\n' "$rid" "$now" >> "$FIRST_SEEN"
@@ -3045,12 +3138,12 @@ done < "$tmp/copies"
 
 # ------------------------------------------------------------------- rule G: judge the peers
 # Folds the per-repo evidence into one verdict per peer. The accusation is a single file, byte
-# for byte, that this peer put into PARASITE_MIN_REPOS repos it does not own. Totals across
-# different files are deliberately NOT enough on their own: someone active on many repos
-# accumulates those honestly, while the same oid landing in unrelated repos does not happen by
-# accident. A peer who is a delegate anywhere in storage is never accused, because blocking a
-# delegate stops the repos they own from replicating (the node filters delegate refs through
-# the same block list before it checks the signature threshold).
+# for byte, that this peer put into PARASITE_MIN_REPOS repos it is not a delegate of. Totals
+# across different files are deliberately NOT enough on their own: someone active on many
+# repos accumulates those honestly, while the same oid landing in unrelated repos does not
+# happen by accident. A peer who is a delegate anywhere in storage is never accused, because
+# blocking a delegate stops the repos they are a delegate of from replicating (the node
+# filters delegate refs through the same block list before it checks the signature threshold).
 : > "$tmp/parasites"; nunknown=0
 if rule_on G && [ -s "$tmp/peer" ]; then
   nunknown=$(awk -F'\t' '$1 == "u"' "$tmp/peer" | sort -u | wc -l)
@@ -3304,10 +3397,10 @@ nmalware_repos=$(wc -l < "$tmp/malware-repos")
 nmalware_undated=$(wc -l < "$tmp/malware-undated")
 if [ "$nmalware_undated" -gt 0 ]; then
   echo "# WARN: $nmalware_undated repo(s) hold a strong malware word in the name or" \
-       "description and in a file path or commit subject, but rule H could not read their" \
-       "commit dates to tell an original from a mirror. Read them. Adding a line below to" \
+       "description and in a file path or commit subject, but the malware rule (H) could not" \
+       "read their commit dates to tell an original from a mirror. Read them. Adding a line below to" \
        "$DENY_FILE prunes and blocks its repo. In $KEEP_FILE the line keeps the repo and" \
-       "clears all its delegates of rule H:" >&2
+       "clears all its delegates of the malware rule (H):" >&2
   head -n "$top_evidence" "$tmp/malware-undated" \
     | while IFS=$'\t' read -r rid found evidence rname; do
         printf '#   rad:%s  # %s (%s; %s)\n' "$rid" "$rname" "$found" "$evidence"
@@ -3500,8 +3593,8 @@ echo "# skipped: $nblind unreadable, $nfresh written in the last ${FRESH_GUARD_D
 # treated as though it had no history before its `rad init`. Named, so it can be checked by hand.
 nimportblind=$(wc -l < "$tmp/import-blind")
 if [ "$nimportblind" -gt 0 ]; then
-  echo "# WARN: could not read the commit dates of $nimportblind junk-named repo(s), so rule A" \
-       "treats them as not imported:" >&2
+  echo "# WARN: could not read the commit dates of $nimportblind junk-named repo(s), so the" \
+       "junk-name rule (A) treats them as not imported:" >&2
   head -n "$top_evidence" "$tmp/import-blind" | sed 's/^/#   /' >&2
   [ "$nimportblind" -gt "$top_evidence" ] \
     && echo "#   ...and $((nimportblind - top_evidence)) more (PLAN_FULL=1 lists them)" >&2
@@ -3591,7 +3684,7 @@ done < "$tmp/ratchet-recent"
 count_by_rule "$tmp/plan.sorted" > "$tmp/ratchet-planned"
 : > "$tmp/ratchet-past"
 while IFS= read -r log; do
-  rules_then=$(sed -n '1s/.*  rules=//p' "$log")
+  rules_then=$(sed -n '/^# [0-9].*  rules=/ { s/.*  rules=//p; q }' "$log")
   count_by_rule "$log" > "$tmp/ratchet-onelog"
   while IFS=$'\t' read -r letter _; do
     case $letter in
@@ -3711,8 +3804,8 @@ nnear=$(awk -F'\t' '$8 != ""' "$tmp/plan.sorted" | wc -l)
 if [ -s "$tmp/held" ]; then
   echo "#   HELD BACK unless --force or a yes at the prompt, as each rule is far over its usual:"
   while IFS=$'\t' read -r letter planned usual limit; do
-    echo "#     rule $letter: $planned repos, where its median over the last $nratchet runs" \
-         "is $usual a run (limit $limit)"
+    echo "#     $(rule_label "$letter"): $planned repos, where its median over the last" \
+         "$nratchet runs is $usual a run (limit $limit)"
   done < "$tmp/held"
 fi
 
@@ -3734,7 +3827,7 @@ fi
 # plan: nothing here deletes a repo, and blocking one peer touches every repo at once.
 if [ "$nparasite" -gt 0 ]; then
   echo
-  echo "# PARASITE PEERS: $nparasite (rule G)"
+  echo "# PARASITE PEERS: $nparasite, from the parasite-peer rule (G)"
   echo "#   the count is repos reached by ONE file of theirs, not repos they touched"
   while IFS=$'\t' read -r nid widest npeerrepos mb ob oid; do
     printf '#   %s  %3d repos  %6.1f MB media  %6d B text  blob %s\n' \
@@ -3756,7 +3849,7 @@ fi
 # its repos and blocks it, so the review points there.
 if [ "$nmalware" -gt 0 ]; then
   echo
-  echo "# REVIEW, MALWARE OPERATIONS: $nmalware identity(s) (rule H)." \
+  echo "# REVIEW, MALWARE OPERATIONS: $nmalware identity(s), from the malware rule (H)." \
        "Nothing here is pruned or blocked."
   echo "#   repos named or described like a malware operation; read them before acting"
   for nid in $(cut -f1 "$tmp/malware" | sort -u); do
@@ -3772,7 +3865,7 @@ if [ "$nmalware" -gt 0 ]; then
       echo "#       ...and $((nhit - top_evidence)) more (PLAN_FULL=1 lists them)"
     fi
   done
-  echo "#   last-run/malware-identities.tsv lists every matching repo. Adding an identity's"
+  echo "#   last-run/H-malware-identities.tsv lists every matching repo. Adding an identity's"
   echo "#   line to $DENY_FILE prunes every repo the identity is a delegate of except private"
   echo "#   ones, and blocks the identity unless it is a delegate of a private repo. The same"
   echo "#   line in $KEEP_FILE stops the identity being named and keeps none of its repos:"
@@ -3782,20 +3875,20 @@ fi
 # as a comment, so the evidence rides along when a line is copied.
 if [ "$nmalware_repos" -gt 0 ]; then
   echo
-  echo "# REVIEW, MALWARE REPOS: $nmalware_repos repo(s) (rule H). Nothing here is pruned" \
+  echo "# REVIEW, MALWARE REPOS: $nmalware_repos repo(s), from the malware rule (H). Nothing here is pruned" \
        "or blocked."
   echo "#   a strong word in the name or description, one in a file path or commit subject,"
   echo "#   and a history that starts with the repo; read them before acting. Adding a line"
   echo "#   below to $DENY_FILE prunes and blocks its repo. In $KEEP_FILE the line stops the"
   echo "#   repo being named, keeps it out of every rule, and clears all its delegates of"
-  echo "#   rule H, including any who never signed it:"
+  echo "#   the malware rule (H), including any who never signed it:"
   head -n "$top_evidence" "$tmp/malware-repos" \
     | while IFS=$'\t' read -r rid found evidence rname; do
         printf '#     rad:%s  # %s (%s; %s)\n' "$rid" "$rname" "$found" "$evidence"
       done
   if [ "$nmalware_repos" -gt "$top_evidence" ]; then
-    echo "#     ...and $((nmalware_repos - top_evidence)) more in last-run/malware-repos.tsv" \
-         "(PLAN_FULL=1 lists them)"
+    echo "#     ...and $((nmalware_repos - top_evidence)) more in" \
+         "last-run/H-malware-repos.tsv (PLAN_FULL=1 lists them)"
   fi
 fi
 
@@ -3815,11 +3908,13 @@ run_ts=$(date -u +%FT%TZ)
 lastrun="$AUDIT_DIR/last-run"
 staging="$lastrun.new"
 
-# Each file names the run that wrote it. Read on its own a month later, a plan.tsv is otherwise
-# a list of repo ids with no date, no mode and no way to tell which rules were even on; and a
-# run that aborts before this point leaves the previous run's files standing with nothing to
-# say they are old.
-lr_stamp() {
+# Each file opens with a line saying what it holds, for somebody who opens the directory with
+# no README at hand, and then a line naming the run that wrote it. Read on its own a month
+# later, a plan.tsv is otherwise a list of repo ids with no date, no mode and no way to tell
+# which rules were even on; and a run that aborts before this point leaves the previous run's
+# files standing with nothing to say they are old.
+lr_head() {  # each argument is one line of what the file holds, in plain words
+  printf '# %s\n' "$@"
   printf '# %s  version=%s  mode=%s  rules=%s  storage=%s\n' \
          "$run_ts" "$VERSION" "$run_mode" "$RULES" "$STORAGE"
 }
@@ -3828,62 +3923,74 @@ lr_ok=1
 rm -rf "$staging" 2>/dev/null
 mkdir -p "$staging" 2>/dev/null || lr_ok=0
 if [ "$lr_ok" = 1 ]; then
-  { lr_stamp
+  { lr_head "Every repo the last run planned to prune. A dry run prunes none of them;" \
+            "what an applying run removed is in its prune-*.log."
     plan_header
     cat "$tmp/plan.sorted"; } > "$staging/plan.tsv" 2>/dev/null || lr_ok=0
-  { lr_stamp
+  { lr_head "Name patterns the spam-batch rule (D) found shared by many repos," \
+            "and how many repos match each."
     printf '# repos\ttemplate\n'
-    sort -k1,1nr "$tmp/spambatch"; } > "$staging/spam-batches.tsv" 2>/dev/null || lr_ok=0
-  { lr_stamp
+    sort -k1,1nr "$tmp/spambatch"; } \
+    > "$staging/D-spam-batch-templates.tsv" 2>/dev/null || lr_ok=0
+  { lr_head "Domains the link-farm rule (E) treats as spam, and how many repos link to each."
     printf '# repos\tdomain\n'
-    sort -k1,1nr "$tmp/linktop"; } > "$staging/spam-domains.tsv" 2>/dev/null || lr_ok=0
+    sort -k1,1nr "$tmp/linktop"; } > "$staging/E-link-farm-domains.tsv" 2>/dev/null || lr_ok=0
   # The verdict, not a size: this column says which of rule F's two readings the repo matched.
-  { lr_stamp
+  { lr_head "Media dumps the media rule (F) found but kept, because fewer than" \
+            "MEDIA_MIN_SEEDS other nodes seed them. Nothing here was pruned."
     printf '# rid\tverdict\tname\n'
-    cat "$tmp/media-review"; } > "$staging/media-review.tsv" 2>/dev/null || lr_ok=0
-  { lr_stamp
+    cat "$tmp/media-review"; } > "$staging/F-media-kept-few-seeds.tsv" 2>/dev/null || lr_ok=0
+  { lr_head "Junk-named repos, like demo or test, that the junk-name rule (A) kept because" \
+            "their history starts well before they came to Radicle. None were pruned."
     printf '# rid\tname\n'
-    cat "$tmp/imports"; } > "$staging/imports.tsv" 2>/dev/null || lr_ok=0
+    cat "$tmp/imports"; } > "$staging/A-junk-name-kept-imports.tsv" 2>/dev/null || lr_ok=0
   # A block is permanent and the peer is never told, so the evidence behind one has to be
   # readable after the terminal that printed it has gone.
-  { lr_stamp
+  { lr_head "Peers the parasite-peer rule (G) found pushing one file into many repos they" \
+            "are not a delegate of, with the evidence. Only --block-peers blocks them."
     printf '# peer_nid\trepos_sharing_blob\trepos_touched\tmedia_bytes\ttext_bytes\tblob\n'
-    cat "$tmp/parasites"; } > "$staging/parasite-peers.tsv" 2>/dev/null || lr_ok=0
+    cat "$tmp/parasites"; } > "$staging/G-parasite-peers.tsv" 2>/dev/null || lr_ok=0
   # A person decides on these, and the terminal shows only the first few repos of each.
-  { lr_stamp
+  { lr_head "Identities the malware rule (H) named, one row per repo of theirs that" \
+            "matched. Nothing here is pruned or blocked unless you add it to deny.txt."
     printf '# nid\trepos_hit\trepos_signed\trid\twords\tname\n'
-    cat "$tmp/malware"; } > "$staging/malware-identities.tsv" 2>/dev/null || lr_ok=0
-  { lr_stamp
+    cat "$tmp/malware"; } > "$staging/H-malware-identities.tsv" 2>/dev/null || lr_ok=0
+  { lr_head "Single repos the malware rule (H) named, with the words it found and where." \
+            "Nothing here is pruned unless you add it to deny.txt."
     printf '# rid\twords\tevidence\tname\n'
-    cat "$tmp/malware-repos"; } > "$staging/malware-repos.tsv" 2>/dev/null || lr_ok=0
+    cat "$tmp/malware-repos"; } > "$staging/H-malware-repos.tsv" 2>/dev/null || lr_ok=0
   # The repos rule F could not read. Without them the run's own warning names a count and
   # nothing to go and look at.
-  { lr_stamp
+  { lr_head "Repos the media rule (F) could not check: unreadable, over MEDIA_MAX_REFS refs," \
+            "or with too many files of unknown type to read. It did not prune them. The" \
+            "other rules still judged them."
     printf '# rid\n'
-    sort -u "$tmp/media-fail"; } > "$staging/media-unjudged.tsv" 2>/dev/null || lr_ok=0
+    sort -u "$tmp/media-fail"; } > "$staging/F-media-unjudged.tsv" 2>/dev/null || lr_ok=0
   # plan.tsv still lists a held rule's repos, because without --force or a yes at the prompt
   # nobody knows yet whether they will be pruned. This says which rules are waiting on that.
-  { lr_stamp
+  { lr_head "Rules an unattended run holds back for planning far more repos than usual." \
+            "Their repos are in plan.tsv; only --force or a y at the prompt prunes them."
     printf '# rule\tplanned\tusual\tlimit\n'
     cat "$tmp/held"; } > "$staging/held.tsv" 2>/dev/null || lr_ok=0
   # Which deny-list entry each denied repo was pruned for, so a dry run can trace a row to its
   # line.
-  { lr_stamp
+  { lr_head "Repos in the plan because of deny.txt, with the line that names each."
     printf '# rid\tcause\n'
-    cat "$tmp/deny-why"; } > "$staging/denied.tsv" 2>/dev/null || lr_ok=0
-  { lr_stamp
+    cat "$tmp/deny-why"; } > "$staging/deny-repos.tsv" 2>/dev/null || lr_ok=0
+  { lr_head "Repos in the plan for holding copies of files listed in deny-files.tsv:" \
+            "how much of each repo they make up, and where they came from."
     printf '# rid\tdenied_bytes\tbranch_bytes\tpct\tfiles\tsource\tother_sources\n'
-    cat "$tmp/copy-why"; } > "$staging/denied-copies.tsv" 2>/dev/null || lr_ok=0
+    cat "$tmp/copy-why"; } > "$staging/deny-copies.tsv" 2>/dev/null || lr_ok=0
   # Every listed file each copy holds, so a wrong copy can be traced to the rows behind it.
-  { lr_stamp
+  { lr_head "Each listed file that each repo in deny-copies.tsv holds."
     printf '# rid\toid\tbytes\n'
     awk -F'\t' -v why="$tmp/copy-why" -v src="$tmp/deny-oid-list" '
         FILENAME == why  { copy[$1] = 1; next }
         FILENAME == src  { listed[$1] = 1; next }
         $1 == "h" && ($2 in copy) && ($3 in listed) { print $2 "\t" $3 "\t" $4 }' \
         "$tmp/copy-why" "$tmp/deny-oid-list" "$tmp/copy" | sort; } \
-    > "$staging/denied-copy-files.tsv" 2>/dev/null || lr_ok=0
-  { lr_stamp
+    > "$staging/deny-copy-files.tsv" 2>/dev/null || lr_ok=0
+  { lr_head "Everything the last run could not read."
     cat "$scanerr"; } > "$staging/scan-errors.txt" 2>/dev/null || lr_ok=0
 fi
 
@@ -3899,7 +4006,8 @@ if [ "$lr_ok" = 1 ]; then
   # Printed here rather than beside rule F's count, because this is where the file holding
   # them is known to have been written: a run aborting in between never creates it.
   [ "${nmediafail:-0}" = 0 ] \
-    || echo "#   the $nmediafail repo(s) rule F left unjudged: $lastrun/media-unjudged.tsv"
+    || echo "#   the $nmediafail repo(s) the media rule (F) left unjudged:" \
+            "$lastrun/F-media-unjudged.tsv"
 else
   rm -rf "$staging" 2>/dev/null
   # Losing this loses no verdict, but it does lose the only copy of the evidence for one, so it
@@ -3916,7 +4024,10 @@ open_audit() {
   [ -z "$audit" ] || return 0
   mkdir -p "$AUDIT_DIR"
   audit="$AUDIT_DIR/prune-$(date -u +%Y%m%dT%H%M%SZ).log"
-  printf '# %s  pressure=%s%%  rules=%s\n' "$run_ts" "$press_pct" "$RULES" > "$audit"
+  { printf '# %s\n' \
+      "What one rad prune run removed from storage or blocked, one repo per row." \
+      "A repo in the quarantine can be put back: rad prune quarantine restore <rid>"
+    printf '# %s  pressure=%s%%  rules=%s\n' "$run_ts" "$press_pct" "$RULES"; } > "$audit"
   echo "# audit log: $audit"
 }
 
@@ -3979,11 +4090,11 @@ if [ "$BLOCK_PEERS" = 1 ] && [ "$nparasite" -gt 0 ]; then
   else
     while IFS=$'\t' read -r nid widest npeerrepos mb ob oid; do
       if [ "$YES" = 1 ]; then
-        printf '# Blocking %s (--yes): it put %s in %s repos it does not own\n' \
+        printf '# Blocking %s (--yes): it put %s in %s repos it is not a delegate of\n' \
                "$nid" "${oid:0:12}" "$widest"
         reply=y
       else
-        printf '# Block %s? it put %s in %s repos it does not own [y/N] ' \
+        printf '# Block %s? it put %s in %s repos it is not a delegate of [y/N] ' \
                "$nid" "${oid:0:12}" "$widest"
         reply=""; IFS= read -r reply <&9 || reply=""
       fi
@@ -4029,9 +4140,9 @@ fi
 # sign-off that lets a run bypass the ratchet and the runaway caps below.
 #
 # An empty plan asks nothing, so the quarantine is emptied of what is past its window on the way
-# out, and of everything at the critical watermark: a seed that has caught up has an empty plan
-# every week, and quarantined disk that only comes back on a week with something to prune is
-# quarantined disk that never comes back.
+# out, and of everything at the critical free-space threshold: a seed that has caught up has an
+# empty plan every week, and quarantined disk that only comes back on a week with something to
+# prune is quarantined disk that never comes back.
 if [ "$nplan" = 0 ]; then
   quar_purge_expired
   quar_purge_all_if_critical
@@ -4074,7 +4185,7 @@ fi
 nheld=0
 if [ "$CONFIRMED" = 0 ] && [ -s "$tmp/held" ]; then
   while IFS=$'\t' read -r letter planned usual limit; do
-    echo "# HELD BACK rule $letter: $planned repos, where its median over the last" \
+    echo "# HELD BACK $(rule_label "$letter"): $planned repos, where its median over the last" \
          "$nratchet runs is $usual a run (limit $limit). None of them is pruned this run." >&2
     nheld=$(( nheld + planned ))
   done < "$tmp/held"
@@ -4230,6 +4341,11 @@ if [ "$RESTART" = 1 ]; then
 fi
 
 # one appended line per run: the index into the per-run audit logs
+add_header "$AUDIT_DIR/history.log" \
+  "One line per applying run: when, repos pruned, GiB moved out of storage, quarantine on or" \
+  "off, disk pressure, and the name of that run's own log. Unattended runs read it to learn" \
+  "what each rule usually prunes." \
+  || echo "# WARN: could not add a header to $AUDIT_DIR/history.log." >&2
 printf '%s\tdeleted=%s\treclaimed_gib=%s\tquarantine=%s\tpressure=%s%%\taudit=%s\n' \
   "$run_ts" "$deleted" "$gib" "$([ "$QUARANTINE" = 1 ] && echo on || echo off)" \
   "$press_pct" "$(basename "$audit")" \
