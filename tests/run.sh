@@ -1598,7 +1598,7 @@ cols=$cols$(printf '\tname\tage_from_unix\tnear_threshold')
 # one of them opens with the same stamp naming that run.
 stamped=1
 for f in plan spam-batches spam-domains media-review imports parasite-peers; do
-  grep -qE '^# [0-9-]+T[0-9:]+Z  version=[0-9.]+  mode=DRY-RUN  rules=[A-G]+  storage=/' \
+  grep -qE '^# [0-9-]+T[0-9:]+Z  version=[0-9.]+  mode=DRY-RUN  rules=[A-H]+  storage=/' \
        "$L/$f.tsv" || stamped=0
 done
 { grep -q "the untrimmed plan and the evidence behind it: $L/" <<<"$short" \
@@ -2169,6 +2169,175 @@ out=$(DISK_AWARE=1 PRESSURE_CRIT_PCT=100 PRESSURE_CRIT_GB=999999 ABS_SIZE_FLOOR_
 { grep -q ' pressure=100% ' <<<"$out" && grep -q 'WARN: the relax watermark' <<<"$out"; } \
   && ok "a critical disk is full pressure even with the watermarks inverted" \
   || no "the banner said less than full pressure while the quarantine was emptied"
+
+# --- rule H: an identity whose repos read like a malware operation is named, not acted on ---
+# zcode4 and zcode6 are renamed and described like an operation and signed by one identity,
+# with zcode7, a plain project whose name holds "rat" inside a longer word: two of three repos
+# hit, and the one strong word among them is a plural. Their documents also name a victim, who
+# signed nothing there. zrot1 and zrot2 carry only weak words, as a security researcher's repos
+# would. Three more identities each miss one bar: two words, two of five repos, one repo.
+# Single repos are judged next. zrot3 has the strong word in a path too, and zfarm2 in a commit
+# subject, both with a history as new as the repo; zrot3's sits on a tag, and zfarm2's subject
+# carries an escape sequence. zrot1 has one in a path but none in its name, and zbatch1 one
+# in its name alone, and in a stranger's branch. zbatch2's path holds one as well, but its
+# history is a year older than the repo, as a mirror's is, and zcode6, the operation's, is left
+# to the identity review.
+build_fixture; assert_isolated
+set_delegate(){   # $1 = rid, then the nids its identity document names; the first one signs
+  local rid=$1 w dids="" nid; shift
+  w=$(mktemp -d -p "$ROOT")
+  git -C "$w" -c init.defaultBranch=master init -q
+  git -C "$w" config user.email a@b; git -C "$w" config user.name a
+  mkdir -p "$w/embeds"
+  for nid; do dids="$dids${dids:+,}\"did:key:$nid\""; done
+  printf '{"delegates":[%s],"payload":{},"threshold":1}\n' "$dids" > "$w/embeds/radicle.json"
+  git -C "$w" add -A; git -C "$w" commit -q -m id
+  git -C "$w" push -q --force "$STORAGE/$rid" master:refs/rad/id \
+    "master:refs/namespaces/$1/refs/rad/sigrefs"
+  rm -rf "$w"; touch -d "10 days ago" "$STORAGE/$rid"
+}
+OPS=$(dlg zops); VIC=$(dlg zvic); RES=$(dlg zres)
+FEW=$(dlg zfew); THIN=$(dlg zthin); ONE=$(dlg zone)
+for r in zcode4 zcode6; do set_delegate "$r" "$OPS" "$VIC"; done
+set_delegate zcode7 "$OPS"
+for r in zrot1 zrot2; do set_delegate "$r" "$RES"; done
+for r in zfarm1 zfarm2; do set_delegate "$r" "$FEW"; done
+for r in zbatch1 zbatch2 zbatch3 zpoison5 zpoison9; do set_delegate "$r" "$THIN"; done
+# zrot3's document also names this node, which never signs there.
+set_delegate zrot3 "$ONE" "$RSP_NID"
+fresh_master(){   # $1 = rid, $2 = age in days, $3 = a path, $4 = the subject, $5 = a ref
+  local w ref=${5:-refs/heads/master}; w=$(mktemp -d -p "$ROOT")
+  git -C "$w" init -q -b master
+  mkdir -p "$(dirname "$w/$3")"; echo x > "$w/$3"; git -C "$w" add -A
+  GIT_AUTHOR_DATE=$(date -d "$2 days ago" -R) \
+    git -C "$w" -c user.email=a@b -c user.name=a commit -q -m "$4"
+  git -C "$w" push -q --force "$STORAGE/$1" "master:$ref"
+  rm -rf "$w"; touch -d "10 days ago" "$STORAGE/$1"
+}
+fresh_master zrot3 0 src/client.py 'add client'
+fresh_master zrot3 0 src/hvnc/client.py 'add client' refs/tags/v1
+fresh_master zfarm2 0 main.py "feat(stealers): save$(printf '\033')[2J results"
+fresh_master zrot1 0 notes/stealer.md 'notes'
+fresh_master zbatch2 400 botnet/main.go 'import'
+fresh_master zcode6 0 drainer.py 'add drainer'
+fresh_master zbatch1 0 main.py 'add main'
+fresh_master zbatch1 0 stealer.py 'add stealer' "refs/namespaces/$STRANGER_NID/refs/heads/master"
+# zheavy and zdigit24 are named with a strong word but have no branch, so no commit dates to
+# judge them by. zheavy has a strong word in a tag's files too; zdigit24 has none anywhere.
+for r in zheavy zdigit24; do
+  GIT_DIR="$STORAGE/$r" git for-each-ref --format='delete %(refname)' refs/heads \
+    | GIT_DIR="$STORAGE/$r" git update-ref --stdin
+done
+fresh_master zheavy 0 keylogger.c 'add' refs/tags/v1
+# One sed edit per repo: its rid, then its new name and description.
+rename(){
+  printf -- '-e\ns/^%s\\t[^\\t]*\\(\\t.*\\)\\t[^\\t]*$/%s\\t%s\\1\\t%s/\n' "$1" "$1" "$2" "$3"
+}
+mapfile -t edits < <(
+  rename zcode4 c2-panel 'the loader'
+  rename zcode6 wallet_drainers 'the payload'
+  rename zcode7 pirate-separator 'a text tool'
+  rename zrot1 exploit-loader 'research notes'
+  rename zrot2 payload-panel 'research notes'
+  rename zfarm1 stealer-panel 'a tool'
+  rename zfarm2 stealer 'a tool'
+  rename zbatch1 hvnc-panel 'the loader'
+  rename zbatch2 botnet 'a tool'
+  rename zrot3 hvnc-panel 'the loader'
+  rename zheavy keylogger 'a tool'
+  rename zdigit24 ransomware 'a tool')
+sed -i "${edits[@]}" "$RSP_MANIFEST"
+out=$("$SCRIPT" 2>&1); rc=$?
+{ [ "$rc" = 0 ] \
+  && grep -q 'REVIEW, MALWARE OPERATIONS: 1 identity(s) (rule H)' <<<"$out" \
+  && grep -q "#   $OPS, 2 of the 3 repos it is a delegate of and signed refs in:" <<<"$out" \
+  && grep -q "#       rad:zcode4  c2-panel  (c2,panel,loader)" <<<"$out" \
+  && grep -qx "#     did:key:$OPS" <<<"$out"; } \
+  && ok "an identity whose repos read like a malware operation is named for review" \
+  || no "rule H missed the operation's identity"
+! grep -q "$VIC" <<<"$out" \
+  && ok "naming somebody as a co-delegate of those repos does not name them" \
+  || no "rule H named a delegate who signed nothing in the repos"
+! grep -qE "$RES|$FEW|$THIN|$ONE" <<<"$out" \
+  && ok "no strong word, two words, two repos of five, or one repo: nobody else is named" \
+  || no "rule H named an identity under one of its bars"
+{ grep -q 'REVIEW, MALWARE REPOS: 2 repo(s) (rule H)' <<<"$out" \
+  && grep -qxF "#     rad:zrot3  # hvnc-panel (hvnc,panel,loader; path: src/hvnc/client.py)" \
+       <<<"$out" \
+  && grep -qxF "#     rad:zfarm2  # stealer (stealer; subject: feat(stealers): save[2J results)" \
+       <<<"$out" \
+  && ! grep -q $'\033' <<<"$out"; } \
+  && ok "one repo with a strong word in its name and its files or commits is named" \
+  || no "rule H missed a single malware repo, or named a mirror or an operation's repo again"
+{ grep -q 'WARN: 1 repo(s) hold a strong malware word' <<<"$out" \
+  && grep -qxF '#   rad:zheavy  # keylogger (keylogger; path: keylogger.c)' <<<"$out"; } \
+  && ok "a repo with words and evidence but no commit dates to judge by is called out" \
+  || no "rule H passed over a repo it could not date without a word, or warned with no evidence"
+grep -qxF "zfarm2"$'\t'"stealer"$'\t'"subject: feat(stealers): save[2J results"$'\t'"stealer" \
+  "$AUDIT_DIR/last-run/malware-repos.tsv" \
+  && ok "last-run/malware-repos.tsv holds every single repo named" \
+  || no "rule H's single repos did not reach last-run"
+row=$(printf '%s\t2\t3\tzcode6\tdrainer,payload\twallet_drainers' "$OPS")
+grep -qxF "$row" "$AUDIT_DIR/last-run/malware-identities.tsv" \
+  && ok "last-run/malware-identities.tsv holds every repo that matched" \
+  || no "rule H's evidence did not reach last-run"
+# A kept repo vouches for every delegate it names, one who never signed there included, since
+# the deny list would not block them either.
+set_delegate zfarm1 "$FEW" "$OPS"
+echo zfarm1 > "$RSP_HOME/keep.txt"
+out=$(KEEP_FILE="$RSP_HOME/keep.txt" "$SCRIPT" 2>&1); rc=$?
+rm -f "$RSP_HOME/keep.txt"
+{ [ "$rc" = 0 ] && ! grep -q "$OPS" <<<"$out" && ! grep -q "rad:zfarm2" <<<"$out"; } \
+  && ok "an identity delegating a kept repo, signed or not, is not named, nor its repos" \
+  || no "rule H named an identity that delegates a repo in keep.txt"
+echo "did:key:$OPS  # cleared" > "$RSP_HOME/keep.txt"
+out=$(KEEP_FILE="$RSP_HOME/keep.txt" "$SCRIPT" 2>&1); rc=$?
+rm -f "$RSP_HOME/keep.txt"
+{ [ "$rc" = 0 ] && ! grep -q "$OPS" <<<"$out"; } \
+  && ok "an identity the keep list clears is not named" \
+  || no "rule H named an identity whose did:key: line is in keep.txt"
+# zfarm2 also names VIC, who never signed it; listing VIC has the deny list prune it.
+set_delegate zfarm2 "$FEW" "$VIC"
+printf '%s\n' "did:key:$OPS" "rad:zrot3" "did:key:$VIC" > "$AUDIT_DIR/deny.txt"
+out=$("$SCRIPT" 2>&1); rc=$?
+rm -f "$AUDIT_DIR/deny.txt"
+{ [ "$rc" = 0 ] && ! grep -q 'REVIEW, MALWARE OPERATIONS' <<<"$out" \
+  && ! grep -q '^#     rad:zrot3 ' <<<"$out" && ! grep -q '^#     rad:zfarm2 ' <<<"$out"; } \
+  && ok "an identity or a repo the deny list names or prunes is not named again" \
+  || no "rule H named an identity or repo the deny list names, or a repo it prunes"
+# A private repo is its delegates' choice, so it vouches for nobody and counts like any other.
+# It is never named on its own, since the deny list does not prune one.
+set_delegate zpriv7 "$OPS"
+sed -i 's/^\(zrot3\t[^\t]*\t[^\t]*\t\)public/\1private/' "$RSP_MANIFEST"
+out=$("$SCRIPT" 2>&1); rc=$?
+{ [ "$rc" = 0 ] \
+  && grep -q "#   $OPS, 2 of the 4 repos it is a delegate of and signed refs in:" <<<"$out"; } \
+  && ok "an identity delegating a private repo is still named" \
+  || no "a private repo kept its delegate from rule H"
+! grep -q '^#     rad:zrot3 ' <<<"$out" \
+  && ok "a private repo is not named on its own" \
+  || no "rule H named a private repo, which the deny list would not prune"
+out=$(MALWARE_STRONG_WORDS='stealer|' "$SCRIPT" 2>&1); rc=$?
+[ "$rc" = 2 ] \
+  && ok "a word list with an empty entry stops the run (exit 2)" \
+  || no "MALWARE_STRONG_WORDS='stealer|' did not exit 2 (got $rc)"
+# zhexid23's strong word sits on its branch, and three tags point at trees without one, the
+# first of them sorting ahead of the branch's by hash. With room for one tree, the branch's is
+# the one read. Its path is long and holds the word inside a longer one first, so the line
+# shown is cut around the whole word, near its end.
+long=docs/cryptergui/notes/$(printf 'deep%.0s/' $(seq 16))crypter.c
+fresh_master zhexid23 0 "$long" 'init'
+for t in 1 2 3; do fresh_master zhexid23 0 "README$t" 'docs' "refs/tags/v$t"; done
+sed -i "$(rename zhexid23 crypter 'a tool' | tail -1)" "$RSP_MANIFEST"
+sed 's/^MALWARE_TREES=50 /MALWARE_TREES=1 /' "$SCRIPT" > "$ROOT/one-tree"
+chmod +x "$ROOT/one-tree"
+out=$("$ROOT/one-tree" 2>&1)
+trees=$(GIT_DIR="$STORAGE/zhexid23" git rev-parse 'refs/tags/v1^{tree}' 'master^{tree}')
+{ grep -q '^MALWARE_TREES=1 ' "$ROOT/one-tree" && [ "$(sort <<<"$trees")" = "$trees" ] \
+  && grep -qE '^#     rad:zhexid23  # crypter \(crypter; \.\.\.deep/.*/crypter\.c\)$' \
+       <<<"$out"; } \
+  && ok "branches are read before tags, and a long path is cut around its word" \
+  || no "MALWARE_TREES dropped the branch's tree, or the cut lost the word"
 
 # --- the deny list: a person's verdict, acted on wherever it turns up ---
 # zcode4 is listed by id. zfarm1 is listed through its delegate. The stranger who pushed into

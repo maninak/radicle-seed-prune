@@ -186,7 +186,7 @@ A repo is pruned when one of these holds, unless it is pinned, private, your own
 - the [deny list](#deny-list) names it or one of its delegates;
 - it holds [copies of denied files](#copies-of-denied-files).
 
-`RULES` (default `ABCDEFG`) selects which rules run: a letter absent from it means that rule neither scans nor puts anything in the plan, and a repo a disabled rule would have claimed falls through to the next rule.
+`RULES` (default `ABCDEFGH`) selects which rules run: a letter absent from it means that rule neither scans nor puts anything in the plan, and a repo a disabled rule would have claimed falls through to the next rule.
 
 ### Exclusions (never touched by a rule)
 
@@ -195,7 +195,7 @@ A repo is pruned when one of these holds, unless it is pinned, private, your own
 | Pinned repos    | `config.web.pinned.repositories`                      |
 | Private repos   | `rad ls --private`, or a private identity document    |
 | Your own repos  | `rad ls`, or this node's signed refs in the repo      |
-| Kept repos      | `$AUDIT_DIR/keep.txt`, one repo id per line ([more](#quarantine)) |
+| Kept repos      | `$AUDIT_DIR/keep.txt`, one repo id per line ([more](#quarantine)), or a `did:key:` identity, which only rule H reads |
 | Freshly written | storage dir modified within `FRESH_GUARD_DAYS`        |
 | Unknown age     | no readable refs (also counted against `MAX_SCAN_FAIL_PCT`) |
 | Unreadable      | hit an error when reading the repo                    |
@@ -243,7 +243,7 @@ Every rule has the same shape: **something about the repo**, *and* it is old eno
 | **F, media-ratio** | a great deal of images, video or audio beside one short file ([more](#rule-f-media-dumps))             | `MEDIA_STALE_DAYS`, 7d    | ≥ `MEDIA_MIN_SEEDS`, 0   |
 | **F, media-batch** | the same media files, published across many repos ([more](#rule-f-media-dumps))                        | `MEDIA_STALE_DAYS`, 7d    | ≥ `MEDIA_MIN_SEEDS`, 0   |
 
-Rule G is missing from the table because it judges a **peer**, not a repo, and prunes nothing: it names peers who use repos they do not own as file hosting of their own, and prints the `rad block` line for each such peer ([more](#rule-g-parasite-peers)).
+Rule G is missing from the table because it judges a **peer**, not a repo, and prunes nothing: it names peers who use repos they do not own as file hosting of their own, and prints the `rad block` line for each such peer ([more](#rule-g-parasite-peers)). Rule H is missing for the same reason: it names identities, and single repos, for a person to review ([more](#rule-h-malware-operations)).
 
 #### How age is measured
 
@@ -315,7 +315,7 @@ rad prune quarantine purge            # delete whatever is past its window
 rad prune quarantine files <rid>      # its images, video, audio and archives, as deny-files.tsv rows
 ```
 
-`restore` moves the repo back into storage, clears the block, re-seeds it, and adds it to the keep list, `$AUDIT_DIR/keep.txt`, so the next run leaves it alone. The keep list is one repo id per line, editable by hand; repos listed there are excluded from every rule.
+`restore` moves the repo back into storage, clears the block, re-seeds it, and adds it to the keep list, `$AUDIT_DIR/keep.txt`, so the next run leaves it alone. The keep list is one repo id per line, editable by hand; repos listed there are excluded from every rule. A `did:key:` line there only stops [rule H](#rule-h-malware-operations) naming that identity and the repos it signed.
 
 ### Undoing a prune
 
@@ -359,7 +359,7 @@ Every knob is an environment variable. Defaults shown.
 
 | Variable | Default   | Meaning                                                                                       |
 | -------- | --------- | --------------------------------------------------------------------------------------------- |
-| `RULES`  | `ABCDEFG` | The rules that run; a letter absent from it means that rule neither scans nor plans anything |
+| `RULES`  | `ABCDEFGH` | The rules that run; a letter absent from it means that rule neither scans nor plans anything |
 
 `RULES=`, set but empty, means no rules at all, not the default set.
 
@@ -412,6 +412,8 @@ Every knob is an environment variable. Defaults shown.
 | G    | `PARASITE_MIN_REPOS`  | `10`      | Non-delegated repos one file of a peer's must reach, byte for byte      |
 | G    | `PARASITE_MIN_BYTES`  | `1048576` | Media bytes required across those repos (1 MiB)                         |
 | G    | `PARASITE_TEXT_MAX_BYTES` | `16384` | Text budget anywhere in storage; a peer who writes is a contributor   |
+| H    | `MALWARE_STRONG_WORDS` | `hvnc\|stealer\|...` | Lower-case, `\|`-separated words, one of which an identity's repos, or a single repo, must use |
+| H    | `MALWARE_WEAK_WORDS`  | `c2\|payload\|...` | Lower-case, `\|`-separated words that count towards the 3 different words rule H needs |
 
 `MEDIA_EXTS` and `LINK_REPO_BUDGET` shape rather than fire. Everything else the content rules use to classify is a constant in the script, next to the comment saying why it has that value.
 
@@ -433,7 +435,7 @@ Every knob is an environment variable. Defaults shown.
 | -------------------- | ------- | -------------------------------------------------------------------------- |
 | `QUARANTINE`         | `1`     | Quarantine pruned repos instead of deleting (`0` deletes, with no way back) |
 | `QUARANTINE_DAYS`    | `7`     | Days a quarantined repo stays recoverable before a later run purges it     |
-| `KEEP_FILE`          | `$AUDIT_DIR/keep.txt` | Repos excluded from every rule, one id per line; `quarantine restore` appends to it |
+| `KEEP_FILE`          | `$AUDIT_DIR/keep.txt` | Repos excluded from every rule, one id per line, or a `did:key:` identity, which only rule H reads; `quarantine restore` appends to it |
 | `CACHE`              | `1`     | Reuse what rules E, F and G, and the check for copies, read out of repos that have not changed (`0` reads everything, every run) |
 | `CACHE_DIR`          | `$AUDIT_DIR/cache` | Where that reading is kept                                      |
 | `PLAN_COLLAPSE_ROWS` | `20`    | Group size at which a corpus verdict folds to one summary line             |
@@ -477,7 +479,7 @@ Anything this tool does is written to `$RAD_HOME/prune-audit/` (default `~/.radi
 
 - **`prune-<UTC-timestamp>.log`**: one file per acting run: every repo removed, tab-separated (rid, size, other-seed count, last activity, reason, name, the date the matching rule measured, any threshold that repo only just cleared), plus peer blocks made under `--block-peers` with the evidence behind each.
 - **`quarantine/<rid>`**: every pruned repo, held for `QUARANTINE_DAYS` ([more](#quarantine)).
-- **`keep.txt`**: repos excluded from every rule, one id per line, editable by hand; `quarantine restore` appends to it.
+- **`keep.txt`**: repos excluded from every rule, one id per line, or a `did:key:` identity, which only rule H reads; editable by hand; `quarantine restore` appends to it.
 - **`deny.txt`**: repos and identities to prune and block on sight ([more](#deny-list)). The tool only reads it. The audit log names the entry each repo was pruned for on a `# denied:` line, and records each new block of an identity, or of a repo not yet fetched, on a `blocked-denied` line.
 - **`deny-files.tsv`**: files whose copies are pruned too ([more](#copies-of-denied-files)). The tool only reads it. The audit log says how much of each copy was listed files, and from which source, on a `# denied-copy:` line.
 - **`cache/`**: what rules E, F and G, and the check for copies, last read out of each repo. Safe to delete at any time; the next run reads everything again.
@@ -491,6 +493,8 @@ Anything this tool does is written to `$RAD_HOME/prune-audit/` (default `~/.radi
   - `media-review.tsv`: every dump rule F found and kept because no other node seeds it.
   - `imports.tsv`: every junk-named repo rule A kept because its history starts more than 14 days before its `rad init`.
   - `parasite-peers.tsv`: every peer rule G accused, with the evidence each accusation rests on.
+  - `malware-identities.tsv`: every matching repo of every identity rule H named, with the words it matched.
+  - `malware-repos.tsv`: every single repo rule H named, with the words and the path or commit subject it matched.
   - `media-unjudged.tsv`: every repo rule F could not read, or gave up on for holding more than `MEDIA_MAX_REFS` refs. These are the repos its warning counts.
   - `denied.tsv`: every repo pruned for the deny list, with the entry that named it: `listed`, or `delegate` and the identity.
   - `denied-copies.tsv`: every copy of denied files in the plan: bytes of listed files, bytes on its delegates' branches and tags, the share, how many files, the source most of them came from, and how many other sources.
@@ -585,6 +589,20 @@ Blocking is never a side effect of a prune: the plan prints the exact `rad block
 On the seed the defaults were tuned against, the rule names nobody in the whole public network.
 
 A `RULES` without `G` turns it off.
+
+## Rule H: malware operations
+
+Rule H names an **identity** whose repos are named or described like a malware operation: a stealer, a drainer, a botnet and the panel that runs it. It prunes and blocks nothing. Only repos the identity is a delegate of and signed refs in count, so a repo that merely lists it as a delegate does not, and neither does one it only cloned. An identity is named when, across the names and descriptions of those repos:
+
+1. at least one strong word appears (`MALWARE_STRONG_WORDS`: `hvnc`, `stealer`, `crypter`, `drainer`, `keylogger`, `ransomware`, `botnet`, `scam`);
+2. at least 3 different words appear, counting the strong ones and the weak ones (`MALWARE_WEAK_WORDS`: `c2`, `payload`, `panel`, `loader`, `zombie`, `rat`, `exploit`);
+3. at least 2 of those repos, and at least half of them, use any of the words.
+
+A word matches whole or with one trailing `s`, so `stealers` matches and `pirate` does not match `rat`. Words joined together, like `TokenStealer` or `infostealer`, do not match. An identity that is a delegate of a pinned, kept or your own repo is never named, and neither is one the deny list already names. A private repo vouches for nobody: its delegates chose this seed, not the other way round.
+
+Security research is named like this too, and so is somebody who cloned a malware repo and was then made its delegate, which its owner can do without them, so a person decides. The run lists each identity with the repos that matched, their names and the words found, and the `did:key:` line to add to the [deny list](#deny-list). That line prunes every repo the identity is a delegate of, not only the repos listed, except private ones, and blocks it unless it delegates a private repo. `last-run/malware-identities.tsv` lists every matching repo. To stop an identity you have cleared from being named, add the same line to `keep.txt`. That keeps none of its repos. Keeping one of its repos instead would clear every delegate of that repo, the owner who made it a delegate included.
+
+An operation can also be a single repo. Rule H names the **repo** when a strong word in its name or description is joined by one, the same or another, in a file path on its branches and tags or in a commit subject, and its first commit is at most 7 days older than the repo, so a mirror of somebody else's security tool is left out. Pinned, kept, private, deny-listed and your own repos are never named, nor one already listed under its identity, nor one signed by an identity the rules above leave out. The run prints a `rad:` line for each repo with the words and the path or subject found after a `#`. In the deny list that line prunes and blocks the repo alone. In `keep.txt` it stops the repo being named, and also keeps it from every rule and clears all its delegates of rule H, those who never signed it too, so a repo that only looks like a false positive can shield the identity behind it. `last-run/malware-repos.tsv` lists every repo named. A `RULES` without `H` turns rule H off.
 
 ## Development
 

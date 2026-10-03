@@ -39,7 +39,8 @@
 #                            against MAX_SCAN_FAIL_PCT: a whole storage of it is a
 #                            broken scan, not an exclusion)
 #     - kept                (one rid per line in AUDIT_DIR/keep.txt; a verdict a human has
-#                            already overruled, written there by "quarantine restore")
+#                            already overruled, written there by "quarantine restore". A
+#                            did:key: line there clears an identity of rule H only)
 #
 #   Denied (pruned and blocked on sight, before any rule; pinned, private, own and kept
 #   still win, the other exclusions do not):
@@ -176,6 +177,20 @@
 #       AND >= PARASITE_MIN_BYTES of media across those repos
 #       AND < PARASITE_TEXT_MAX_BYTES of anything else, anywhere
 #       AND they are not a delegate of ANY repo in storage, and are not us
+#
+#   Rule H - malware operations. Judges an IDENTITY, then single repos, and prunes and blocks
+#     nothing: whoever runs the seed and agrees adds them to the deny list. Over the names and
+#     descriptions of the repos an identity is a delegate of and signed refs in, leaving out
+#     identities that delegate a pinned, kept or our own repo, or are in the keep list or the
+#     deny list:
+#       one of MALWARE_STRONG_WORDS
+#       AND >= MALWARE_MIN_WORDS distinct words of MALWARE_STRONG_WORDS and MALWARE_WEAK_WORDS
+#       AND >= MALWARE_MIN_REPOS repos, and >= MALWARE_MIN_SHARE_PCT% of its repos, holding any
+#     Then one repo the identity review did not list, that is not pinned, private, kept, our
+#     own or on the deny list, and none of whose signers that review leaves out:
+#       one of MALWARE_STRONG_WORDS in its name or description
+#       AND one in a path at a tip of its branches and tags, or in a commit subject on them
+#       AND its first commit no more than MALWARE_ORIGINAL_DAYS before its `rad init`
 #
 #   THE TEXT BUDGET is what tells a dump from a real repo that happens to carry media: a game
 #   or a documented photo archive has a README, a licence or a build file and clears
@@ -517,13 +532,38 @@ PARASITE_MIN_BYTES="${PARASITE_MIN_BYTES:-1048576}"
 # is cheap for a real person to clear and costly for a bot to fake, so it errs toward mercy.
 PARASITE_TEXT_MAX_BYTES="${PARASITE_TEXT_MAX_BYTES:-16384}"
 
+# --- rule H: malware operations ---
+# Names an identity whose repos are named or described like a malware operation: a stealer, a
+# drainer, a botnet and the panel that runs it. Only a person can tell an operation from
+# research into one, so rule H prunes and blocks nothing; it points at the deny list. Measured
+# over 13k repos on one seed, these flag one identity, the operation they were built from.
+# Security researchers and bulk publishers who hit the weak words stay under the bars. The
+# word lists are lower case and |-separated; a word matches whole, or with one trailing "s".
+MALWARE_STRONG_WORDS="${MALWARE_STRONG_WORDS:-\
+hvnc|stealer|crypter|drainer|keylogger|ransomware|botnet|scam}"
+MALWARE_WEAK_WORDS="${MALWARE_WEAK_WORDS:-c2|payload|panel|loader|zombie|rat|exploit}"
+# One strong word is a topic; three words across repos, at least two of them, are a toolkit.
+# The share keeps a prolific developer with one security side project under the bar.
+MALWARE_MIN_WORDS=3          # distinct words, strong and weak, across the identity's repos
+MALWARE_MIN_REPOS=2          # repos of the identity that hold any word; one is too little
+MALWARE_MIN_SHARE_PCT=50     # of the identity's signed repos in storage, the share that hits
+# One repo is named on its own when a strong word in its name or description is joined by one,
+# the same or another, in a file path at its tips or a commit subject, and its history starts
+# with the repo. Over 13k repos on one seed, a strong word in a name alone flags three honest
+# repos of six, and one in a path or a subject alone flags one operation among dozens of honest
+# repos; together, two operations and one honest repo. A history much older than the repo is a
+# mirror of somebody else's project.
+MALWARE_ORIGINAL_DAYS=7      # most days the first commit may predate the repo's `rad init`
+MALWARE_SUBJECTS=1000        # newest commit subjects read per repo, to bound a big mirror
+MALWARE_TREES=50             # distinct trees at branch and tag tips listed per repo, likewise
+
 # Which rules may run at all. One spelling for every rule, because enable/disable is the knob
 # an operator reaches for first and it used to be spelled four different ways (a sentinel here,
 # a *_SCAN=0 there, and nothing at all for B and C). A letter absent from this string means
 # that rule neither scans nor puts anything in the plan. RULES= (set but empty) means no rules
 # at all, not the default: an operator who writes that means none, and on a tool that deletes,
 # reading it as "all of them" fails in the one direction that cannot be undone.
-RULES="${RULES-ABCDEFG}"
+RULES="${RULES-ABCDEFGH}"
 rule_on(){ case "$RULES" in (*"$1"*) return 0 ;; (*) return 1 ;; esac; }
 
 MAX_PRUNE_COUNT="${MAX_PRUNE_COUNT:-1000}"       # runaway guards (abort unless --force)
@@ -1153,6 +1193,15 @@ for knob in MAX_PRUNE_COUNT RATCHET_FACTOR RATCHET_RUNS RATCHET_FLOOR MEDIA_RATI
     ''|0*|*[!0-9]*) echo "# $knob must be a whole number, not '${!knob}'." >&2; exit 2 ;;
   esac
 done
+# A word list rule H cannot match stops the run: an upper-case letter or a hyphen in an entry
+# would never match, and an empty entry would match the bare "s" of "it's". Silence there
+# reads as "nobody here runs an operation".
+for knob in MALWARE_STRONG_WORDS MALWARE_WEAK_WORDS; do
+  [[ ${!knob} =~ ^[a-z0-9]+(\|[a-z0-9]+)*$ ]] || {
+    echo "# $knob must be lower-case letters and digits, |-separated, not '${!knob}'." >&2
+    exit 2
+  }
+done
 # Any other value would switch disk pressure on and the critical purge off.
 case $DISK_AWARE in
   0|1) ;;
@@ -1249,6 +1298,14 @@ rule_g="$rule_g <${PARASITE_TEXT_MAX_BYTES}B of anything else)"
 rule_on G         || rule_g="$rule_g [DISABLED: not in RULES]"
 [ "$BLOCK_PEERS" = 1 ] || rule_g="$rule_g [reports only; --block-peers asks per peer]"
 echo "# rule $rule_g"
+rule_h="H malware-op(>=${MALWARE_MIN_WORDS} malware words, one strong, in the names and"
+rule_h="$rule_h descriptions of >=${MALWARE_MIN_REPOS} and >=${MALWARE_MIN_SHARE_PCT}%"
+rule_h="$rule_h of the repos an identity signed as a delegate; or one repo with a strong"
+rule_h="$rule_h word in its name or description and in a file path or commit subject, first"
+rule_h="$rule_h commit <=${MALWARE_ORIGINAL_DAYS}d before its rad init)"
+rule_h="$rule_h [reports only]"
+rule_on H || rule_h="$rule_h [DISABLED: not in RULES]"
+echo "# rule $rule_h"
 
 # ------------------------------------------------------------------------------------ progress
 # Each phase that reads every repo hands its workers to xargs and waits, printing nothing until
@@ -1443,9 +1500,14 @@ grep -oE 'rad:z[1-9A-HJ-NP-Za-km-z]+' "$tmp/ls-own" 2>/dev/null \
 # The keep list is the operator's own verdict on a repo, so it is read the same way as a pin:
 # comments and blank lines out, ids in. Both spellings are taken, because every other id this
 # tool prints carries the rad: prefix and this is the one list a person writes by hand.
+# An identity is 48 characters and a repo id under 40, as in the deny list below.
 sed 's/#.*//; s/rad://' "$KEEP_FILE" 2>/dev/null \
   | grep -oE '^\s*z[1-9A-HJ-NP-Za-km-z]+' \
-  | tr -d ' \t' | sort -u > "$tmp/kept" || true
+  | tr -d ' \t' | awk 'length($0) < 40' | sort -u > "$tmp/kept" || true
+# An identity in the keep list is a person clearing it of rule H; its repos are not kept.
+sed 's/#.*//; s/did:key://' "$KEEP_FILE" 2>/dev/null \
+  | grep -oE '^\s*z[1-9A-HJ-NP-Za-km-z]{40,}' \
+  | tr -d ' \t' | sort -u > "$tmp/kept-nids" || true
 cat "$tmp/pinned" "$tmp/private" "$tmp/own" "$tmp/kept" 2>/dev/null | sort -u > "$tmp/excluded"
 # The deny list, split into repo ids and identities. An identity is 48 characters and a repo id
 # under 40, which is what tells the two apart once their prefixes are dropped. A line that is
@@ -1530,7 +1592,7 @@ fi
 if [ -s "$tmp/deny-oid-list" ]; then progress_phases=$((progress_phases + 1)); fi
 echo "# excluded: $(wc -l < "$tmp/pinned") pinned," \
      "$(wc -l < "$tmp/private") private, $(wc -l < "$tmp/own") own," \
-     "$(wc -l < "$tmp/kept") kept"
+     "$(wc -l < "$tmp/kept") kept; $(wc -l < "$tmp/kept-nids") identity(s) cleared of rule H"
 
 # fail-safe: with no reachable node the exclusion sets and seed counts all come back empty.
 # Under --apply that risks deleting our own/pinned repos; in dry-run it forces a plan of zero
@@ -1579,7 +1641,7 @@ fi
 # Losing this is not fatal but it is not nothing either: the plan's NAME column goes blank and
 # rule D has no corpus to reason about, which would look exactly like "no spam here". Say so.
 [ -s "$tmp/meta" ] \
-  || echo "# WARN: '$RAD ls --all' returned no repos; rule D cannot run." >&2
+  || echo "# WARN: '$RAD ls --all' returned no repos; rules D and H cannot run." >&2
 
 # -------------------------------------------------------------- rule D: generated-bulk batches
 # Skeletonise every name and description in storage - digit runs become #, random-id tokens
@@ -1725,6 +1787,14 @@ for d; do
   refhash=$(sha1sum < "$t" | cut -c1-40)
   # The repo's delegates, comma-separated, for the deny list.
   read_delegates "$d"
+  # The delegates who signed refs of their own here, for rule H. An identity document can name
+  # anybody as a delegate, but only that delegate can sign refs under their own namespace. The
+  # ref name is the last field and holds no space, whatever the date field before it holds.
+  signers=$(awk -v dids="$dids" '
+      BEGIN { n = split(dids, d, " ")
+              for (i = 1; i <= n; i++)
+                want["refs/namespaces/" d[i] "/refs/rad/sigrefs"] = d[i] }
+      $NF in want { printf "%s%s", sep, want[$NF]; sep = "," }' "$t")
   # Whether the repo is ours or private, read from the repo itself, so that a `rad ls` this
   # run misreads is not the only thing keeping it from the rules. Ours when this node has
   # signed refs in it, which nobody else can sign; a ref name holds no space, so the match is
@@ -1738,7 +1808,8 @@ for d; do
   fi
   # The delegates go last: they may be empty, and `read` with a tab IFS folds an empty field
   # into the next one.
-  printf '%s\t%s\t%s\t%s\t%s\n' "${d##*/}" "${bl:-0	0}" "$refhash" "$vis" "${dids// /,}"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${d##*/}" "${bl:-0	0}" "$refhash" "$vis" "${signers:--}" \
+         "${dids// /,}"
 done
 LIFE
 } > "$tmp/life.sh"
@@ -2761,7 +2832,7 @@ OWNED
 fi
 
 declare -A SIZE MTIME LIFE BIRTH NAME SEEDS EXCL SCANFAIL SPAM LINKSCORE MEDIA SHARED \
-           FIRSTSEEN MEDIABYTES DELEGATES DENY_RID DENY_NID COPY COPYHELD COPYPCT COPYROW
+           FIRSTSEEN MEDIABYTES DELEGATES SIGNERS DENY_RID DENY_NID COPY COPYHELD COPYPCT COPYROW
 while IFS=$'\t' read -r sz path; do SIZE[${path##*/}]=$sz; done < "$tmp/du"
 while IFS=$'\t' read -r rid mt;   do MTIME[$rid]=${mt%.*}; done < "$tmp/mtimes"
 # Anything that is not a plain number becomes 0, which the classify loop reads as "age
@@ -2769,10 +2840,10 @@ while IFS=$'\t' read -r rid mt;   do MTIME[$rid]=${mt%.*}; done < "$tmp/mtimes"
 # lock on the one door through which a non-number could reach an arithmetic comparison and
 # leave a repo either unjudgeable or judged on nonsense.
 ncoerced=0
-while IFS=$'\t' read -r rid bt lf _ _ dl; do
+while IFS=$'\t' read -r rid bt lf _ _ sg dl; do
   case $bt in ''|*[!0-9]*) bt=0; ncoerced=$((ncoerced + 1)) ;; esac
   case $lf in ''|*[!0-9]*) lf=0; ncoerced=$((ncoerced + 1)) ;; esac
-  BIRTH[$rid]=$bt; LIFE[$rid]=$lf; DELEGATES[$rid]=$dl
+  BIRTH[$rid]=$bt; LIFE[$rid]=$lf; DELEGATES[$rid]=$dl; SIGNERS[$rid]=$sg
 done < "$tmp/lives"
 # What the scan found to be ours or private and nothing above excluded yet. `rad ls` lists only
 # repos this node seeds and can read, so a stopped seed explains an own one, but a release
@@ -2943,6 +3014,75 @@ if rule_on G && [ -s "$tmp/peer" ]; then
 fi
 nparasite=$(wc -l < "$tmp/parasites")
 
+# -------------------------------------------------------- rule H: malware operations, judge
+# Rows, one per repo hit, sorted: nid, repos hit, repos it signed, rid, the words matched, and
+# the repo's name.
+: > "$tmp/malware"
+if rule_on H; then
+  # The words each repo's name and description use, one row per repo that uses any: rid, the
+  # words, whether one is strong, and the name. Words are matched whole, after cutting at every
+  # character that is not a letter or a digit: as a substring, "rat" alone sits in a thousand
+  # repo names. A word that misses is tried again without one trailing "s".
+  awk -F'\t' -v strong="$MALWARE_STRONG_WORDS" -v weak="$MALWARE_WEAK_WORDS" '
+    function known(list, key) { return index("|" list "|", "|" key "|") > 0 }
+    function malware(word) { return word != "" && (known(strong, word) || known(weak, word)) }
+    {
+      text = tolower($2 " " $3); gsub(/[^a-z0-9]+/, " ", text); n = split(text, w, " ")
+      split("", seen); found = ""; isstrong = 0
+      for (i = 1; i <= n; i++) {
+        word = w[i]
+        if (!malware(word) && word ~ /s$/) word = substr(word, 1, length(word) - 1)
+        if ((word in seen) || !malware(word)) continue
+        seen[word] = 1; found = found (found == "" ? "" : ",") word
+        if (known(strong, word)) isstrong = 1
+      }
+      if (found != "") printf "%s\t%s\t%d\t%s\n", $1, found, isstrong, $2
+    }' "$tmp/meta" > "$tmp/malware-words"
+  # Identities rule H leaves out. A delegate of a pinned, kept or our own repo is one this seed
+  # already vouches for, the one who never signed there included, since the deny list would not
+  # block them either. A private repo vouches for nobody: its delegates chose this seed, not
+  # the other way round. An identity in the keep list was cleared by a person, and one the deny
+  # list names is already dealt with.
+  { cat "$tmp/pinned" "$tmp/own" "$tmp/kept"
+    awk -F'\t' '$2 == "ours" { print $1 }' "$tmp/unlisted"; } | sort -u > "$tmp/vouched"
+  { awk -F'\t' 'FILENAME == ARGV[1] { vouched[$1] = 1; next }
+                ($1 in vouched) { n = split($7, d, ",")
+                                  for (i = 1; i <= n; i++) print d[i] }' \
+      "$tmp/vouched" "$tmp/lives"
+    cat "$tmp/kept-nids" "$tmp/deny-nids"
+    echo "$OUR_NID"; } | sort -u > "$tmp/malware-skip"
+  # Each identity's repos, counted only where it is a delegate and signed refs of its own, so
+  # naming somebody as a co-delegate of a malware repo does not put them here. Then the bars.
+  awk -F'\t' -v minwords="$MALWARE_MIN_WORDS" -v minrepos="$MALWARE_MIN_REPOS" \
+      -v share="$MALWARE_MIN_SHARE_PCT" '
+    FILENAME == ARGV[1] { skip[$1] = 1; next }
+    FILENAME == ARGV[2] { words[$1] = $2; strong[$1] = $3; name[$1] = $4; next }
+    $6 != "-" {
+      n = split($6, signer, ",")
+      for (i = 1; i <= n; i++) {
+        d = signer[i]
+        if (d in skip) continue
+        repos[d]++
+        if (!($1 in words)) continue
+        hits[d]++; row[d, hits[d]] = $1 "\t" words[$1] "\t" name[$1]
+        if (strong[$1]) anystrong[d] = 1
+        nw = split(words[$1], w, ",")
+        for (j = 1; j <= nw; j++)
+          if (!((d, w[j]) in counted)) { counted[d, w[j]] = 1; distinct[d]++ }
+      }
+    }
+    END {
+      for (d in hits) {
+        if (!(d in anystrong) || distinct[d] < minwords || hits[d] < minrepos) continue
+        if (hits[d] * 100 < repos[d] * share) continue
+        for (i = 1; i <= hits[d]; i++)
+          printf "%s\t%d\t%d\t%s\n", d, hits[d], repos[d], row[d, i]
+      }
+    }' "$tmp/malware-skip" "$tmp/malware-words" "$tmp/lives" \
+    | sort -t$'\t' -k1,1 -k4,4 > "$tmp/malware"
+fi
+nmalware=$(cut -f1 "$tmp/malware" | sort -u | wc -l)
+
 : > "$tmp/repos"   # rid \t size \t mtime \t life \t birth
 for rid in "${!SIZE[@]}"; do
   printf '%s\t%s\t%s\t%s\t%s\n' \
@@ -3018,6 +3158,91 @@ import_gap() {   # $1 = rid
 import_cut=$(( IMPORT_SPARE_DAYS * 86400 ))
 : > "$tmp/imports"   # rid \t name, for every repo the import spare kept
 : > "$tmp/import-blind"   # junk-named repos whose commit dates did not read
+
+# ------------------------------------------------ rule H: malware operations, one repo, judge
+# The first file path at the tips of the canonical branches and tags, or else the first commit
+# subject on them, holding a strong word whole or with one trailing "s". Canonical refs only,
+# since a peer's namespace is anybody's to push to. Each distinct tree is listed once, branches
+# before tags, and only the first MALWARE_TREES of them, so thousands of tags cost no more than
+# a few and cannot push the branches out. Paths and subjects are whatever the repo's authors
+# wrote, and the line found reaches the terminal, so control characters go first. awk stops at
+# the first match, the listing loop then stops on the broken pipe, and the caller ignores the
+# status that leaves.
+malware_evidence() {   # $1 = rid
+  local d="$STORAGE/$1" tree
+  { GIT_DIR="$d" git for-each-ref --format='%(objectname)^{tree}' refs/heads refs/tags \
+        2>/dev/null \
+      | GIT_DIR="$d" git cat-file --batch-check='%(objectname)' 2>/dev/null \
+      | grep -E '^[0-9a-f]{40,64}$' | awk '!seen[$0]++' | head -n "$MALWARE_TREES" \
+      | while read -r tree; do
+          GIT_DIR="$d" git ls-tree -r --name-only "$tree" 2>/dev/null | sed 's/^/path: /' \
+            || break
+        done
+    GIT_DIR="$d" git log --no-show-signature --branches --tags --format='subject: %s' \
+      -n "$MALWARE_SUBJECTS" 2>/dev/null
+  } | LC_ALL=C tr -d '\000-\010\011\013-\037\177' | LC_ALL=C sed $'s/\xc2[\x80-\x9f]//g' \
+    | awk -v strong="$MALWARE_STRONG_WORDS" '
+      function known(list, key) { return key != "" && index("|" list "|", "|" key "|") > 0 }
+      {
+        text = tolower($0); gsub(/[^a-z0-9]+/, " ", text); n = split(text, w, " ")
+        for (i = 1; i <= n; i++) {
+          word = w[i]
+          if (!known(strong, word) && word ~ /s$/) word = substr(word, 1, length(word) - 1)
+          if (!known(strong, word)) continue
+          # A long line is cut around the word, so what is shown still holds it. The space put
+          # in front makes the first character a word boundary too.
+          at = match(" " tolower($0), "[^a-z0-9]" word "s?([^a-z0-9]|$)")
+          from = (at > 60) ? at - 40 : 1
+          print (from > 1 ? "..." : "") substr($0, from, 100); exit
+        }
+      }'
+}
+# Rows: rid, the words in its name and description, the path or subject found, and the name.
+# A repo the identity judge named is left to that review. The identities that judge leaves out
+# keep the repos they signed refs in out of this one, and only those: anybody can name this
+# seed's own identity in their document.
+: > "$tmp/malware-repos"
+: > "$tmp/malware-undated"   # the same rows, for repos whose commit dates did not read
+if rule_on H; then
+  malware_cut=$(( MALWARE_ORIGINAL_DAYS * 86400 ))
+  cut -f4 "$tmp/malware" | sort -u > "$tmp/malware-named"
+  while IFS=$'\t' read -r rid found isstrong rname; do
+    [ "$isstrong" = 1 ] || continue
+    [ -z "${EXCL[$rid]:-}" ] && [ -z "${DENY_RID[$rid]:-}" ] || continue
+    grep -qxF "$rid" "$tmp/malware-named" && continue
+    skipped=0
+    IFS=, read -ra signers <<<"${SIGNERS[$rid]:-}"
+    for sg in "${signers[@]}"; do grep -qxF "$sg" "$tmp/malware-skip" && skipped=1; done
+    # A listed identity among its delegates, signed or not, has the deny list prune it.
+    IFS=, read -ra dels <<<"${DELEGATES[$rid]:-}"
+    for dl in "${dels[@]}"; do [ -n "${DENY_NID[$dl]:-}" ] && skipped=1; done
+    [ "$skipped" = 0 ] || continue
+    evidence=$(malware_evidence "$rid") || true
+    [ -n "$evidence" ] || continue
+    # The first commit's date is the pusher's to set, so backdating it keeps a repo off this
+    # list. That costs a review list one entry, since rule H prunes nothing.
+    gap=$(import_gap "$rid")
+    row=$(printf '%s\t%s\t%s\t%s' "$rid" "$found" "$evidence" "$rname")
+    if [ -z "$gap" ]; then printf '%s\n' "$row" >> "$tmp/malware-undated"; continue; fi
+    [ "$gap" -le "$malware_cut" ] || continue
+    printf '%s\n' "$row" >> "$tmp/malware-repos"
+  done < "$tmp/malware-words"
+fi
+nmalware_repos=$(wc -l < "$tmp/malware-repos")
+nmalware_undated=$(wc -l < "$tmp/malware-undated")
+if [ "$nmalware_undated" -gt 0 ]; then
+  echo "# WARN: $nmalware_undated repo(s) hold a strong malware word in the name or" \
+       "description and in a file path or commit subject, but rule H could not read their" \
+       "commit dates to tell an original from a mirror. Read them. A line below in" \
+       "$DENY_FILE prunes and blocks that repo; in $KEEP_FILE it keeps the repo and clears" \
+       "all its delegates of rule H:" >&2
+  head -n "$top_evidence" "$tmp/malware-undated" \
+    | while IFS=$'\t' read -r rid found evidence rname; do
+        printf '#   rad:%s  # %s (%s; %s)\n' "$rid" "$rname" "$found" "$evidence"
+      done >&2
+  [ "$nmalware_undated" -gt "$top_evidence" ] \
+    && echo "#   ...and $((nmalware_undated - top_evidence)) more (PLAN_FULL=1 lists them)" >&2
+fi
 
 # ---------- classify (map lookups + native bash regex; git only for rule A's import spare)
 : > "$tmp/plan"   # rid \t size \t seeds \t life \t reason \t name \t age_from \t near
@@ -3455,6 +3680,53 @@ if [ "$nparasite" -gt 0 ]; then
   echo "#   Or --block-peers, which asks for each peer; add --yes to answer for them."
 fi
 
+# Rule H judges an identity, and a person decides what happens to it: the deny list both prunes
+# its repos and blocks it, so the review points there.
+if [ "$nmalware" -gt 0 ]; then
+  echo
+  echo "# REVIEW, MALWARE OPERATIONS: $nmalware identity(s) (rule H)." \
+       "Nothing here is pruned or blocked."
+  echo "#   repos named or described like a malware operation; read them before acting"
+  for nid in $(cut -f1 "$tmp/malware" | sort -u); do
+    grep "^$nid"$'\t' "$tmp/malware" > "$tmp/malware-one"
+    IFS=$'\t' read -r _ nhit nall _ < "$tmp/malware-one"
+    printf '#   %s, %d of the %d repos it is a delegate of and signed refs in:\n' \
+           "$nid" "$nhit" "$nall"
+    head -n "$top_evidence" "$tmp/malware-one" \
+      | while IFS=$'\t' read -r _ _ _ rid found rname; do
+          printf '#       rad:%s  %s  (%s)\n' "$rid" "$rname" "$found"
+        done
+    if [ "$nhit" -gt "$top_evidence" ]; then
+      echo "#       ...and $((nhit - top_evidence)) more (PLAN_FULL=1 lists them)"
+    fi
+  done
+  echo "#   last-run/malware-identities.tsv lists every matching repo. Adding an identity's"
+  echo "#   line to $DENY_FILE prunes every repo it is a delegate of but the private ones, and"
+  echo "#   blocks it unless it delegates one. The same line in $KEEP_FILE stops it being"
+  echo "#   named and keeps none of its repos:"
+  cut -f1 "$tmp/malware" | sort -u | sed 's/^/#     did:key:/'
+fi
+# Each line is the one to act on: the deny list and the keep list both read what follows a #
+# as a comment, so the evidence rides along when a line is copied.
+if [ "$nmalware_repos" -gt 0 ]; then
+  echo
+  echo "# REVIEW, MALWARE REPOS: $nmalware_repos repo(s) (rule H). Nothing here is pruned" \
+       "or blocked."
+  echo "#   a strong word in the name or description, one in a file path or commit subject,"
+  echo "#   and a history that starts with the repo; read them before acting. A line below in"
+  echo "#   $DENY_FILE prunes and blocks that repo. In $KEEP_FILE it stops the repo being"
+  echo "#   named, and also keeps it from every rule and clears all its delegates of rule H,"
+  echo "#   those who never signed it too:"
+  head -n "$top_evidence" "$tmp/malware-repos" \
+    | while IFS=$'\t' read -r rid found evidence rname; do
+        printf '#     rad:%s  # %s (%s; %s)\n' "$rid" "$rname" "$found" "$evidence"
+      done
+  if [ "$nmalware_repos" -gt "$top_evidence" ]; then
+    echo "#     ...and $((nmalware_repos - top_evidence)) more in last-run/malware-repos.tsv" \
+         "(PLAN_FULL=1 lists them)"
+  fi
+fi
+
 # What the report above printed is trimmed to what a terminal can hold: corpus verdicts folded
 # to one line, five spam domains out of a hundred and fifty. The lists it was rendered from go
 # out whole here, so the evidence behind a verdict outlives the scroll buffer and can be read
@@ -3505,6 +3777,13 @@ if [ "$lr_ok" = 1 ]; then
   { lr_stamp
     printf '# peer_nid\trepos_sharing_blob\trepos_touched\tmedia_bytes\ttext_bytes\tblob\n'
     cat "$tmp/parasites"; } > "$staging/parasite-peers.tsv" 2>/dev/null || lr_ok=0
+  # A person decides on these, and the terminal shows only the first few repos of each.
+  { lr_stamp
+    printf '# nid\trepos_hit\trepos_signed\trid\twords\tname\n'
+    cat "$tmp/malware"; } > "$staging/malware-identities.tsv" 2>/dev/null || lr_ok=0
+  { lr_stamp
+    printf '# rid\twords\tevidence\tname\n'
+    cat "$tmp/malware-repos"; } > "$staging/malware-repos.tsv" 2>/dev/null || lr_ok=0
   # The repos rule F could not read. Without them the run's own warning names a count and
   # nothing to go and look at.
   { lr_stamp
