@@ -6,11 +6,9 @@ All notable changes to this project are documented here. The format is based on 
 
 ### Upgrading
 
-Replace the script, then do a dry run. If anything needs adjusting, the script will let you know what and how.
+Replace the script, then do a dry run. The media rule (F) now needs `gzip` and OpenSSL 3, and the dry run stops and says so if either is missing.
 
-The media rule (F) now requires `gzip` and OpenSSL 3. If either is missing, or `openssl` is older than v3, a run says so and stops with exit `1`. To run without the media rule, set the `RULES` environment variable to a value without `F`, such as `RULES=ABCDEGH`.
-
-Five files in `last-run/` have been renamed. This matters only to anything opening them by name. Each next run replaces `last-run/` whole anyway, so no cleanup from your side is required.
+The files rad-prune writes in the audit directory now open with a few `#` lines saying what they hold, so the line naming the run is no longer the first ([details](./README.md#audit-trail)). A script that reads them must skip lines starting with `#`. Five files in `last-run/` are renamed:
 
 | Before | Now |
 |---|---|
@@ -20,44 +18,38 @@ Five files in `last-run/` have been renamed. This matters only to anything openi
 | `media-unjudged.tsv` | `F-media-unjudged.tsv` |
 | `parasite-peers.tsv` | `G-parasite-peers.tsv` |
 
-Every file in `last-run/`, each new `prune-*.log`, as well as `first-seen.tsv` and `history.log`, now opens with a few `#` lines explaining what it's about, and the line naming the run is no longer the first. A script that reads these files and does not already skip lines starting with `#`, now needs to.
-
-A run that holds back a rule now exits `4`. A monitor that reads exit `3` as "a person should look" should read `4` the same way.
+A run that holds back a rule exits `4`. A monitor that alerts on exit `3` should alert on `4` too.
 
 ### Added
 
-- **You can list repos and identities to prune and block on sight.** Put one repo id or identity (`did:key:z6Mk...`) per line in `deny.txt` in the audit directory. A list another operator shared with you works as is. `--apply` prunes and blocks every listed repo and every repo a listed identity is a delegate of, and blocks the identity too. Pinned, private, your own and kept repos are spared, and an identity that is a delegate of one of them is not blocked. The plan calls these `denied`.
-- **Repos that hold copies of a denied repo's media files are pruned too.** Once a repo has been pruned into the quarantine, `rad prune quarantine files <rid>` prints the images, video, audio and archives its delegates committed. Add those rows to `deny-files.tsv` in the audit directory. A repo is then pruned when its delegates' branches and tags hold at least 5 MiB of those files, making up half or more of the bytes there. Files the delegates committed and later deleted still count. Pinned, private, your own and kept repos are spared. The plan calls these `denied-copy`.
-- **The media rule (F) catches media dumps it used to miss.** A repo is now pruned as `media-ratio` when its branches and tags hold at least 6 MiB of images, video and audio and at most one README, and everything else its delegates wrote comes to under 0.1% of that media. Before, a README of 2 KiB or more was enough to spare it. An archive, a source file or a build file spares it, and `MEDIA_RATIO_MIN_BYTES` sets the 6 MiB. An MPEG video over 256 KiB named `.ts` is now recognised by its content; before, it passed for a TypeScript file. In a repo with more than 200 files of unknown type, the biggest are checked first, and a repo whose unchecked files could still change the verdict is listed as unjudged instead of spared.
-- **Identities and repos that look like a malware operation are listed for you to review.** Nothing is pruned or blocked. An identity is listed when the names and descriptions of the repos it is a delegate of and has pushed to use three or more words such as `stealer`, `drainer`, `panel` and `loader`, at least one of them a word like `stealer` or `drainer`. Those words must turn up in at least two of its repos, and in half or more of them. A single repo is listed when its name or description holds a word like `stealer` or `drainer`, a file path or commit subject on its branches and tags holds one too, and its first commit is no more than 7 days before the repo was created on Radicle. Each comes with the line to add to `deny.txt`. Adding an identity's line to `keep.txt` stops that identity being listed. If you set `RULES` yourself, add `H` to it to get these lists.
+- **You can name repos and identities to prune and block on sight.** List them in `deny.txt` in the audit directory. `--apply` prunes and blocks each listed repo and every repo a listed identity is a delegate of, and blocks the identity too ([details](./README.md#deny-list)). Pinned, private, your own and kept repos are spared.
+- **Repos that hold copies of files from a repo `deny.txt` names are pruned too.** A repo is pruned when at least 5 MiB of files listed in `deny-files.tsv` make up half or more of what its delegates committed ([details](./README.md#copies-of-denied-files)). `rad prune quarantine files <rid>` prints a quarantined repo's files in that list's format.
+- **The media rule (F) catches more media dumps.** A repo with 6 MiB or more of images, video and audio, at most one README and almost nothing else is now pruned as `media-ratio` ([details](./README.md#rule-f-media-dumps)).
+- **Identities and repos that look like a malware operation are listed for you to review.** Nothing is pruned or blocked ([details](./README.md#rule-h-malware-operations)). If you set `RULES` yourself, add `H` to it.
 
 ### Changed
 
-- **Each file rad prune writes in the audit directory now opens with a few lines saying what it holds, and the files in `last-run/` are named after what wrote them.** A rule's files start with its letter, such as `F-media-unjudged.tsv`, and those about the deny list with `deny-`. `first-seen.tsv` and `history.log` get these lines the next time a run adds to them. An existing `keep.txt` is never rewritten.
-- **When one rule plans far more repos than usual, an unattended run holds back only that rule, instead of stopping the whole run.** "Far more" means over 20 repos, and over three times that rule's median over the last 8 runs that applied a plan. The held repos stay in storage for you to check, the other repos in the plan are pruned, and the run exits `4`. The check used to weigh the whole plan, and a stopped run exited `3` and pruned nothing. It also never fired on a seed whose recent runs pruned nothing, where a rule is now held back once it plans more than 20. `last-run/held.tsv` lists the held repos, and `RATCHET_FLOOR` sets the 20.
+- **When one rule plans far more repos than usual, an unattended run holds back only that rule.** The other repos in the plan are pruned, and the run exits `4` ([details](./README.md#safety-and-recovery)). It used to prune nothing and exit `3`.
 
 ### Fixed
 
-- **Your own and private repos stay out of the plan even when `rad ls` leaves them out.** The run also checks each repo on disk, and a warning counts the repos it kept that way and names the first few. It used to rely on `rad ls` alone. This also keeps your own repos that this node no longer seeds, which used to be prunable.
-- **A run stops with exit `5` when `rad ls` fails, and prints the error.** It used to carry on as if this node had no own or private repos, so they could be pruned. A malformed node id stops the run the same way.
-- **An older project brought to Radicle is no longer pruned as junk just for a word like `demo` or `test` in its name.** The junk-name rule (A) now spares a repo whose first commit is more than 14 days before the repo was created on Radicle. Other rules still apply to it. `last-run/A-junk-name-kept-imports.tsv` lists the repos spared this way.
-- **The media rule (F) spares more real projects.** A repo with a source file or a build file (a `Makefile`, `package.json` and the like) is no longer a media dump. A build file also keeps a repo out of a media batch. A repo named after a seed's hostname and holding under 1 MiB of media is treated as that seed's logo and never flagged. Compressed data such as `rows.csv.gz` counts as text, unless it unpacks to media or other binary data.
-- **A small repo is no longer pruned as `media-batch` just because real projects carry the same file.** Only repos with almost no text now count toward the 5 repos a batch needs.
-- **The media rule (F) no longer judges a repo with a branch whose commit is missing from storage.** It used to skip that branch, so a repo whose README sat on the missing branch could look like a dump.
-- **`keep.txt` is now read correctly however it was saved.** A file saved by some Windows editors, or one that `quarantine restore` added to when it did not end with a line break, could make a run ignore a listed repo and prune it.
-- **Repos that `rad ls` lists as `local` are no longer read as sharing a description.** Their head commit was read as their description, so a group of them with no description could be pruned as `spam-batch`.
-- **With the critical free-space settings (`PRESSURE_CRIT_*`) set above the relaxed ones (`PRESSURE_RELAX_*`), a disk at or under the critical level now counts as full pressure.** It used to read as `pressure=0%`, and the run kept its relaxed thresholds while it emptied the quarantine. Settings like these now also print a warning.
-- **A stopped run no longer deletes expired repos from the quarantine.** A run stopped by the runaway caps, or by an `n` (no) at the prompt, used to delete them first.
-- **A typo in `MAX_PRUNE_COUNT`, a `RATCHET_*` setting or `DISK_AWARE` now stops the run with exit `2`.** It used to switch a check off without a word.
+- **Your own and private repos can no longer be pruned when `rad ls` misses them or fails.** The run now checks each repo on disk too, and stops with exit `5` when `rad ls` fails.
+- **An older project brought to Radicle is no longer pruned as junk for a word like `demo` or `test` in its name.** The junk-name rule (A) spares a repo whose first commit is more than 14 days before its `rad init`.
+- **The media rule (F) spares more real projects.** A source file or a build file (such as a `Makefile` or `package.json`) now spares a repo from `media-dump`, and a build file spares it from `media-batch` too. Compressed text such as `rows.csv.gz` counts as text, and a repo named after a seed's hostname with under 1 MiB of media is never flagged. Only repos with almost no text count toward a media batch, and a repo with a branch whose commit is missing from storage is no longer judged.
+- **`keep.txt` is read correctly however it was saved.** A byte-order mark from some Windows editors, or a `quarantine restore` onto a file with no final line break, could make a run ignore a listed repo and prune it.
+- **Repos that `rad ls` lists as `local` are no longer pruned as `spam-batch`.** Their head commit was read as their description.
+- **A stopped run no longer deletes expired repos from the quarantine.** A run stopped by the runaway caps or by an `n` at the prompt used to delete them first.
+- **A disk at or under the critical free-space threshold counts as full pressure even when `PRESSURE_CRIT_*` is set above `PRESSURE_RELAX_*`.**
+- **A typo in `MAX_PRUNE_COUNT`, a `RATCHET_*` setting or `DISK_AWARE` stops the run with exit `2`.** It used to turn a check off without a word.
 - **An unexpected failure always exits `1`.** It used to pass on the failed command's exit code, which could look like exit `3` or `5`.
-- **The tool keeps working once `rad` drops `rad self --nid`.** rad 1.10 deprecates the flag. Once it is gone, every run would stop with exit `5`.
+- **rad-prune keeps working once `rad` drops `rad self --nid`.** rad 1.10 deprecates the flag.
 
 ### Security
 
-- **A stranger can no longer get a repo pruned as a media dump by opening a patch or issue on it.** Once a delegate replied, the media rule (F) counted the stranger's files as the repo's own. Now it counts only comments and patches the delegates signed.
-- **Only a repo's real delegates count as its delegates.** The tool used to treat any identity named in a repo's identity document, such as in its description, as a delegate. The media rule (F) then counted that identity's uploads as the repo's own, and the parasite-peer rule (G) never flagged that identity.
-- **A line break in a repo's description can no longer get another repo pruned.** `rad ls` prints such a line break as is, and the text after it read as a row of its own. A stranger could use that to get somebody else's repo pruned as `junk-id` or `spam-batch`. Rows for repos that are not in storage are now dropped, and the run warns about them. A repo that `rad ls` seems to list twice gets no name that run, so the junk-name (A), spam-batch (D) and malware (H) rules pass over it.
-- **Control characters in a repo's name or description no longer reach the terminal.** The delegates write both, and an escape sequence there could change what the plan showed.
+- **A stranger can no longer get a repo pruned as a media dump by opening a patch or issue on it.** The media rule (F) now counts only comments and patches the delegates signed.
+- **Only a repo's real delegates count as its delegates.** An identity merely named in its identity document, such as in the description, used to count as one, so the media rule (F) counted that identity's uploads as the repo's own.
+- **A line break in a repo's description can no longer get another repo pruned.** `rad ls` printed it as is, so the text after it read as another repo's row.
+- **Control characters in a repo's name or description no longer reach the terminal.** An escape sequence there could change what the plan showed.
 
 ## [0.7.0] - 2026-09-10
 
