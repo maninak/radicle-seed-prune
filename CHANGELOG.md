@@ -8,10 +8,11 @@ All notable changes to this project are documented here. The format is based on 
 
 Replace the script, then do a dry run. If it exits `5` because `rad ls` failed, every run stops the same way until `rad ls` works again. A directory in storage whose name is not a repo id is enough to make `rad ls` fail, so move any such directory out of storage.
 
-The media rule now needs OpenSSL 3. With an older `openssl`, a run says so and stops with exit `1`; leave `F` out of `RULES` to run without the media rule.
+The media rule now needs `gzip` and OpenSSL 3. A run missing either, or with an older `openssl`, says so and stops with exit `1`; leave `F` out of `RULES` to run without the media rule.
 
 ### Added
 
+- **The media rule catches a dump behind a short README.** A repo whose branches and tags hold 6 MiB or more of images, video and audio, and nothing else but a README under 0.1% of that size, is pruned as `media-ratio`. `MEDIA_RATIO_MIN_BYTES` sets the 6 MiB.
 - **You can list repos and identities to prune and block on sight.** Put one repo id or identity (`did:key:z6Mk...`) per line in `deny.txt` in the audit directory, and a list another operator shares works as is. `--apply` prunes and blocks every listed repo and every repo a listed identity maintains, unless it is pinned, private, your own or in `keep.txt`.
 - **Repos holding copies of a denied repo's files are pruned too.** `rad prune quarantine files <rid>` prints the images, video, audio and archives a quarantined repo's owners committed, as rows to append to `deny-files.tsv` in the audit directory. A repo is pruned when its owners committed at least 5 MiB of listed files to its branches, half or more of the bytes there, even if they deleted them later.
 
@@ -23,6 +24,8 @@ The media rule now needs OpenSSL 3. With an older `openssl`, a run says so and s
 
 ### Fixed
 
+- **The media rule spares more real projects.** A repo with a source file or a build file (a `Makefile`, `package.json` and the like) is no longer a media dump, and a build file also keeps it out of a batch. A repo named after a seed's hostname, holding under 1 MiB of media, is read as that seed's logo. Compressed data such as `rows.csv.gz` counts as text, unless it unpacks to media or other binary data.
+- **A file every real project ships no longer makes a media batch.** Repos with too much text to be a dump no longer count as holders of the same file, and which ones counted used to depend on how the repo's files sorted.
 - **A stranger can no longer get a repo pruned as a media dump by sending it a patch.** When a delegate commented on a stranger's patch or issue, the media rule counted the stranger's files as the repo's own. It now counts only comments and patches the delegates signed.
 - **The media rule no longer judges a repo with a branch whose commit is missing.** It used to skip that branch, and a repo missing its README could look like a dump.
 - **Your own and private repos stay out of the plan even if `rad ls` leaves them out.** Every repo is also checked on disk, and a warning counts the ones kept that way and names the first few. They used to be recognised only from `rad ls`, whose output a rad release can change. This also keeps your own repos this node no longer seeds, which used to be prunable.

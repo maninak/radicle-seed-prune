@@ -36,7 +36,7 @@ chmod +x rad-prune
 sudo mv rad-prune /usr/local/bin/
 ```
 
-Needs `bash`, `git`, `jq`, `rad` and OpenSSL 3 on `PATH`. Run it as the user that owns the Radicle home you want pruned, or set `RAD_HOME` to that home.
+Needs `bash`, `git`, `jq`, `rad`, `gzip` and OpenSSL 3 on `PATH`. Run it as the user that owns the Radicle home you want pruned, or set `RAD_HOME` to that home.
 
 Anywhere on `PATH` under the name `rad-prune`, `rad` runs it as one of its own subcommands, which is what the examples below use. `rad-prune ...` does the same thing, and so does `./rad-prune ...` from wherever you put it.
 
@@ -67,7 +67,7 @@ RAD=/nix/store/.../bin/rad rad-prune         # a specific rad binary
 sudo -u <node-user> env RAD_HOME=/var/lib/radicle rad-prune   # as the user the node runs as
 ```
 
-Run it as the user that owns storage, or it stops rather than scanning nothing. It needs `rad`, `git`, `jq`, `openssl`, `awk`, `sed`, `grep`, `find` and coreutils on the `PATH` you hand it, and a run missing one of them names it and stops. That is worth checking whenever the `PATH` is not your own login one: a systemd unit, a Nix wrapper, and `sudo`, which replaces `PATH` with its own `secure_path` wherever sudoers sets one. If a run names a command you know is installed, hand it the `PATH` you meant: `sudo -u <node-user> env PATH="$PATH" RAD_HOME=/var/lib/radicle rad-prune`.
+Run it as the user that owns storage, or it stops rather than scanning nothing. It needs `rad`, `git`, `jq`, `openssl`, `gzip`, `awk`, `sed`, `grep`, `find` and coreutils on the `PATH` you hand it, and a run missing one of them names it and stops. That is worth checking whenever the `PATH` is not your own login one: a systemd unit, a Nix wrapper, and `sudo`, which replaces `PATH` with its own `secure_path` wherever sudoers sets one. If a run names a command you know is installed, hand it the `PATH` you meant: `sudo -u <node-user> env PATH="$PATH" RAD_HOME=/var/lib/radicle rad-prune`.
 
 ### Example output
 
@@ -79,7 +79,7 @@ A dry run against a seed of 12,292 repos:
 # disk: 125.5GB free (46.5%)  pressure=0% [relax>=54GB crit<=2GB]
 # rules: A junk(>30d, seeds>=1, spare-import>14d; id-names seeds>=0)  B size(>500MB & >=P95, >90d, seeds>=3)  C stale(>730d, seeds>=3)  D spam(batch>=5 & desc>=80%, >7d, seeds>=0)
 # rule E link-farm(>=5 spam domains, each linked from >=0.4% of repos and from the code of <10% of them, >7d, seeds>=0)
-# rule F media-dump(>=64KB of media and <2048B of anything else, >7d, seeds>=0)  media-batch(that media held by >=5 repos, <65536B of anything else)
+# rule F media-dump(>=64KB of media and <2048B of anything else, no source or build file, >7d, seeds>=0)  media-ratio(>=6144KB of images+video+audio at the tips, anything else <1/1000 of that, no archive, nothing else at the tips but <=1 README)  media-batch(>=64KB of media held by >=5 repos, <65536B of anything else)
 # rule G parasite-peer(one file of theirs in >=10 repos they do not own, >=1MB media, <16384B of anything else) [reports only; --block-peers asks per peer]
 # excluded: 9 pinned, 6 private, 0 own, 0 kept
 # spam batches: 10 template(s) matching 999 repos, before the age and seed checks:
@@ -240,6 +240,7 @@ Every rule has the same shape: **something about the repo**, *and* it is old eno
 | **D, spam-batch**  | one of a batch stamped out from one template ([more](#rule-d-spam-batches))                            | `SPAM_STALE_DAYS`, 7d     | ≥ `SPAM_MIN_SEEDS`, 0    |
 | **E, link-farm**   | published to carry links rather than code ([more](#rule-e-link-farms))                                 | `LINK_STALE_DAYS`, 7d     | ≥ `LINK_MIN_SEEDS`, 0    |
 | **F, media-dump**  | video, images or audio with no project around them ([more](#rule-f-media-dumps))                       | `MEDIA_STALE_DAYS`, 7d    | ≥ `MEDIA_MIN_SEEDS`, 0   |
+| **F, media-ratio** | a great deal of images, video or audio beside one short file ([more](#rule-f-media-dumps))             | `MEDIA_STALE_DAYS`, 7d    | ≥ `MEDIA_MIN_SEEDS`, 0   |
 | **F, media-batch** | the same media files, published across many repos ([more](#rule-f-media-dumps))                        | `MEDIA_STALE_DAYS`, 7d    | ≥ `MEDIA_MIN_SEEDS`, 0   |
 
 Rule G is missing from the table because it judges a **peer**, not a repo, and prunes nothing: it names peers who use repos they do not own as file hosting of their own, and prints the `rad block` line for each such peer ([more](#rule-g-parasite-peers)).
@@ -252,7 +253,7 @@ D, E and F measure **creation** instead, because spam that comments on its own r
 
 #### Verdicts that may delete the last copy we know of
 
-`junk-id`, `spam-batch`, `link-farm`, `media-dump` and `media-batch`, which default to a seed floor of `0`. "Other seeds" counts the nodes our routing table says announce a repo, not proof a copy exists elsewhere; these verdicts are why pruning [quarantines instead of deleting](#quarantine). `JUNK_ID_MIN_SEEDS=1 SPAM_MIN_SEEDS=1 LINK_MIN_SEEDS=1 MEDIA_MIN_SEEDS=1` restores a floor of 1 for these. `denied` and `denied-copy` have no seed floor and no setting for one.
+`junk-id`, `spam-batch`, `link-farm`, `media-dump`, `media-ratio` and `media-batch`, which default to a seed floor of `0`. "Other seeds" counts the nodes our routing table says announce a repo, not proof a copy exists elsewhere; these verdicts are why pruning [quarantines instead of deleting](#quarantine). `JUNK_ID_MIN_SEEDS=1 SPAM_MIN_SEEDS=1 LINK_MIN_SEEDS=1 MEDIA_MIN_SEEDS=1` restores a floor of 1 for these. `denied` and `denied-copy` have no seed floor and no setting for one.
 
 #### Names that count as disposable
 
@@ -280,7 +281,7 @@ The header prints the live pressure and the effective thresholds every run. On o
 
 - **Dry run by default.** Nothing is pruned, and nothing on the deny list is blocked, without `--apply`. A peer that rule G named is blocked only under `--block-peers`.
 - **Quarantine instead of deletion.** A pruned repo stays on disk for `QUARANTINE_DAYS` (7) and is restorable with one command ([details](#quarantine)).
-- **Minimum seed counts** keep the last copy we know of, except for the [deny list](#deny-list) and [copies of denied files](#copies-of-denied-files), and under `junk-id`, `spam-batch`, `link-farm` and rule F's two media verdicts ([why](#verdicts-that-may-delete-the-last-copy-we-know-of)).
+- **Minimum seed counts** keep the last copy we know of, except for the [deny list](#deny-list) and [copies of denied files](#copies-of-denied-files), and under `junk-id`, `spam-batch`, `link-farm` and rule F's three media verdicts ([why](#verdicts-that-may-delete-the-last-copy-we-know-of)).
 - **Runaway caps** (`MAX_PRUNE_COUNT`, `MAX_PRUNE_GB`) abort a plan whose rules picked more than either cap; repos on the deny list are not counted, [copies of denied files](#copies-of-denied-files) are. Two things get past them: `--force`, or a person answering `y` at the prompt, which is a human signing off on the numbers just printed. `--yes` is not one of them, so an unattended run still stops.
 - **A rule that jumps is held back.** An unattended run compares each rule's part of the plan with the median that rule pruned over the last `RATCHET_RUNS` (8) applied runs. A rule that plans more than `RATCHET_FACTOR` (3) times its median, and more than `RATCHET_FLOOR` (20) repos, is held back. Its repos stay in storage, the other rules go ahead, and the run exits 4. A dry run lists what would be held, and every run writes it to `last-run/held.tsv`. `--force` or a `y` at the prompt gets past it. The median comes from the audit logs `history.log` names. A run that held a rule back, or ran without it, does not count for that rule. A rule with fewer than 3 runs that count has `RATCHET_FLOOR` as its limit, and with fewer than 3 readable logs nothing is held. The spam, link-farm and media rules usually prune nothing, so a sudden batch of more than 20 repos from one of them waits for `--force` or a `y`.
 - **A stopped run deletes nothing from quarantine.** A run the runaway caps stop, or an `n` at the prompt, leaves expired repos there ([more](#quarantine)).
@@ -405,8 +406,9 @@ Every knob is an environment variable. Defaults shown.
 | F    | `MEDIA_MIN_SEEDS`     | `0`       | Other seeds required; `0` may prune the last copy we know of            |
 | F    | `MEDIA_MIN_BATCH`     | `5`       | Repos holding one media file, byte for byte, to call it a campaign      |
 | F    | `MEDIA_TEXT_CEIL_BYTES`| `65536`  | The batch path's wider budget for everything that is not media          |
+| F    | `MEDIA_RATIO_MIN_BYTES`| `6291456` | Images, video and audio the ratio path needs (6 MiB); `999999999999` turns it off |
 | F    | `MEDIA_MAX_REFS`      | `10000`   | Refs above which a repo is too costly to read, so it goes unjudged      |
-| F    | `MEDIA_EXTS`          | images, video, audio, archives | `\|`-separated extensions judged as media       |
+| F    | `MEDIA_EXTS`          | images, video, audio, archives | `\|`-separated extensions judged as media; one you add counts as image, video or audio, never as an archive, on the ratio path |
 | G    | `PARASITE_MIN_REPOS`  | `10`      | Non-delegated repos one file of a peer's must reach, byte for byte      |
 | G    | `PARASITE_MIN_BYTES`  | `1048576` | Media bytes required across those repos (1 MiB)                         |
 | G    | `PARASITE_TEXT_MAX_BYTES` | `16384` | Text budget anywhere in storage; a peer who writes is a contributor   |
@@ -542,19 +544,25 @@ A repo is flagged when all of:
 
 1. it carries at least `MEDIA_MIN_BYTES` (64 KiB) of media;
 2. everything that is *not* media adds up to less than `MEDIA_TEXT_MAX_BYTES` (2048);
-3. it is older than `MEDIA_STALE_DAYS` (7d, since creation);
-4. it has at least `MEDIA_MIN_SEEDS` (0) other seeds, so by default the seed count does not spare it.
+3. no branch or tag holds a source file or a build file (a `Makefile`, `Cargo.toml`, `package.json` and the like);
+4. it is older than `MEDIA_STALE_DAYS` (7d, since creation);
+5. it has at least `MEDIA_MIN_SEEDS` (0) other seeds, so by default the seed count does not spare it.
 
-What a file *is* decides, not what it is called. Extensions (`MEDIA_EXTS`, `MEDIA_TEXT_EXTS`, `MEDIA_TEXT_NAMES`) are only a fast path: an unrecognised file has its first 16 bytes matched against media signatures, so renaming a video to `.dat` does not hide it. Archives (zip, gzip, rar, 7z) count as media; a file matching no signature counts as text and spares the repo. Reading is capped at `MEDIA_SNIFF_MAX_FILES` (200) per repo, and files past the cap count as text.
+A README of 2048 bytes or more is enough to fail condition 2. The **ratio path** reaches such a repo anyway: it is flagged `media-ratio` when it meets every condition but 2, *and* the images, video and audio at the tips of its branches and tags come to at least `MEDIA_RATIO_MIN_BYTES` (6 MiB), everything else adds up to less than 0.1% of that, the repo holds no archive, and the tips hold nothing besides the media but a single README (`README`, alone or with `.md`, `.markdown`, `.txt`, `.rst`, `.adoc` or `.org`). A README and a licence are two files, and spare the repo from this path.
+
+A repo whose name starts with a hostname (`seed.example.org`, `seed.example.org-avatar`) and that holds under 1 MiB of media is a seed's logo, and rule F never flags it. A name ending in a media extension, such as `wallpapers.png`, does not count as a hostname.
+
+What a file *is* decides, not what it is called. Extensions (`MEDIA_EXTS`, `MEDIA_TEXT_EXTS`, `MEDIA_TEXT_NAMES`) are only a fast path: an unrecognised file has its first 16 bytes matched against media signatures, so renaming a video to `.dat` does not hide it, and a gzipped text file such as `rows.csv.gz` is judged by what it unpacks to: binary data counts as media. Archives (zip, gzip, rar, 7z) count as media; a file matching no signature counts as text and spares the repo. Reading is capped at `MEDIA_SNIFF_MAX_FILES` (200) per repo, and files past the cap count as text.
 
 Only the repo's own content counts: the canonical branches and tags, plus the namespaces of the delegates named in `refs/rad/id`, including every issue and patch comment a delegate signed, older ones too. Every other peer's namespace is ignored, and so is a stranger's patch or comment a delegate replied to, so a stranger pushing a video onto somebody's repo cannot put that repo in the plan. A repo with a branch whose commit is missing from storage is not judged.
 
 A branch or tag is read at its tip, so media committed and then deleted in a later commit is missed. A repo whose listing dies part-way, or with more than `MEDIA_MAX_REFS` (10000) refs, is left unjudged.
 
-A token README is enough to put a repo over the text budget above. The **batch path** reaches such a repo anyway: it is flagged `media-batch` when it meets conditions 1, 3 and 4 above, *and*:
+The **batch path** reaches repos the other two miss, such as one with a script, or with a README too long for the dump path, as long as everything besides the media stays under the wider budget below. A repo is flagged `media-batch` when it meets conditions 1, 4 and 5 above, *and*:
 
-- at least `MEDIA_MIN_BYTES` of its media sits in files that `MEDIA_MIN_BATCH` (5) or more repos in storage also hold, byte for byte, and that this repo was not the first to hold (first by the creation-date ledger);
-- everything that is not media adds up to less than `MEDIA_TEXT_CEIL_BYTES` (64 KiB), the wider budget.
+- at least `MEDIA_MIN_BYTES` of its media sits in files that `MEDIA_MIN_BATCH` (5) or more repos in storage also hold, byte for byte, and that this repo was not the first to hold (first by the creation-date ledger). Only repos under the wider budget below count as holders;
+- everything that is not media adds up to less than `MEDIA_TEXT_CEIL_BYTES` (64 KiB), the wider budget;
+- no branch or tag holds a build file. A source file alone does not spare it.
 
 `MEDIA_MIN_SEEDS=1` raises the floor, and a dump no other node announces is then listed under `# review:` for a human to look at rather than pruned. At the default floor of `0` that list is empty and rule F may prune the last copy this seed knows of, like `spam-batch` and `link-farm` before it: the evidence is what the repo holds, and a dump nobody else seeds is still a dump.
 
@@ -585,7 +593,7 @@ tests/run.sh                 # everything
 tests/run.sh -k quarantine   # only the sections that mention "quarantine"
 ```
 
-Needs only `bash`, `git`, `openssl` and coreutils. It builds a hermetic fixture and runs the real script against it, so it never reads or writes the real node.
+Needs only `bash`, `git`, `gzip`, `openssl` and coreutils. It builds a hermetic fixture and runs the real script against it, so it never reads or writes the real node.
 
 The suite is cut into sections, one per fixture rebuild, and a section run on its own is the same run it gets in the whole suite. Whole runs take minutes and a single section takes seconds, so `-k` is the loop to be in while changing one rule. It takes a regular expression and runs every section whose text contains a match, so a test name, a repo id, a knob name or a rule letter all select one. The fixture is built once and kept under `TMPDIR` for an hour; `RSP_FIXTURE_CACHE=0` builds it fresh every time.
 

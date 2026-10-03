@@ -75,6 +75,26 @@ zbatch3\treel\t2\tpublic\t0\t60\t100\tstuff
 zbatch4\tmontage\t2\tpublic\t0\t60\t100\ta few videos
 zbatch5\tclipset\t2\tpublic\t0\t60\t100\tmy own dump
 zbatchodd\tsolocam\t2\tpublic\t0\t60\t100\tone of a kind
+zbatchbig\tlongbatch\t2\tpublic\t0\t60\t100\tthe batch clip in a documented project
+zmediagz\tcsvdata\t2\tpublic\t0\t60\t100\tcompressed data
+zmediagzv\tgzclip\t2\tpublic\t0\t60\t100\ta compressed clip named like data
+zmediahost\tseed.example.org\t2\tpublic\t0\t60\t100\ta seed logo
+zmediahostbig\tseed.example.net\t2\tpublic\t0\t60\t100\ta clip under a hostname
+zmediapng\twallpapers.png\t2\tpublic\t0\t60\t100\ta dump named like a file
+zmediagzt\tgznotes\t2\tpublic\t0\t60\t100\ta compressed tar named like notes
+zmediagzu\tutfnotes\t2\tpublic\t0\t60\t100\tcompressed UTF-16 notes
+zmediagzw\tutfnotes32\t2\tpublic\t0\t60\t100\tcompressed UTF-32 notes
+zmediagzb\tutfnotesbe\t2\tpublic\t0\t60\t100\tcompressed UTF-16BE notes
+zmediapkg\treleasezip\t2\tpublic\t0\t60\t100\ta big clip, a release archive and a readme
+zmediamake\tmakeclip\t2\tpublic\t0\t60\t100\ta clip beside a makefile
+zmediasrc\tsrcclip\t2\tpublic\t0\t60\t100\ta clip beside a script
+zmediaratio\tbigclip\t2\tpublic\t0\t60\t100\ta big clip and a readme
+zmediaratio3\tbigclipdoc\t2\tpublic\t0\t60\t100\ta big clip and a licence
+zmediaratio4\tbigclipdocs\t2\tpublic\t0\t60\t100\ta big clip and two readmes
+zmediaratio7\tbigclipnotes\t2\tpublic\t0\t60\t100\ta big clip and a long readme
+zmediahtm\tbigclippage\t2\tpublic\t0\t60\t100\ta big clip and a readme page
+zmediapkg2\treleasebin\t2\tpublic\t0\t60\t100\ta big clip, a renamed release and a readme
+zmediacobr\tclipissues\t2\tpublic\t0\t60\t100\ta readme, and a big clip in its issues
 zmediabrk\tbracketname\t2\tpublic\t0\t60\t100\ta clip beside an odd filename
 zmediaop\topfile\t2\tpublic\t0\t60\t100\ta clip beside a cob-shaped filename
 zmediaman\tmanifile\t2\tpublic\t0\t60\t100\ta clip beside a cob manifest
@@ -135,7 +155,7 @@ build_batches(){
   printf '%b' "$rows"
 }
 MANIFEST_ROWS="$MANIFEST_ROWS"$'\n'"$(build_batches)"
-NREPOS=111
+NREPOS=131
 
 # Rule E fixture helpers. Each writes one file holding the given lines, commits it 80 days
 # back, pushes it to $rid, and puts the directory mtime back where the manifest loop left it so
@@ -166,7 +186,7 @@ COB_NID=z6Mkei8KLNDCqpfdk9KbvUNQJ4YrTep1EWMJqjTsKWw1pR4X
 # filter, so the rid's own characters are mapped into the alphabet and the rest is padding.
 dlg(){
   case $1 in
-    zmediacob|zmediapast|zmediamirr|zmediacobm|zmediapeer) printf '%s' "$COB_NID"; return ;;
+    zmediacob|zmediapast|zmediamirr|zmediacobm|zmediapeer|zmediacobr) printf '%s' "$COB_NID"; return ;;
   esac
   local n="zDLG$1"
   printf '%s' "$n"
@@ -237,6 +257,22 @@ e_tree(){
             head -c "$((bytes-12))" /dev/zero >> "$w/$name" ;;
       zip)  printf 'PK\3\4' > "$w/$name"
             head -c "$((bytes-4))" /dev/urandom >> "$w/$name" ;;
+      zip0) printf 'PK\3\4' > "$w/$name"
+            head -c "$((bytes-4))" /dev/zero >> "$w/$name" ;;
+      # gzip output a little bigger than "bytes": text in one, a video in the other.
+      gztext) head -c "$bytes" /dev/urandom | base64 | gzip -c > "$w/$name" ;;
+      gzmp4)  { printf '\0\0\0\40ftypisom'; head -c "$((bytes-12))" /dev/urandom; } \
+                | gzip -c > "$w/$name" ;;
+      # A tar's first 512 bytes are a header: a file name, then NUL padding.
+      gztar)  { printf 'clip.mp4'; head -c 504 /dev/zero
+                head -c "$((bytes-512))" /dev/urandom; } | gzip -c > "$w/$name" ;;
+      # Text full of NUL bytes, opening with the byte-order mark that says what it is.
+      gzu16)  head -c "$bytes" /dev/urandom | base64 | iconv -f ascii -t UTF-16LE \
+                | { printf '\377\376'; cat; } | gzip -c > "$w/$name" ;;
+      gzu16be) head -c "$bytes" /dev/urandom | base64 | iconv -f ascii -t UTF-16BE \
+                | { printf '\376\377'; cat; } | gzip -c > "$w/$name" ;;
+      gzu32)  head -c "$bytes" /dev/urandom | base64 | iconv -f ascii -t UTF-32BE \
+                | { printf '\0\0\376\377'; cat; } | gzip -c > "$w/$name" ;;
       *)    head -c "$bytes" /dev/urandom > "$w/$name" ;;
     esac
   done
@@ -534,9 +570,40 @@ _build_fixture(){
   e_tree zbatch1     60 master "clip.mp4:40000:same" "README.md:4096"
   e_tree zbatch2     60 master "clip.mp4:40000:same" "README.md:4096"
   e_tree zbatch3     60 master "clip.mp4:40000:same" "README.md:4096"
-  e_tree zbatch4     60 master "clip.mp4:40000:same" "README.md:4096"
-  e_tree zbatch5     60 master "clip.mp4:40000:same" "README.md:4096"
+  e_tree zbatch4     60 master "clip.mp4:40000:same" "README.md:4096" "run.sh:40"
+  e_tree zbatch5     60 master "clip.mp4:40000:same" "README.md:4096" "Makefile:10"
   e_tree zbatchodd   60 master "clip.mp4:40000:mp4"  "README.md:4096"
+  # The same clip again, in a repo whose README clears every budget. It sorts before the
+  # README, so a listing that stops once the text is too big has already seen it: it must still
+  # not count as one more holder.
+  e_tree zbatchbig   60 master "Aclip.mp4:40000:same" "README.md:70000"
+  # Shapes a real seed's false positives took. Each differs from zmediaone in ONE thing.
+  e_tree zmediagz    60 master "rows.csv.gz:40000:gztext"       # data, compressed    -> kept
+  e_tree zmediagzv   60 master "rows.csv.gz:40000:gzmp4"        # a video, compressed -> pruned
+  e_tree zmediahost  60 master "logo.png:40000"                 # a hostname for name -> kept
+  e_tree zmediahostbig 60 master "clip.mp4:1100000:same"        # more than a logo    -> pruned
+  e_tree zmediapng   60 master "logo.png:40000"                 # named like a file   -> pruned
+  e_tree zmediagzt   60 master "notes.txt.gz:40000:gztar"       # a tar, compressed   -> pruned
+  e_tree zmediagzu   60 master "notes.txt.gz:40000:gzu16"       # UTF-16, compressed  -> kept
+  e_tree zmediagzw   60 master "notes.txt.gz:40000:gzu32"       # UTF-32, compressed  -> kept
+  e_tree zmediagzb   60 master "notes.txt.gz:40000:gzu16be"     # UTF-16BE, compressed -> kept
+  # The Makefile is empty, so it holds the very same blob as Blank.png, which git lists first.
+  e_tree zmediamake  60 master "Blank.png:0" "clip.mp4:40000" "Makefile:0"    # -> kept
+  # A name with a non-ASCII byte, which git quotes unless told not to.
+  e_tree zmediasrc   60 master "clip.mp4:40000" "café/main.py:50"   # a source file    -> kept
+  # The ratio path: a README too big for the dump budget, but tiny beside the clip. A clip of
+  # zeros keeps the fixture small on disk, and its size is its own, so no other repo holds it.
+  e_tree zmediaratio  60 master "clip.mp4:6400001:same" "README.md:3000"            # -> pruned
+  e_tree zmediaratio  60 refs/heads/dev "README.md:3100"            # the same README, edited
+  e_tree zmediaratio3 60 master "clip.mp4:6400003:same" "LICENSE:3000"              # -> kept
+  e_tree zmediaratio4 60 master "clip.mp4:6400013:same" "README.md:1500" "docs/README.md:1500"
+  e_tree zmediaratio7 60 master "clip.mp4:6400007:same" "README.md:7000"            # -> kept
+  e_tree zmediahtm    60 master "clip.mp4:6400019:same" "README.html:3000"          # -> kept
+  e_tree zmediapkg    60 master "clip.mp4:6400005:same" "rel.zip:70000:zip0" "README.md:3000"
+  e_tree zmediapkg2   60 master "clip.mp4:6400017:same" "rel.bin:70000:zip0" "README.md:3000"
+  e_tree zmediacobr   60 master "README.md:3000"
+  e_tree zmediacobr   60 "refs/namespaces/$(dlg zmediacobr)/refs/cobs/xyz.radicle.issue/aaa" \
+                        "clip.mp4:6400015:same"
   # Two shapes that a real seed produced and the fixture did not. A file whose name is a lone
   # "[" is not a valid regex, so a classifier matching names by regex dies on it. A README
   # between the two text budgets is only looked past when the guard uses the wider one.
@@ -1079,6 +1146,54 @@ grep -qE "^zmediazip .*media-dump" <<<"$plan" \
 grep -qE "^zmediapast .*media-dump" <<<"$plan" \
   && ok "an attachment from an earlier comment counts, not just the newest one" \
   || no "rule F walks COB history"
+! has "$plan" "zmediagz" \
+  && ok "compressed data is judged by what it unpacks to: text" \
+  || no "a .csv.gz of text counted as media"
+grep -qE "^zmediagzv .*media-dump" <<<"$plan" \
+  && ok "a video compressed and named like data is still a video" \
+  || no "a .csv.gz name hid the video inside it"
+! has "$plan" "zmediahost" \
+  && ok "a seed's logo under its hostname is not a dump" \
+  || no "a hostname-named repo holding a logo was judged a dump"
+grep -qE "^zmediahostbig .*media-dump" <<<"$plan" \
+  && ok "a hostname spares no more media than a logo needs" \
+  || no "a hostname-named repo spared a clip over MEDIA_HOST_MAX_BYTES"
+grep -qE "^zmediapng .*media-dump" <<<"$plan" \
+  && ok "a name ending in a media extension is not a hostname" \
+  || no "a repo named wallpapers.png passed as a seed's logo"
+grep -qE "^zmediagzt .*media-dump" <<<"$plan" \
+  && ok "a tar compressed and named like text counts as media" \
+  || no "a .txt.gz holding binary data passed as text"
+{ ! has "$plan" "zmediagzu" && ! has "$plan" "zmediagzw" && ! has "$plan" "zmediagzb"; } \
+  && ok "UTF-16 and UTF-32 text with a byte-order mark counts as text" \
+  || no "compressed UTF-16 or UTF-32 notes were judged media"
+{ ! has "$plan" "zmediamake" && ! has "$plan" "zmediasrc"; } \
+  && ok "a build file or a source file spares a repo from the dump path" \
+  || no "a build or source file did not spare a clip"
+grep -qE "^zmediaratio .*media-ratio" <<<"$plan" \
+  && ok "a README tiny beside a big clip does not spare it, on any branch (media-ratio)" \
+  || no "the ratio path missed a big clip behind a short README"
+! has "$plan" "zmediaratio3" \
+  && ok "a licence in place of the README spares that clip" \
+  || no "the ratio path ignored a file that is not a README"
+! has "$plan" "zmediaratio4" \
+  && ok "two READMEs beside that clip spare it" \
+  || no "the ratio path ignored MEDIA_RATIO_MAX_FILES"
+! has "$plan" "zmediaratio7" \
+  && ok "a README over 0.1% of that clip spares it" \
+  || no "the ratio path ignored MEDIA_RATIO_TEXT_PER_MILLE"
+! has "$plan" "zmediahtm" \
+  && ok "a page named README beside that clip is not a README, and spares it" \
+  || no "a README.html with its pictures was judged a dump"
+! has "$plan" "zmediacobr" \
+  && ok "the ratio path weighs only the media at the tips, not the issues' attachments" \
+  || no "a README beside a clip attached to an issue was judged a dump"
+{ ! has "$plan" "zmediapkg" && ! has "$plan" "zmediapkg2"; } \
+  && ok "a release archive beside that clip spares it, by name or by content" \
+  || no "a release zip and a short README were judged a dump"
+! has "$(MEDIA_RATIO_MIN_BYTES=6400002 run)" "zmediaratio" \
+  && ok "MEDIA_RATIO_MIN_BYTES sets how much media the ratio path needs" \
+  || no "the ratio path ignored MEDIA_RATIO_MIN_BYTES"
 
 # Three shapes a real 11k-repo seed threw at rule F. Each of these used to leave the repo with
 # no usable totals, so each one is spared when it should be pruned.
@@ -1162,10 +1277,14 @@ build_fixture; assert_isolated
 plan=$(run)
 
 # The batch path. A README clears the single-repo budget, so these five can only be reached by
-# what no one repo can fake: other repos holding the very same file.
-[ "$(grep -cE "^zbatch[1245] .*media-batch" <<<"$plan" || true)" = 4 ] \
+# what no one repo can fake: other repos holding the very same file. zbatch4 also holds a
+# script, which spares no repo from this path; zbatch5 holds a Makefile, which does.
+[ "$(grep -cE "^zbatch[124] .*media-batch" <<<"$plan" || true)" = 3 ] \
   && ok "repos reposting one clip behind a README are pruned (media-batch)" \
   || no "the batch path prunes a reposted dump"
+! has "$plan" "zbatch5" \
+  && ok "a build file spares a repo from the batch path" \
+  || no "a build file did not spare a reposted clip"
 ! has "$plan" "zbatch3" \
   && ok "the repo that published the clip first is not in its own batch" \
   || no "the batch path spares the first holder"
@@ -1174,7 +1293,7 @@ plan=$(run)
   || no "the batch path is about the sharing, not the README"
 plan_fk=$(MEDIA_MIN_BATCH=6 run)
 [ "$(grep -cE "^zbatch[1-5] " <<<"$plan_fk" || true)" = 0 ] \
-  && ok "MEDIA_MIN_BATCH=6 spares all five, so the prunes above came from the batch" \
+  && ok "MEDIA_MIN_BATCH=6 spares all five, and a repo with too much text is no holder" \
   || no "MEDIA_MIN_BATCH is vacuous"
 plan_fc=$(MEDIA_TEXT_CEIL_BYTES=100 run)
 [ "$(grep -cE "^zbatch[1-5] " <<<"$plan_fc" || true)" = 0 ] \
@@ -2306,11 +2425,11 @@ out=$(RATCHET_RUNS=3 RATCHET_FACTOR=1 RATCHET_FLOOR=0 "${NOTTY[@]}" "$SCRIPT" --
   && ok "a rules list written with separators still counts every rule it names" \
   || no "a separated rules list dropped samples for the rules after its first (rc=$rc)"
 
-# The caps are measured on what the ratchet leaves: the 36-repo plan is over a cap of 33, the
-# 32 left once rule C's 4 are held are not, so the rest still goes ahead.
+# The caps are measured on what the ratchet leaves: the 40-repo plan is over a cap of 37, the
+# 36 left once rule C's 4 are held are not, so the rest still goes ahead.
 build_fixture; assert_isolated
 for i in 1 2 3 4; do past_run "$i" $USUAL_BUT_C; done
-out=$(MAX_PRUNE_COUNT=33 RATCHET_FLOOR=0 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
+out=$(MAX_PRUNE_COUNT=37 RATCHET_FLOOR=0 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
 { [ "$rc" = 4 ] && [ -e "$STORAGE/ztwoyr3" ] && [ ! -e "$STORAGE/zjunk1" ]; } \
   && ok "a held wave does not trip the caps for the rest of the plan" \
   || no "the caps counted repos the ratchet had already held back (rc=$rc)"

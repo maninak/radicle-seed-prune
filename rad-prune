@@ -23,9 +23,9 @@
 #   (rad unseed <rid>, then rad seed <rid>) AS LONG AS other nodes still hold it. Both
 #   commands: rad seed on its own rewrites only an existing policy row's scope, so on a
 #   blocked repo it prints success and leaves the block standing. That re-fetch is why the
-#   size/age rules keep a minimum other-seed count. Three verdicts (junk-id, spam-batch,
-#   link-farm) ship with a floor of 0 and may prune the last copy the network is known to
-#   hold, which is what the quarantine is for. Every prune is recorded in an audit log.
+#   size/age rules keep a minimum other-seed count. Rule A's junk-id and the verdicts of
+#   rules D, E and F ship with a floor of 0 and may prune the last copy the network is known
+#   to hold, which is what the quarantine is for. Every prune is recorded in an audit log.
 #
 # SELECTION  (a repo is pruned if it is denied, see below, or if it is NOT excluded AND matches
 # a rule; rule G is about peers instead, and prunes nothing)
@@ -71,7 +71,7 @@
 #   "Other-seeds" is how many OTHER nodes our routing table says announce the repo. It
 #   is NOT proof a copy exists elsewhere (gossip is incomplete, and the author almost
 #   certainly still has theirs), so a floor of 0 is licence to prune the last copy WE
-#   KNOW OF. junk-id, spam-batch, link-farm, media-dump and media-batch get it, on
+#   KNOW OF. junk-id, spam-batch, link-farm and the three media verdicts get it, on
 #   the reasoning that for machine-generated bulk, for a repo whose whole purpose is
 #   to advertise a link, and for a pile of media with no project around it, "nobody
 #   else seeds it" measures worthlessness rather than rarity. Rules B and C keep a
@@ -151,15 +151,23 @@
 #
 #   Rule F - media dumps, decided by the repo's OWN content:
 #       >= MEDIA_MIN_BYTES of media files on the refs this repo's own delegates control
-#       AND everything that is NOT media adds up to < MEDIA_TEXT_MAX_BYTES
+#       AND everything that is NOT media adds up to < MEDIA_TEXT_MAX_BYTES,
+#           OR (the ratio path, verdict media-ratio) to < MEDIA_RATIO_TEXT_PER_MILLE/1000 of
+#           the images, video and audio at the tips of its branches and tags, which come to
+#           >= MEDIA_RATIO_MIN_BYTES, while the repo holds no archive and the tips hold
+#           nothing besides the media but <= MEDIA_RATIO_MAX_FILES READMEs
+#       AND no source file and no build file (MEDIA_SOURCE_EXTS, MEDIA_BUILD_NAMES)
 #       AND the repo is older than MEDIA_STALE_DAYS
 #       AND other-seeds >= MEDIA_MIN_SEEDS  (default 0: may prune the last copy we know of)
+#     A repo whose name starts like a hostname, holding < MEDIA_HOST_MAX_BYTES of media, is a
+#     seed's logo and is spared by every path, unless that hostname ends in a media extension.
 #
 #   Rule F, batch path - the same dump published again and again, decided by the CORPUS:
 #       >= MEDIA_MIN_BYTES of media, of which >= MEDIA_MIN_BYTES sits in blobs that
-#         MEDIA_MIN_BATCH or more repos in storage also hold, and that this repo was not
-#         the first to hold
+#         MEDIA_MIN_BATCH or more repos also hold, each with < MEDIA_TEXT_CEIL_BYTES of
+#         anything else, and that this repo was not the first to hold
 #       AND everything that is NOT media adds up to < MEDIA_TEXT_CEIL_BYTES
+#       AND no build file; a source file does not spare it
 #       AND the same age and seed checks
 #
 #   Rule G - parasite peers. Judges a PEER and prunes nothing. Blocking one takes --block-peers
@@ -172,11 +180,18 @@
 #   THE TEXT BUDGET is what tells a dump from a real repo that happens to carry media: a game
 #   or a documented photo archive has a README, a licence or a build file and clears
 #   MEDIA_TEXT_MAX_BYTES many times over. Bytes rather than file count, or one 40-byte
-#   placeholder would buy an exemption.
+#   placeholder would buy an exemption. A source or build file spares a repo from the dump and
+#   ratio paths whatever its size, as a 2 KB README spares it from the dump path; all three
+#   are exemptions anyone can buy. On the batch path, where a README under
+#   MEDIA_TEXT_CEIL_BYTES no longer spares, a build file still does: a small project forked a
+#   few times shares its assets, and pruning it costs more than missing a campaign that learns
+#   to add an empty Makefile. A source file does not spare there, because leak campaigns have
+#   shipped scripts beside their media.
 #
 #   WHAT A FILE IS, NOT WHAT IT IS CALLED. Extensions are only a fast path. A file on neither
 #   list is read - its first 16 bytes - and matched against media signatures, so renaming a
-#   video to .dat does not hide it; a file matching nothing counts as text, so an unfamiliar
+#   video to .dat does not hide it, and compressed data (a .csv.gz) is judged by what it
+#   unpacks to; a file matching nothing counts as text, so an unfamiliar
 #   one spares the repo rather than condemning it. A recognised TEXT file over
 #   MEDIA_SNIFF_TEXT_BYTES is read too, or a video called README.md would both hide itself and
 #   blow the very budget that spares the repo.
@@ -203,13 +218,15 @@
 #   more text than any verdict allows, which on a mirror of a real project is the first few
 #   files out of a million.
 #
-#   A TOKEN README defeats the budget, and nothing measurable about ONE repo tells it from the
-#   README of a small real project: they are the same bytes, and a ratio does not separate them
-#   either. That is what the batch path is for. Publishing the same files across many repos is
-#   evidence no single repo can manufacture, so where it exists the budget widens to
-#   MEDIA_TEXT_CEIL_BYTES and the fig leaf stops working. The FIRST holder is left out of its
-#   own batch, or reposting somebody's photos into five repos of your own would put their repo
-#   in the plan instead of yours. README "Rule F: media dumps" has the known limit this leaves.
+#   A TOKEN README defeats the budget, and below a few MB of media nothing measurable about ONE
+#   repo tells it from the README of a small real project: they are the same bytes. Above that,
+#   the ratio path catches a README and nothing else beside a great deal of media; a project
+#   carries a licence, a script or a second document. For the rest there is the batch path.
+#   Publishing the same files across many repos is evidence no single repo can manufacture, so
+#   where it exists the budget widens to MEDIA_TEXT_CEIL_BYTES and the fig leaf stops working.
+#   The FIRST holder is left out of its own batch, or reposting somebody's photos into five
+#   repos of your own would put their repo in the plan instead of yours. README "Rule F: media
+#   dumps" has the known limit this leaves.
 #
 #   A DUMP NO OTHER NODE SEEDS is pruned like any other: the evidence is what the repo holds,
 #   and a dump nobody else seeds is still a dump. MEDIA_MIN_SEEDS=1 keeps that copy, and rule F
@@ -451,6 +468,39 @@ MEDIA_SNIFF_MAX_FILES=200                        # most files read in any one re
 # that a repo half the network replicates is not a dump. Four repos there are over this cap,
 # and the next one down has 2942 refs, so it sits in a wide gap rather than near real repos.
 MEDIA_MAX_REFS="${MEDIA_MAX_REFS:-10000}"
+# The archives among MEDIA_EXTS. The ratio path leaves them out of the media it weighs, and
+# spares a repo holding one: a release tarball or a mirrored binary sits beside a short README
+# too.
+MEDIA_ARCHIVE_EXTS='zip|rar|7z|tar|gz|tgz|bz2|xz|zst'
+# A source file or a build file says somebody meant to build something, and spares a repo from
+# the dump and ratio paths. Only a build file spares it from the batch path: one leak campaign
+# shipped a shell script beside its media. Matched by name, at the tips of branches and tags.
+MEDIA_SOURCE_EXTS="\
+sh|bash|zsh|fish|ps1|bat|py|rb|pl|lua|php|go|rs|c|h|cc|cpp|hpp|cs|java|kt|kts|scala|swift|\
+m|mm|clj|ex|exs|erl|hs|ml|nim|zig|dart|r|jl|js|mjs|cjs|jsx|ts|tsx|vue|svelte"
+MEDIA_BUILD_NAMES="\
+makefile|cmakelists.txt|cargo.toml|package.json|pyproject.toml|setup.py|go.mod|\
+build.gradle|build.gradle.kts|settings.gradle|settings.gradle.kts|gradlew|pom.xml|\
+meson.build|flake.nix|default.nix|justfile|dockerfile|deps.edn|project.clj|mix.exs|gemfile|\
+composer.json|build.zig|build.sbt|gnumakefile|rakefile|build.xml|build.bazel|module.bazel|\
+project.godot"
+# A seed's branding repo is named after the seed's hostname and holds its logo or avatar. A
+# name shaped like a hostname spares a repo holding less media than MEDIA_HOST_MAX_BYTES. The
+# largest logo on an 11k-repo seed was 366 KB, while dumps there went down to 450 KB, so the
+# cap keeps what a made-up hostname can shield small. Matched in lower case; the second group
+# is the last label, the top-level domain.
+MEDIA_HOST_NAME_RE='^([a-z0-9-]+\.)+([a-z]{2,})([^a-z0-9.]|$)'
+MEDIA_HOST_MAX_BYTES=1048576
+# The ratio path: a repo that is almost all images, video and audio is a dump even when a short
+# README puts it over MEDIA_TEXT_MAX_BYTES. On an 11k-repo seed the dumps it is there for held
+# 8 to 178 MB of media, with text at most 0.05% of that. A share of 1% reached a real project,
+# and the nearest one under the floor held 4.8 MB of slides. Text is only added up as far as
+# MEDIA_TEXT_CEIL_BYTES, so past about 64 MiB of media that budget is the limit, not the share.
+# Each of those dumps held one file besides its media, a README. A README and a licence, or a
+# page with its pictures, is something somebody published.
+MEDIA_RATIO_MIN_BYTES="${MEDIA_RATIO_MIN_BYTES:-6291456}"   # images, video, audio; no archives
+MEDIA_RATIO_TEXT_PER_MILLE=1       # everything else under this share of them, in 1/1000ths
+MEDIA_RATIO_MAX_FILES=1            # READMEs at the tips of branches and tags; nothing else
 
 # --- rule G: parasite peers ---
 # Rule G judges a PEER, not a repo, and blocking a peer is a heavier act than deleting one
@@ -741,6 +791,15 @@ is_media() {
     3026b275*)                     return 0 ;;   # asf, wmv
     49492a00*|4d4d002a*)           return 0 ;;   # tiff, either byte order
     38425053*)                     return 0 ;;   # psd
+  esac
+  is_archive "$1"
+}
+
+# Whether those first 16 bytes start an archive. An archive counts as media, but a shipped
+# binary or a mirror of a release is one too, so the path that judges a repo by its share of
+# media counts only images, video and audio.
+is_archive() {
+  case "$1" in
     504b0304*)                     return 0 ;;   # zip, and the formats built on it
     1f8b*)                         return 0 ;;   # gzip
     526172211a07*)                 return 0 ;;   # rar
@@ -841,7 +900,7 @@ if [ "$CMD" != quarantine ]; then
   need="$need uniq wc xargs"
 fi
 if [ "$QVERB" = files ]; then need="$need awk git od"; fi
-if [ "$CMD" != quarantine ] && rule_on F; then need="$need base64 openssl"; fi
+if [ "$CMD" != quarantine ] && rule_on F; then need="$need base64 gzip openssl"; fi
 missing=
 for c in $need; do
   command -v "$c" >/dev/null 2>&1 || missing="$missing $c"
@@ -1084,10 +1143,11 @@ if [ "$CMD" = quarantine ]; then
   exit 0
 fi
 
-# A brake that is not a whole number stops the run. Read as a number, a typo turns every test
-# against it false, which lets everything through without a word, and a leading zero reads as
-# octal. Checked here, after the quarantine verbs, which use none of them.
-for knob in MAX_PRUNE_COUNT RATCHET_FACTOR RATCHET_RUNS RATCHET_FLOOR; do
+# A brake, or the ratio path's floor, that is not a whole number stops the run. Read as a
+# number, a typo turns every test against it false, which lets everything through without a
+# word, and a leading zero reads as octal. Checked here, after the quarantine verbs, which use
+# none of them.
+for knob in MAX_PRUNE_COUNT RATCHET_FACTOR RATCHET_RUNS RATCHET_FLOOR MEDIA_RATIO_MIN_BYTES; do
   case "${!knob}" in
     0) ;;
     ''|0*|*[!0-9]*) echo "# $knob must be a whole number, not '${!knob}'." >&2; exit 2 ;;
@@ -1173,9 +1233,13 @@ rule_on E     || rule_e="$rule_e [DISABLED: not in RULES]"
 echo "# rule $rule_e"
 
 rule_f="F media-dump(>=$((MEDIA_MIN_BYTES/1024))KB of media and"
-rule_f="$rule_f <${MEDIA_TEXT_MAX_BYTES}B of anything else, >${MEDIA_STALE_DAYS}d,"
-rule_f="$rule_f seeds>=${MEDIA_MIN_SEEDS})"
-rule_f="$rule_f  media-batch(that media held by >=${MEDIA_MIN_BATCH} repos,"
+rule_f="$rule_f <${MEDIA_TEXT_MAX_BYTES}B of anything else, no source or build file,"
+rule_f="$rule_f >${MEDIA_STALE_DAYS}d, seeds>=${MEDIA_MIN_SEEDS})"
+rule_f="$rule_f  media-ratio(>=$((MEDIA_RATIO_MIN_BYTES/1024))KB of images+video+audio"
+rule_f="$rule_f at the tips, anything else <${MEDIA_RATIO_TEXT_PER_MILLE}/1000 of that,"
+rule_f="$rule_f no archive, nothing else at the tips but <=${MEDIA_RATIO_MAX_FILES} README)"
+rule_f="$rule_f  media-batch(>=$((MEDIA_MIN_BYTES/1024))KB of media"
+rule_f="$rule_f held by >=${MEDIA_MIN_BATCH} repos,"
 rule_f="$rule_f <${MEDIA_TEXT_CEIL_BYTES}B of anything else)"
 rule_on F      || rule_f="$rule_f [DISABLED: not in RULES]"
 echo "# rule $rule_f"
@@ -1806,7 +1870,7 @@ if rule_on F; then
   echo "# measuring repo trees for rule F ($JOBS workers)..." >&2
   cat > "$tmp/media.sh" <<MEDIA
 #!/usr/bin/env bash
-$(declare -f read_delegates is_media unhex did_key_hex delegate_ops)
+$(declare -f read_delegates is_media is_archive unhex did_key_hex delegate_ops)
 media_exts='$MEDIA_EXTS'
 text_exts='$MEDIA_TEXT_EXTS'
 text_names='$MEDIA_TEXT_NAMES'
@@ -1816,6 +1880,10 @@ text_ceil=$(( MEDIA_TEXT_MAX_BYTES > MEDIA_TEXT_CEIL_BYTES ? MEDIA_TEXT_MAX_BYTE
 sniff_big=$MEDIA_SNIFF_TEXT_BYTES
 sniff_max=$MEDIA_SNIFF_MAX_FILES
 max_refs=$MEDIA_MAX_REFS
+archive_exts='$MEDIA_ARCHIVE_EXTS'
+source_exts='$MEDIA_SOURCE_EXTS'
+build_names='$MEDIA_BUILD_NAMES'
+media_min=$MEDIA_MIN_BYTES
 # One file per worker, so parallel writers appending blob ids cannot interleave a line.
 blobs=$tmp/blobs/\$\$
 # Where delegate_ops writes the keys and signatures it hands to openssl.
@@ -1851,16 +1919,16 @@ files_in() {
   case $lister in 0|141) ;; *) echo torn; return ;; esac
   case $reader in 0|141) ;; *) echo torn ;; esac
 }
-# The totals for the given trees of repo $d, as "= <media> <text> <unknown>" on the last line,
-# after a line per file still to be looked at ("? <oid> <size>") and per media file ("m <oid>
-# <size>").
+# The totals for the given trees of repo $d, as "= <media> <text> <unknown> <av>" on the last
+# line, after a line per file still to be looked at ("? <oid> <size>", or "z" for compressed
+# data) and per media file ("m <oid> <size>"). av is the media that is not an archive.
 # Sorts files into three: known media, known text, and everything else, which gets looked at.
 # A recognised text file bigger than sniff_big is looked at too, or naming a video README.md
 # would both hide it and blow the text budget that spares the repo.
 measure() {
   files_in "$d" "$@" \
     | awk -v m="$media_exts" -v t="$text_exts" -v tn="$text_names" -v big="$sniff_big" \
-          -v ceil="$text_ceil" '
+          -v ceil="$text_ceil" -v arc="$archive_exts" '
         # index, not a regex: a file literally called "[" would not compile as one.
         function known(list, key) { return index("|" list "|", "|" key "|") > 0 }
         $1 == "torn" { torn = 1; next }
@@ -1874,8 +1942,16 @@ measure() {
           base = $0; sub(/^[^ ]+ [^ ]+ /, "", base)
           sub(/^.*\//, "", base); base = tolower(base)
           ext = ""; if (match(base, /\.[a-z0-9]+$/)) ext = substr(base, RSTART + 1)
-          if (ext != "" && known(m, ext))
-            { media += size; printf "m %s %.0f\n", oid, size; next }
+          # Data shipped compressed, a .csv.gz or a .json.gz, is read before it is judged: by
+          # its .gz alone a gzipped CSV would count as media, and by the name inside it a
+          # gzipped video called clip.csv.gz would pass as text.
+          if (ext == "gz" && match(base, /\.[a-z0-9]+\.gz$/) &&
+              known(t, substr(base, RSTART + 1, RLENGTH - 4)))
+            { printf "z %s %.0f\n", oid, size; unk += size; next }
+          if (ext != "" && known(m, ext) && size > 0) {
+            media += size; if (!known(arc, ext)) av += size
+            printf "m %s %.0f\n", oid, size; next
+          }
           # A COB op names its payload 0, 1, 2 and so on; those are JSON, there are millions
           # of them on a seed, and reading each one is most of what this rule costs. Anything
           # over sniff_big is still read, whatever it is called.
@@ -1891,7 +1967,7 @@ measure() {
           printf "? %s %.0f\n", oid, size; unk += size
         }
         END { if (torn) exit 1
-              printf "= %.0f %.0f %.0f\n", media, text, unk }'
+              printf "= %.0f %.0f %.0f %.0f\n", media, text, unk, av }'
 }
 for d; do
   rid=${d##*/}
@@ -1915,10 +1991,12 @@ for d; do
   # what it holds now and not its whole history. An issue or patch ref goes to delegate_ops,
   # which hands back the trees of the ops a delegate signed: for a COB the history is the
   # content, but that history also reaches what everybody else wrote.
-  ours=""; cobs=()
+  # $tips is the branches and tags among them, without Radicle's own refs/rad/ metadata: the
+  # files a person would call the project's.
+  ours=""; tips=""; cobs=()
   for ref in "${refs[@]}"; do
     case $ref in
-      refs/heads/*|refs/tags/*) ours="$ours $ref^{tree}"; continue ;;
+      refs/heads/*|refs/tags/*) ours="$ours $ref^{tree}"; tips="$tips $ref^{tree}"; continue ;;
       refs/cobs/*)              cobs+=("$ref"); continue ;;
       refs/namespaces/*)
         nid=${ref#refs/namespaces/}; nid=${nid%%/*}
@@ -1926,13 +2004,16 @@ for d; do
       *) continue ;;
     esac
     case $ref in
-      */refs/cobs/*) cobs+=("$ref") ;;
-      *)             ours="$ours $ref^{tree}" ;;
+      */refs/cobs/*)                cobs+=("$ref") ;;
+      */refs/heads/*|*/refs/tags/*) ours="$ours $ref^{tree}"; tips="$tips $ref^{tree}" ;;
+      *)                            ours="$ours $ref^{tree}" ;;
     esac
   done
-  [ -n "${ours// /}" ] || [ "${#cobs[@]}" -gt 0 ] || { printf '%s\t0\t0\n' "$rid"; continue; }
+  if [ -z "${ours// /}" ] && [ "${#cobs[@]}" = 0 ]; then
+    printf '%s\t0\t0\t0\t-\t-\t-\t0\t0\n' "$rid"; continue
+  fi
   sums=$(measure $ours)
-  read -r tag media text unk <<<"${sums##*$'\n'}"
+  read -r tag media text unk av <<<"${sums##*$'\n'}"
   # The issues and patches come second, and only while the branches leave room for a verdict:
   # past text_ceil nothing they hold can change it, and checking each op's signature is most
   # of what a repo with thousands of ops costs.
@@ -1940,37 +2021,113 @@ for d; do
     ops=$(delegate_ops "$d" "$work" "${cobs[@]}")
     case $'\n'$ops$'\n' in (*$'\n'torn$'\n'*) echo "$rid" >&4; continue ;; esac
     sums=$(measure $ours $ops)
-    read -r tag media text unk <<<"${sums##*$'\n'}"
+    read -r tag media text unk av <<<"${sums##*$'\n'}"
   fi
   # measure prints "=" last, so anything else there means it died part-way and the totals are
   # a fragment. A fragment is not evidence: report the repo, and leave it out of the batch
   # corpus below as well as out of its own verdict.
   [ "$tag" = "=" ] || { echo "$rid" >&4; continue; }
-  awk -v rid="$rid" '$1=="m" { printf "%s\t%s\t%s\n", $2, rid, $3 }' <<<"$sums" >> "$blobs"
+  # The media this repo holds, as the rows the batch corpus below is built from.
+  held=$(awk -v rid="$rid" '$1=="m" { printf "%s\t%s\t%s\n", $2, rid, $3 }' <<<"$sums")
   # Reading only pays off while the repo could still be a dump: once the text it already has
   # clears the widest budget any path allows, nothing an unread file turns out to be can
   # change the verdict.
   if [ "$text" -lt "$text_ceil" ]; then
     n=0
-    while read -r _ oid size; do
+    while read -r kind oid size; do
       n=$((n+1))
       # Past the cap a file counts as text, sparing the repo: one too big to read through must
       # not be deleted on the strength of the part we did read.
       if [ "$n" -gt "$sniff_max" ]; then text=$((text+size)); continue; fi
-      # od closes the pipe after 16 bytes and git dies of SIGPIPE, so a 500MB video costs one
-      # pipe buffer rather than 500MB. Stripping the spaces in bash saves a fork per file.
-      hex=$(GIT_DIR="$d" git cat-file blob "$oid" 2>/dev/null | od -An -tx1 -N16 -v)
-      hex=${hex//[$' \n']/}
+      # od closes the pipe after 16 bytes and git dies of SIGPIPE, so a 500MB video costs a few
+      # pipe buffers rather than 500MB. Stripping the spaces in bash saves a fork per file.
+      hex=""; unpacked=""
+      if [ "$kind" = z ]; then
+        # A compressed file is judged by what it unpacks to. Only its first 64 KiB is unpacked,
+        # because a few KiB of gzip can unpack to gigabytes, and only 512 unpacked bytes are
+        # kept: enough to see a media signature, or the NUL bytes no text file has.
+        unpacked=$(GIT_DIR="$d" git cat-file blob "$oid" 2>/dev/null | head -c 65536 \
+                     | gzip -dc 2>/dev/null | head -c 512 | od -An -tx1 -v)
+        unpacked=${unpacked//[$' \n']/}
+        hex=${unpacked:0:32}
+      fi
+      # A file that does not unpack is judged by its own bytes.
+      if [ -z "$hex" ]; then
+        hex=$(GIT_DIR="$d" git cat-file blob "$oid" 2>/dev/null | od -An -tx1 -N16 -v)
+        hex=${hex//[$' \n']/}
+      fi
       if is_media "$hex"; then
-        media=$((media+size)); printf '%s\t%s\t%s\n' "$oid" "$rid" "$size" >> "$blobs"
+        media=$((media+size))
+        is_archive "$hex" || av=$((av+size))
+        held="$held${held:+$'\n'}$oid"$'\t'"$rid"$'\t'"$size"
+      elif [[ $unpacked =~ ^(..)*00 ]] \
+           && [[ $unpacked != fffe* && $unpacked != feff* && $unpacked != 0000feff* ]]; then
+        # Binary data behind a text name, such as a tar of videos named notes.txt.gz. It counts
+        # as media the way an archive does, so a dump cannot hide behind the name. UTF-16 and
+        # UTF-32 text holds NUL bytes too; one that opens with a byte-order mark says so, and
+        # counts as text.
+        media=$((media+size))
+        held="$held${held:+$'\n'}$oid"$'\t'"$rid"$'\t'"$size"
       else
         text=$((text+size))
       fi
-    done < <(awk '$1=="?"' <<<"$sums")
+    done < <(awk '$1=="?" || $1=="z"' <<<"$sums")
   else
     text=$((text + unk))
   fi
-  printf '%s\t%d\t%d\n' "$rid" "$media" "$text"
+  # A file joins the batch corpus only from a repo whose text leaves room for a batch verdict.
+  # Counting holders the listing happened to reach before stopping would make a stock icon
+  # common or rare depending on how a project's files sort.
+  if [ "$text" -lt "$text_ceil" ] && [ -n "$held" ]; then
+    printf '%s\n' "$held" >> "$blobs"
+  fi
+  # The files at the tips of the branches and tags, by path: whether a source file and a build
+  # file are among them, and, for the ratio path, how many files that are not media there are,
+  # how many of those are READMEs, and how many bytes of media the tips hold. measure cannot
+  # tell: rev-list names a blob once, by the first path it met, so an empty Makefile goes by
+  # the name of whichever empty file came first, and two copies of one README count once.
+  # Listed only where a verdict could still fire, and a listing that fails leaves the repo
+  # unjudged, because a missed name is the direction that condemns. "-" means not listed.
+  src=0; build=0; others=-; readmes=-; tipmedia=-
+  if [ "$text" -lt "$text_ceil" ] && [ "$media" -ge "$media_min" ] && [ -n "${tips// /}" ]
+  then
+    # Delegates mostly hold the same branches, so each distinct tree is listed once. -z,
+    # because ls-tree otherwise quotes a name holding a non-ASCII byte, and "café/main.py"
+    # would end in a quote instead of its extension. The listing streams into awk: a thousand
+    # releases of one big tree list it a thousand times, more than a variable should hold.
+    trees=$(GIT_DIR="$d" git rev-parse $tips 2>/dev/null) || { echo "$rid" >&4; continue; }
+    printf '%s\n' "$held" | cut -f1,3 > "$work/media-oids"
+    # A line is "<mode> <type> <oid>", a tab, and the path; "!" is a tree that did not list.
+    read -r src build others readmes tipmedia < <(
+      for t in $(sort -u <<<"$trees"); do
+        GIT_DIR="$d" git ls-tree -r -z "$t" 2>/dev/null || printf '!\0'
+      done | tr '\0' '\n' | awk -F'\t' -v src="$source_exts" -v bld="$build_names" '
+        function known(list, key) { return index("|" list "|", "|" key "|") > 0 }
+        FILENAME == ARGV[1] { media[$1] = $2; next }
+        $0 == "!" { failed = 1; next }
+        {
+          split($1, head, " "); oid = head[3]; path = substr($0, index($0, "\t") + 1)
+          if (oid in media) {
+            if (!(oid in weighed)) { weighed[oid] = 1; m += media[oid] }
+            next
+          }
+          base = path; sub(/^.*\//, "", base); base = tolower(base)
+          ext = ""; if (match(base, /\.[a-z0-9]+$/)) ext = substr(base, RSTART + 1)
+          if (ext != "" && known(src, ext)) s = 1
+          if (known(bld, base)) b = 1
+          if (path in seen) next
+          seen[path] = 1
+          # A README.html is a page and a README.sh a script, both something somebody built.
+          if (base ~ /^readme(\.(md|markdown|txt|rst|adoc|org))?$/) r++; else o++
+        }
+        END { if (failed) print "-"; else printf "%d %d %d %d %.0f\n", s, b, o, r, m }' \
+        "$work/media-oids" -)
+    case $tipmedia in
+      (''|-) echo "$rid" >&4; continue ;;
+    esac
+  fi
+  printf '%s\t%d\t%d\t%d\t%s\t%s\t%s\t%d\t%d\n' \
+         "$rid" "$media" "$text" "$av" "$others" "$readmes" "$tipmedia" "$src" "$build"
 done
 MEDIA
   cache_hits media
@@ -2022,7 +2179,7 @@ if [ -s "$tmp/deny-oid-list" ]; then
   cat > "$tmp/copy.sh" <<COPY
 #!/usr/bin/env bash
 set -o pipefail
-$(declare -f read_delegates delegate_branches is_media)
+$(declare -f read_delegates delegate_branches is_media is_archive)
 ids='$tmp/deny-oid-list'
 max_refs=$MEDIA_MAX_REFS
 min_bytes=$COPY_MIN_BYTES
@@ -2670,10 +2827,12 @@ fi
 
 # The same file published again and again is evidence no single repo can manufacture. Blobs
 # MEDIA_MIN_BATCH or more repos hold are a campaign, and per repo this adds up the bytes it
-# keeps in them. The EARLIEST holder is left out of its own batch: without that, reposting
-# somebody's photos into five repos of your own would put THEIR repo in the plan. Earliest is
-# by first-seen, the one date a pusher cannot backdate, so on a seed whose ledger starts today
-# the exemption falls to whichever repo sorts first until the ledger has some history.
+# keeps in them. Only repos with too little text to be spared by it are holders (the worker
+# writes no others), so a stock icon that every real project ships does not make a campaign.
+# The EARLIEST holder is left out of its own batch: without that, reposting somebody's photos
+# into five repos of your own would put THEIR repo in the plan. Earliest is by first-seen, the
+# one date a pusher cannot backdate, so on a seed whose ledger starts today the exemption falls
+# to whichever repo sorts first until the ledger has some history.
 # `|| true` because with rule F off no worker ran, so the glob below matches no file and
 # sort exits non-zero on it, which under `pipefail` would end the run.
 { sort -u "$tmp/blobs"/* 2>/dev/null || true; } \
@@ -2692,16 +2851,41 @@ while IFS=$'\t' read -r rid b; do [ -n "$rid" ] && SHARED[$rid]=$b; done < "$tmp
 
 # Rule F decides here rather than in the scan, so the thresholds it uses sit next to every
 # other rule's. A repo whose tree could not be listed never enters the map. MEDIA holds the
-# verdict word, so the plan says which of the two paths reached the repo.
-while IFS=$'\t' read -r rid mb ob; do
+# verdict word, so the plan says which path reached the repo. Per repo the worker gives: media
+# bytes, other bytes, image, video and audio bytes, how many files at the tips are neither
+# media nor a README and how many are READMEs, how many bytes of media they hold ("-" for all
+# three when not listed), and whether it saw a source file and a build file.
+while IFS=$'\t' read -r rid mb ob av others readmes tipmedia src build; do
   [ -n "$rid" ] || continue
   [ "$mb" -ge "$MEDIA_MIN_BYTES" ] || continue
-  # On its own a repo has to carry no project at all. Where other repos hold the very same
-  # files, a token README no longer clears it.
   MEDIABYTES[$rid]=$mb
-  if   [ "$ob" -lt "$MEDIA_TEXT_MAX_BYTES" ]; then
+  name=${NAME[$rid]:-}
+  # A seed's logo, under a name like the seed's hostname. A name ending in a media extension,
+  # such as wallpapers.png, is shaped like a hostname too, but it names a file.
+  if [[ ${name,,} =~ $MEDIA_HOST_NAME_RE ]] && [ "$mb" -lt "$MEDIA_HOST_MAX_BYTES" ]; then
+    case "|$MEDIA_EXTS|" in
+      (*"|${BASH_REMATCH[2]}|"*) ;;
+      (*) continue ;;
+    esac
+  fi
+  # On its own a repo has to carry no project at all: next to no text, or a README and nothing
+  # else beside a great deal of media. Where other repos hold the very same files, a token
+  # README no longer clears it. An archive among the media is a release more often than a
+  # dump, so any archive spares the repo from the ratio path. The ratio weighs only the media
+  # at the tips: a project whose branch holds a README, and whose issues hold its screen
+  # recordings, is a project.
+  archives=$((mb - av))
+  is_ratio=0
+  if [ "$others" = 0 ] && [ "$readmes" -le "$MEDIA_RATIO_MAX_FILES" ] \
+     && [ "$archives" = 0 ] && [ "$tipmedia" -ge "$MEDIA_RATIO_MIN_BYTES" ] \
+     && [ $((ob * 1000)) -lt $((tipmedia * MEDIA_RATIO_TEXT_PER_MILLE)) ]; then
+    is_ratio=1
+  fi
+  if [ "$src" = 0 ] && [ "$build" = 0 ] && [ "$ob" -lt "$MEDIA_TEXT_MAX_BYTES" ]; then
     MEDIA[$rid]=media-dump
-  elif [ "$ob" -lt "$MEDIA_TEXT_CEIL_BYTES" ] \
+  elif [ "$src" = 0 ] && [ "$build" = 0 ] && [ "$is_ratio" = 1 ]; then
+    MEDIA[$rid]=media-ratio
+  elif [ "$build" = 0 ] && [ "$ob" -lt "$MEDIA_TEXT_CEIL_BYTES" ] \
        && [ "${SHARED[$rid]:-0}" -ge "$MEDIA_MIN_BYTES" ]; then
     MEDIA[$rid]=media-batch
   fi
@@ -3069,7 +3253,8 @@ gib=$(awk -v b="$bytes" 'BEGIN{printf "%.2f", b/1073741824}')
 # in audit logs written before it was renamed. A reason missing here is ratcheted on its own,
 # under its own name, so a new verdict is never one the ratchet cannot see.
 RULE_OF_REASON="junk-name:A junk-id:A size-outlier:B stale:C"
-RULE_OF_REASON="$RULE_OF_REASON spam-batch:D spam-family:D link-farm:E media-dump:F media-batch:F"
+RULE_OF_REASON="$RULE_OF_REASON spam-batch:D spam-family:D link-farm:E"
+RULE_OF_REASON="$RULE_OF_REASON media-dump:F media-ratio:F media-batch:F"
 # rule \t how many verdicts that rule has in the file named by $1, one line per rule.
 count_by_rule() {
   awk -F'\t' -v map="$RULE_OF_REASON" '
