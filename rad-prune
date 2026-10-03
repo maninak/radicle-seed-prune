@@ -709,20 +709,28 @@ JUNK_ID_MIN_LEN="${JUNK_ID_MIN_LEN:-8}"
 
 # Sets $dids to a repo's delegates, space-separated, and to nothing when they cannot be read,
 # and $iddoc to the identity document they come from. $1 = the repo's git dir. They come from
-# the identity document's "delegates" list and nowhere else. refs/rad/id is written by the
-# local node only after it verifies the document's signatures, so no stranger can add a name.
-# The rest of that ref's tree is free text the delegates wrote, a description or a revision's
-# title, and a did:key quoted there is not a delegate. The document is canonical JSON, which
-# sorts its keys, so the first "delegates" in it is the top-level one. Sets variables and
-# prints nothing, because the activity scan calls it once per repo in storage and a command
-# substitution would fork for each one.
+# the identity document's top-level "delegates" list and nowhere else. refs/rad/id is written
+# by the local node only after it verifies the document's signatures, so no stranger can add a
+# name. The rest of that ref's tree is free text the delegates wrote, a description or a
+# revision's title, and a did:key quoted there is not a delegate. Heartwood writes canonical
+# JSON, whose sorted keys put that list first, and a document that opens with a list of plain
+# did:keys is read here without a fork. A document written any other way still verifies: a
+# "delegates" nested in its payload may come first, or a did:key may be spelled with escapes,
+# so jq reads that document's top-level list. Sets variables and prints nothing, because the
+# activity scan calls it once per repo in storage and a command substitution would fork for
+# each one.
 read_delegates() {
-  local doc list re_list='"delegates":\[([^]]*)\]' re_did='did:key:(z[1-9A-HJ-NP-Za-km-z]+)(.*)'
+  local doc list did='"did:key:z[1-9A-HJ-NP-Za-km-z]+"'
+  local re_list="^\\{\"delegates\":\\[($did(,$did)*)\\]"
+  local re_did='did:key:(z[1-9A-HJ-NP-Za-km-z]+)(.*)'
   dids=""; iddoc=""
   doc=$(GIT_DIR="$1" git cat-file blob refs/rad/id:embeds/radicle.json 2>/dev/null) || return 0
   iddoc=$doc
-  [[ $doc =~ $re_list ]] || return 0
-  list=${BASH_REMATCH[1]}
+  if [[ $doc =~ $re_list ]]; then
+    list=${BASH_REMATCH[1]}
+  else
+    list=$(jq -r '[.delegates[]? | strings] | join(" ")' <<<"$doc" 2>/dev/null) || return 0
+  fi
   while [[ $list =~ $re_did ]]; do
     dids="$dids${dids:+ }${BASH_REMATCH[1]}"
     list=${BASH_REMATCH[2]}
@@ -939,7 +947,7 @@ if [ "$CMD" != quarantine ]; then
   need="$need awk cat df find git head jq mktemp od sed sha1sum sort tail touch tr"
   need="$need uniq wc xargs"
 fi
-if [ "$QVERB" = files ]; then need="$need awk git od"; fi
+if [ "$QVERB" = files ]; then need="$need awk git jq od"; fi
 if [ "$CMD" != quarantine ] && rule_on F; then need="$need base64 gzip openssl"; fi
 missing=
 for c in $need; do
@@ -1844,9 +1852,13 @@ for d; do
   # Private when the document ends on a private visibility, written the way rad writes it.
   # Only the top-level object's last member can end right before the document's final "}",
   # because a JSON string cannot hold an unescaped quote, so a payload cannot say it instead.
+  # A document written some other way is asked of jq, when it can say private at all: it has
+  # to spell the word, or escape it.
   vis=-
   if grep -q " refs/namespaces/$our_nid/refs/rad/sigrefs\$" "$t"; then vis=ours
   elif [[ $iddoc =~ $re_private ]]; then vis=private
+  elif [[ $iddoc == *private* || $iddoc == *\\* ]] \
+       && jq -e '.visibility.type == "private"' <<<"$iddoc" >/dev/null 2>&1; then vis=private
   fi
   # The delegates go last: they may be empty, and `read` with a tab IFS folds an empty field
   # into the next one.

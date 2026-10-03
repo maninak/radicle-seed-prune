@@ -1492,13 +1492,13 @@ out=$(RSP_NO_LS=1 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 run)
   || no "empty repo listing warns"
 # With no listing, own and private repos are known only from the repo itself; an --apply would
 # otherwise quarantine and block them. zbig2's document names this node as a delegate and nests
-# a private visibility in its payload, and zbig2 has a root branch named like this node's
-# signed refs. Its delegates can publish all three, so it stays in the plan. zpriv7's delegate
-# is on the deny list, and kept with its repo, it is not blocked.
+# a private visibility in its payload, which it puts first, and zbig2 has a root branch named
+# like this node's signed refs. Its delegates can publish all three, so it stays in the plan.
+# zpriv7's delegate is on the deny list, and kept with its repo, it is not blocked.
 d="$STORAGE/zbig2"
 w=$(mktemp -d -p "$ROOT")
-printf '%s' "{\"delegates\":[\"did:key:$(dlg zbig2)\",\"did:key:$RSP_NID\"]," \
-  '"payload":{"x.y":{"visibility":{"type":"private"}}},"threshold":1}' > "$w/doc"
+printf '%s' '{"payload":{"x.y":{"visibility":{"type":"private"}}},' \
+  "\"delegates\":[\"did:key:$(dlg zbig2)\",\"did:key:$RSP_NID\"],\"threshold\":1}" > "$w/doc"
 # Dated like the document it replaces, so the repo's age does not move.
 ts=$(GIT_DIR="$d" git log -1 --format=%ct refs/rad/id)
 c=$(GIT_DIR="$d" GIT_AUTHOR_DATE="@$ts +0000" GIT_COMMITTER_DATE="@$ts +0000" \
@@ -1509,10 +1509,23 @@ c=$(GIT_DIR="$d" GIT_AUTHOR_DATE="@$ts +0000" GIT_COMMITTER_DATE="@$ts +0000" \
 GIT_DIR="$d" git update-ref refs/rad/id "$c"; rm -rf "$w"
 GIT_DIR="$d" git update-ref "refs/heads/refs/namespaces/$RSP_NID/refs/rad/sigrefs" refs/rad/id
 touch -d "10 days ago" "$d"
+# zheavy is private in a document rad would not write, its allow list after the type.
+d="$STORAGE/zheavy"
+w=$(mktemp -d -p "$ROOT")
+printf '%s' "{\"delegates\":[\"did:key:$(dlg zheavy)\"],\"payload\":{},\"threshold\":1," \
+  '"visibility":{"type":"private","allow":[]}}' > "$w/doc"
+ts=$(GIT_DIR="$d" git log -1 --format=%ct refs/rad/id)
+c=$(GIT_DIR="$d" GIT_AUTHOR_DATE="@$ts +0000" GIT_COMMITTER_DATE="@$ts +0000" \
+      git -c user.name=a -c user.email=a@b commit-tree -p refs/rad/id -m id \
+      "$(printf '100644 blob %s\tradicle.json\n' "$(GIT_DIR="$d" git hash-object -w "$w/doc")" \
+         | GIT_DIR="$d" git mktree | xargs printf '040000 tree %s\tembeds\n' \
+         | GIT_DIR="$d" git mktree)")
+GIT_DIR="$d" git update-ref refs/rad/id "$c"; rm -rf "$w"; touch -d "10 days ago" "$d"
 printf 'did:key:%s\n' "$(dlg zpriv7)" > "$AUDIT_DIR/deny.txt"
 out=$(RSP_NO_LS=1 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 run)
-{ ! has "$out" zown22 && ! has "$out" zpriv7 && has "$out" zbig2 \
-  && grep -qE '^#   zown22 +ours$' <<<"$out" && grep -qE '^#   zpriv7 +private$' <<<"$out"; } \
+{ ! has "$out" zown22 && ! has "$out" zpriv7 && ! has "$out" zheavy && has "$out" zbig2 \
+  && grep -qE '^#   zown22 +ours$' <<<"$out" && grep -qE '^#   zpriv7 +private$' <<<"$out" \
+  && grep -qE '^#   zheavy +private$' <<<"$out"; } \
   && ok "own and private repos stay out of the plan when rad ls lists nothing, and only they" \
   || no "an empty rad ls put own or private repos in the plan, or a forged ref kept one"
 ! grep -q "$(dlg zpriv7)" <<<"$(grep '^#     ' <<<"$out")" \
@@ -2424,12 +2437,35 @@ printf '%s\n' "rad:zcode4            # by repo id" "did:key:$(dlg zfarm1)"$'\r' 
        "$STRANGER_NID" "rad:zpin6" "did:key:$(dlg zpin6)" "not-an-id" "did:key:$RSP_NID" \
        > "$AUDIT_DIR/deny.txt"
 printf 'zUnfetchedRepo9' >> "$AUDIT_DIR/deny.txt"
+# Three documents heartwood accepts but does not write. zfarm1's opens with a "delegates"
+# nested in its payload, naming a decoy, and its listed delegate must be read from the top
+# level. zcode6's nests the listed delegate and names somebody else at the top level, so it is
+# not denied. zcode7's spells the listed delegate's "z" as an escape, which serde decodes.
+iddoc(){   # $1 = rid, $2 = the document
+  local d="$STORAGE/$1" blob c
+  blob=$(printf '%s' "$2" | GIT_DIR="$d" git hash-object -w --stdin)
+  c=$(GIT_DIR="$d" GIT_COMMITTER_DATE='2000-01-01T00:00:00Z' \
+        git -c user.name=a -c user.email=a@b commit-tree -p refs/rad/id -m id \
+        "$(printf '100644 blob %s\tradicle.json\n' "$blob" | GIT_DIR="$d" git mktree \
+           | xargs printf '040000 tree %s\tembeds\n' | GIT_DIR="$d" git mktree)")
+  GIT_DIR="$d" git update-ref refs/rad/id "$c"; touch -d "10 days ago" "$d"
+}
+nested(){ printf '{"payload":{"xyz.radicle.project":{"delegates":["did:key:%s"]}},' "$1"; }
+top(){ printf '"delegates":["did:key:%s"],"threshold":1}' "$1"; }
+iddoc zfarm1 "$(nested "$(dlg zdecoy)")$(top "$(dlg zfarm1)")"
+iddoc zcode6 "$(nested "$(dlg zfarm1)")$(top "$(dlg zdecoy)")"
+escaped="did:key:\\u007a$(dlg zfarm1 | cut -c2-)"
+iddoc zcode7 "{\"delegates\":[\"$escaped\"],\"payload\":{},\"threshold\":1}"
 dry=$(RATCHET_FLOOR=0 "$SCRIPT" 2>&1)
 { [ ! -e "$RSP_HOME/.stub_block" ] && grep -q '#   deny list: block 3 id(s)' <<<"$dry" \
   && grep -qx '#     rad:zUnfetchedRepo9' <<<"$dry" \
   && grep -qx "zfarm1"$'\t'"delegate $(dlg zfarm1)" "$AUDIT_DIR/last-run/denied.tsv"; } \
   && ok "a dry run lists what the deny list would block and why, and blocks nothing" \
   || no "a dry run blocked something, or hid what --apply would block"
+{ grep -qx "zcode7"$'\t'"delegate $(dlg zfarm1)" "$AUDIT_DIR/last-run/denied.tsv" \
+  && ! grep -q '^zcode6' "$AUDIT_DIR/last-run/denied.tsv"; } \
+  && ok "a repo's delegates are read from its document's top level, however it is written" \
+  || no "a listed delegate was missed in an escaped did:key, or found in a nested list"
 out=$(RATCHET_FLOOR=0 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
 { [ "$rc" = 0 ] && [ ! -e "$STORAGE/zcode4" ] && [ ! -e "$STORAGE/zfarm1" ] \
   && grep -qE $'^zcode4\t.*\tdenied\t' "$AUDIT_DIR"/prune-2*Z.log \
