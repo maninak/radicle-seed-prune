@@ -1998,12 +1998,15 @@ out=$("$SCRIPT" quarantine list 2>&1)
 # is the spelling that exists on every rad version. The prune above already called unseed, so
 # both stubs are emptied first: otherwise this would pass on the prune's own calls.
 : > "$RSP_HOME/.stub_unseed"; : > "$RSP_HOME/.stub_seed"
+# The keep list's last line has no newline, as some editors save it.
+mkdir -p "$RSP_HOME/prune-audit"; printf 'zkeepme' > "$RSP_HOME/prune-audit/keep.txt"
 out=$("$SCRIPT" quarantine restore zjunk1 2>&1)
 { [ -d "$STORAGE/zjunk1" ] && [ ! -e "$Q/zjunk1" ] \
   && GIT_DIR="$STORAGE/zjunk1" git rev-parse --verify -q master >/dev/null 2>&1 \
   && grep -qx 'rad:zjunk1' "$RSP_HOME/.stub_unseed" \
   && grep -qx 'rad:zjunk1' "$RSP_HOME/.stub_seed" \
-  && grep -qx 'zjunk1' "$RSP_HOME/prune-audit/keep.txt"; } \
+  && grep -qx 'zjunk1' "$RSP_HOME/prune-audit/keep.txt" \
+  && grep -qx 'zkeepme' "$RSP_HOME/prune-audit/keep.txt"; } \
   && ok "quarantine restore puts the repo back, clears its block and keeps it" \
   || no "quarantine restore left the repo blocked, gone, or still condemned"
 
@@ -2169,6 +2172,71 @@ out=$(DISK_AWARE=1 PRESSURE_CRIT_PCT=100 PRESSURE_CRIT_GB=999999 ABS_SIZE_FLOOR_
 { grep -q ' pressure=100% ' <<<"$out" && grep -q 'WARN: the relax watermark' <<<"$out"; } \
   && ok "a critical disk is full pressure even with the watermarks inverted" \
   || no "the banner said less than full pressure while the quarantine was emptied"
+
+# The keep list is written by hand, sometimes on Windows: a byte-order mark before the first id
+# must not cost that repo its protection. A repo's name and description are whatever its
+# delegates wrote, so an escape sequence in either must not reach the operator's terminal.
+build_fixture; assert_isolated
+printf '\xef\xbb\xbfzmediaone\n' > "$RSP_HOME/keep.txt"
+sed -i "s/^zmediazip\t[^\t]*/zmediazip\tevil$(printf '\033')[2J$(printf '\302\233')name/" \
+  "$RSP_MANIFEST"
+out=$(KEEP_FILE="$RSP_HOME/keep.txt" "$SCRIPT" 2>&1); rc=$?
+rm -f "$RSP_HOME/keep.txt"
+{ [ "$rc" = 0 ] && grep -qE "^zmediazip " <<<"$out" && ! has "$out" "zmediaone"; } \
+  && ok "a keep list saved with a byte-order mark still keeps its first line" \
+  || no "a byte-order mark cost the first repo in keep.txt its protection"
+{ grep -qE "^zmediazip .*evil\[2Jname" <<<"$out" && ! grep -q $'\033' <<<"$out"; } \
+  && ok "a control character in a repo's name never reaches the terminal" \
+  || no "an escape sequence in a repo name reached the operator's terminal"
+
+# Where rad prints a description as is, a line break in it ends the row, and what follows reads
+# as rows of its own. zbatchodd's forges a junk name for zcode7, and rows for three members of
+# the flatten batch whose own descriptions are changed, so that dropping them would leave the
+# rest agreeing. Rows for repos outside storage agree with the batch. znodesc*'s rows say
+# "local" where the visibility goes, as rad does for a repo this node does not seed, and their
+# head must not read as a description all nine share.
+build_fixture; assert_isolated
+forge(){   # $1 = the description zbatchodd gets, then rid=description pairs for others
+  local d=$1; shift
+  FORGED=$d PAIRS="$*" awk -F'\t' -v OFS='\t' '
+    BEGIN { n = split(ENVIRON["PAIRS"], p, " ")
+            for (i = 1; i <= n; i++) { split(p[i], kv, "="); desc[kv[1]] = kv[2] } }
+    $1 == "zbatchodd" { $8 = ENVIRON["FORGED"] }
+    ($1 in desc)      { $8 = desc[$1] }
+    $1 ~ /^znodesc/   { $4 = "local" }
+    { print }' "$RSP_MANIFEST" > "$RSP_MANIFEST.new" && mv "$RSP_MANIFEST.new" "$RSP_MANIFEST"
+}
+rows="x\n| 0a1b2c3d4e5f rad:zcode7 public abc1234 y |"
+for i in 1 2 3; do rows+="\n| a rad:zspam$i public abc1234 b |"; done
+for r in zfakeone zfaketwo zfakethree zfakefour; do
+  rows+="\n| flatten-9-ab12cd34 rad:$r public abc1234 Flatten a nested array. Variant 9. |"
+done
+rows+="\n| tail rad:zfakefive public abc1234 z"
+forge "$rows" zspam1=Alpha zspam2=Beta zspam3=Gamma
+out=$("$SCRIPT" 2>&1)
+{ ! grep -qE "^zcode7 " <<<"$out" \
+  && grep -qF "listed 4 repo(s) twice, such as rad:zcode7 rad:zspam1 rad:zspam2." <<<"$out" \
+  && grep -qF "listed 5 repo(s) that are not in storage, such as" <<<"$out"; } \
+  && ok "a line break in a description cannot give another repo a name" \
+  || no "a description forged a row that put zcode7 in the plan"
+! grep -qE "^zspam[1-9] .*spam-batch" <<<"$out" \
+  && ok "forged rows cannot raise a batch's agreement on its description" \
+  || no "forged rows pushed the flatten batch over its agreement bar"
+! grep -qE "^znodesc[1-9] .*spam-batch" <<<"$out" \
+  && ok "a repo rad lists as local has no head read as its description" \
+  || no "the heads of repos listed as local made them agree on a description"
+# A row forged into a whole batch, under zcode7's id, must not make zcode7 one of its members.
+build_fixture; assert_isolated
+sed -i 's/^\(zbatchodd\t.*\t\)one of a kind$/\1x\\n| flatten-14-1a2b3c4d rad:zcode7 public'\
+' abc1234 Flatten a nested array. Variant 14./' "$RSP_MANIFEST"
+out=$("$SCRIPT" 2>&1)
+{ grep -qE "^zspam1 .*spam-batch" <<<"$out" && ! grep -qE "^zcode7 " <<<"$out"; } \
+  && ok "a row forged into a batch does not make its repo a member" \
+  || no "a forged row made zcode7 a member of the flatten batch"
+out=$(SPAM_MIN_BATCH=14 "$SCRIPT" 2>&1)   # the flatten batch is 13 members
+! grep -qE "^zspam[1-9] .*spam-batch" <<<"$out" \
+  && ok "a forged row does not count towards the size a batch needs" \
+  || no "a forged row made a batch one member short big enough"
 
 # --- rule H: an identity whose repos read like a malware operation is named, not acted on ---
 # zcode4 and zcode6 are renamed and described like an operation and signed by one identity,

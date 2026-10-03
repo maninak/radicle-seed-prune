@@ -1005,6 +1005,10 @@ fresh_cut=$(( now - FRESH_GUARD_DAYS*86400 ))
 keep_add() {
   mkdir -p "$(dirname "$KEEP_FILE")" 2>/dev/null || return 1
   grep -qxF "$1" "$KEEP_FILE" 2>/dev/null && return 0
+  # A last line saved without its newline, as some editors do, would run into the new id.
+  if [ -s "$KEEP_FILE" ] && [ -n "$(tail -c1 "$KEEP_FILE")" ]; then
+    echo >> "$KEEP_FILE" 2>/dev/null || return 1
+  fi
   printf '%s\n' "$1" >> "$KEEP_FILE" 2>/dev/null || return 1
 }
 # Everything below builds a path from an argument, so a name that is not a repo id never gets
@@ -1499,13 +1503,14 @@ grep -oE 'rad:z[1-9A-HJ-NP-Za-km-z]+' "$tmp/ls-own" 2>/dev/null \
   | sed 's/^rad://' | sort -u > "$tmp/own" || true
 # The keep list is the operator's own verdict on a repo, so it is read the same way as a pin:
 # comments and blank lines out, ids in. Both spellings are taken, because every other id this
-# tool prints carries the rad: prefix and this is the one list a person writes by hand.
+# tool prints carries the rad: prefix and this is the one list a person writes by hand. A
+# byte-order mark goes too: a file saved by a Windows editor would otherwise lose its first id.
 # An identity is 48 characters and a repo id under 40, as in the deny list below.
-sed 's/#.*//; s/rad://' "$KEEP_FILE" 2>/dev/null \
+sed $'1s/^\xef\xbb\xbf//; s/#.*//; s/rad://' "$KEEP_FILE" 2>/dev/null \
   | grep -oE '^\s*z[1-9A-HJ-NP-Za-km-z]+' \
   | tr -d ' \t' | awk 'length($0) < 40' | sort -u > "$tmp/kept" || true
 # An identity in the keep list is a person clearing it of rule H; its repos are not kept.
-sed 's/#.*//; s/did:key://' "$KEEP_FILE" 2>/dev/null \
+sed $'1s/^\xef\xbb\xbf//; s/#.*//; s/did:key://' "$KEEP_FILE" 2>/dev/null \
   | grep -oE '^\s*z[1-9A-HJ-NP-Za-km-z]{40,}' \
   | tr -d ' \t' | sort -u > "$tmp/kept-nids" || true
 cat "$tmp/pinned" "$tmp/private" "$tmp/own" "$tmp/kept" 2>/dev/null | sort -u > "$tmp/excluded"
@@ -1625,19 +1630,48 @@ fi
 # rad: token, never the last - a description may itself quote an rid (they do: "...used for X
 # in rad:z3U9...") and matching the last one files the row under a repo that isn't this one.
 # Walk the trailing columns rather than counting fields, because visibility, head and
-# description are each independently missing on some rows.
-"$RAD" ls --all 2>/dev/null | awk '
+# description are each independently missing on some rows. A name and a description are
+# whatever a repo's delegates wrote, and both reach the terminal, so control characters go
+# first, in their UTF-8 spelling (C1) too: an escape sequence there could rewrite what the
+# operator reads.
+"$RAD" ls --all 2>/dev/null | LC_ALL=C tr -d '\000-\010\013-\037\177' \
+  | LC_ALL=C sed $'s/\xc2[\x80-\x9f]//g' | awk '
   /rad:z[1-9A-HJ-NP-Za-km-z]+/ {
     ridi=0; for (i=1;i<=NF;i++) if ($i ~ /^rad:z[1-9A-HJ-NP-Za-km-z]+$/) { ridi=i; break }
     if (ridi<2) next
     rid=$ridi; sub(/^rad:/,"",rid)
     name=""; for (i=2;i<ridi;i++) name=name (name==""?"":" ") $i   # names with spaces survive
     d=ridi+1
-    if ($d=="public" || $d=="private") d++
+    if ($d=="public" || $d=="private" || $d=="local") d++
     if (d<NF && length($d)>=7 && $d ~ /^[0-9a-f]+$/) d++   # the head oid, when the row has one
     desc=""; for (i=d;i<NF;i++) desc=desc (desc==""?"":" ") $i     # NF is the closing box char
     print rid"\t"name"\t"desc
   }' > "$tmp/meta" || true
+# A description holding a line break ends its row early, and the rest reads as a row of its
+# own, under any repo id its author typed. A real row names a repo in storage, so a row for any
+# other id goes. A repo listed twice keeps both rows for rule D, which counts them as members
+# that agree with nothing, and gets no name, since nothing says which of its rows is forged.
+find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' > "$tmp/stored" 2>/dev/null \
+  || true
+awk -F'\t' 'FILENAME == ARGV[1] { stored[$1] = 1; next } !($1 in stored) { print $1 }' \
+  "$tmp/stored" "$tmp/meta" | sort -u > "$tmp/meta-foreign"
+awk -F'\t' 'FILENAME == ARGV[1] { stored[$1] = 1; next } ($1 in stored)' \
+  "$tmp/stored" "$tmp/meta" > "$tmp/meta-stored"
+mv "$tmp/meta-stored" "$tmp/meta"
+cut -f1 "$tmp/meta" | sort | uniq -d > "$tmp/meta-twice"
+awk -F'\t' 'FILENAME == ARGV[1] { twice[$1] = 1; next } !($1 in twice)' \
+  "$tmp/meta-twice" "$tmp/meta" > "$tmp/meta-named"
+if [ -s "$tmp/meta-twice" ]; then
+  echo "# WARN: '$RAD ls --all' listed $(wc -l < "$tmp/meta-twice") repo(s) twice, such as" \
+       "$(head -3 "$tmp/meta-twice" | sed 's/^/rad:/' | xargs). A description with a line" \
+       "break in it forges rows, and the repo that wrote them usually sits just above them in" \
+       "'$RAD ls --all'. These repos go unnamed and join no batch this run." >&2
+fi
+if [ -s "$tmp/meta-foreign" ]; then
+  echo "# WARN: '$RAD ls --all' listed $(wc -l < "$tmp/meta-foreign") repo(s) that are not in" \
+       "storage, such as $(head -3 "$tmp/meta-foreign" | sed 's/^/rad:/' | xargs): rows a" \
+       "description forged, or repos removed while it ran. They are ignored." >&2
+fi
 # Losing this is not fatal but it is not nothing either: the plan's NAME column goes blank and
 # rule D has no corpus to reason about, which would look exactly like "no spam here". Say so.
 [ -s "$tmp/meta" ] \
@@ -1650,6 +1684,7 @@ fi
 # each is needed.
 awk -F'\t' -v K="$SPAM_MIN_BATCH" -v D="$SPAM_DESC_AGREE_PCT" -v REQID="$SPAM_REQUIRE_ID" \
            -v BATCHES="$tmp/spambatch" '
+  FILENAME == ARGV[1] { twice[$1] = 1; next }
   # A token is a random id if it is 6+ hex characters with both a letter and a digit. Demanding
   # a letter is what keeps a date or sequence suffix (release-202401) an enumeration rather
   # than an id.
@@ -1676,8 +1711,14 @@ awk -F'\t' -v K="$SPAM_MIN_BATCH" -v D="$SPAM_DESC_AGREE_PCT" -v REQID="$SPAM_RE
   {
     N++; rid[N]=$1
     sn=skel($2); nl[N]=loose(sn); dl[N]=loose(skel($3))
+    cnt[nl[N]]++
+    # Either row of a repo listed twice may be forged, so it is a member that agrees with no
+    # description, is never one of the batch, and does not count towards its size: it can only
+    # lower the agreement.
+    if ($1 in twice) { forged[N]=1; next }
+    real[nl[N]]++
     if (index(sn,"%")) hasid[nl[N]]=1
-    cnt[nl[N]]++; pair[nl[N] SUBSEP dl[N]]++
+    pair[nl[N] SUBSEP dl[N]]++
   }
   END {
     # awk leaves `for (k in ...)` order unspecified, so ties break on the description text
@@ -1689,7 +1730,7 @@ awk -F'\t' -v K="$SPAM_MIN_BATCH" -v D="$SPAM_DESC_AGREE_PCT" -v REQID="$SPAM_RE
         { best[q[1]]=pair[k]; bestd[q[1]]=q[2] }
     }
     for (n in cnt) {
-      if (cnt[n] < K)                        continue   # too few to be a template
+      if (real[n] < K)                       continue   # too few to be a template
       if (REQID+0==1 && !(n in hasid))       continue   # no machine-generated id in it
       if (index(n,"*")==0)                   continue   # nothing varies: not a template at all
       if (bestd[n]=="")                      continue   # no description: only ONE signal
@@ -1699,9 +1740,10 @@ awk -F'\t' -v K="$SPAM_MIN_BATCH" -v D="$SPAM_DESC_AGREE_PCT" -v REQID="$SPAM_RE
     # Only the members carrying the description the batch agreed on, so a genuine outlier that
     # happens to share the name shape is left alone.
     for (i=1;i<=N;i++)
-      if (nl[i] in good && dl[i]==bestd[nl[i]]) { print rid[i]; batchsize[nl[i]]++ }
+      if (!(i in forged) && nl[i] in good && dl[i]==bestd[nl[i]])
+        { print rid[i]; batchsize[nl[i]]++ }
     for (n in batchsize) printf "%d\t%s\n", batchsize[n], n > BATCHES
-  }' "$tmp/meta" > "$tmp/spam" || true
+  }' "$tmp/meta-twice" "$tmp/meta" > "$tmp/spam" || true
 : >> "$tmp/spambatch"                          # awk only creates it when it finds something
 nspam=$(wc -l < "$tmp/spam"); nspambatch=$(wc -l < "$tmp/spambatch")
 if [ "$nspam" -gt 0 ]; then
@@ -2869,7 +2911,7 @@ while read -r r; do DENY_NID[$r]=1; done < "$tmp/deny-nids"
 [ "$ncoerced" = 0 ] \
   || echo "# WARN: $ncoerced repo date(s) were not numbers and were read as unknown," \
           "so those repos are outside the age rules; the ref scan may be broken" >&2
-while IFS=$'\t' read -r rid nm _; do NAME[$rid]=$nm; done < "$tmp/meta"
+while IFS=$'\t' read -r rid nm _; do NAME[$rid]=$nm; done < "$tmp/meta-named"
 while IFS=$'\t' read -r rid s;    do SEEDS[$rid]=$s; done < "$tmp/seeds"
 while read -r r; do [ -n "$r" ] && EXCL[$r]=1; done < "$tmp/excluded"
 while read -r r; do [ -n "$r" ] && SCANFAIL[$r]=1; done < "$tmp/scanfail"
@@ -3037,7 +3079,7 @@ if rule_on H; then
         if (known(strong, word)) isstrong = 1
       }
       if (found != "") printf "%s\t%s\t%d\t%s\n", $1, found, isstrong, $2
-    }' "$tmp/meta" > "$tmp/malware-words"
+    }' "$tmp/meta-named" > "$tmp/malware-words"
   # Identities rule H leaves out. A delegate of a pinned, kept or our own repo is one this seed
   # already vouches for, the one who never signed there included, since the deny list would not
   # block them either. A private repo vouches for nobody: its delegates chose this seed, not

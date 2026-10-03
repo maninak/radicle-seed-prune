@@ -34,6 +34,11 @@ The media rule now needs `gzip` and OpenSSL 3. A run missing either, or with an 
 - **The media and peer rules no longer mistake an identity named in a repo's description for one of its owners.** The media rule counted that identity's uploads as the repo's own, and the peer rule never flagged it.
 - **With `PRESSURE_CRIT_*` set above `PRESSURE_RELAX_*`, a disk at or under the critical watermark counts as full pressure.** A run used to report `pressure=0%` and keep its relaxed thresholds while it emptied the quarantine. Such settings now also print a warning.
 - **A stopped run no longer deletes expired repos from quarantine.** Stopping at the runaway caps or with an `n` at the prompt used to delete them first.
+- **A `keep.txt` saved with a byte-order mark keeps its first entry.** Some Windows editors write one, and the repo on the first line used to lose its protection without a word.
+- **`quarantine restore` puts its repo on a line of its own in `keep.txt`.** When the file's last line had no newline, the two ids ran together, and the next run could prune both repos.
+- **A line break in a repo's description can no longer name another repo or sway a spam batch.** Where `rad ls` prints one as is, the text after it read as a row of its own, so a stranger could get somebody else's repo planned as `junk-id` or `spam-batch`. Rows for repos not in storage are now dropped, a repo listed twice goes unnamed and joins no batch, and the run warns about both.
+- **Repos that `rad ls` lists as `local` are no longer read as sharing a description.** Their head commit was read as their description, so a group of them with no description could be planned as `spam-batch`.
+- **Control characters in a repo's name or description no longer reach the terminal.** Both are whatever the repo's owners wrote, and an escape sequence there could change what the plan showed.
 - **`MAX_PRUNE_COUNT` and the `RATCHET_*` settings must be whole numbers, and `DISK_AWARE` must be `0` or `1`.** Anything else now exits `2`. A typo used to switch a check off without a word.
 - **An unexpected failure always exits `1`.** It used to pass on the failed command's status, which could look like exit `3`, `4` or `5`.
 - **The tool keeps working once `rad` drops `rad self --nid`.** rad 1.10 deprecates the flag, and once it is gone every prune run would stop with exit `5`.

@@ -23,7 +23,8 @@ case "$sub" in
       fi
       # real rad prints a 7-hex head; keep it exact, the script's column walk reads
       # the shape
-      printf '| %s rad:%s %s abc1234 %s |\n' "$name" "$rid" "$vis" "$desc"
+      # A "\n" in the manifest is a line break in the description, which real rad accepts.
+      printf '| %s rad:%s %s abc1234 %s |\n' "$name" "$rid" "$vis" "${desc//\\n/$'\n'}"
     done < "$RSP_MANIFEST"
     ;;
   node)
