@@ -2530,7 +2530,7 @@ trees=$(GIT_DIR="$STORAGE/zhexid23" git rev-parse 'refs/tags/v1^{tree}' 'master^
 # pinned repo's updates. One id names a repo this node has not fetched, which is blocked ahead
 # of it. This node's own identity is listed and must be ignored. zcode4 was just written, as a
 # repo still arriving is, and a listed one is pruned anyway. The file ends without a newline
-# and has a Windows line ending, as a hand-edited one may. A history where no rule jumps shows
+# and has a Windows line ending, as a hand-edited one may. A history where no rule plans far above its usual shows
 # the deny list is not held back like a rule.
 build_fixture; assert_isolated
 for i in 1 2 3 4; do past_run "$i" $USUAL_BUT_C stale:20; done
@@ -2676,7 +2676,7 @@ out=$(RULES= MAX_PRUNE_COUNT=1 "${NOTTY[@]}" "$SCRIPT" --apply \
 for i in 1 2 3 4; do past_run "$i" $USUAL_BUT_C stale:20; done
 plan=$(RATCHET_FLOOR=0 run)
 grep -q '^#     rule denied-copy: 2 repos' <<<"$plan" \
-  && ok "copies that jump past their usual are held back like a rule" \
+  && ok "copies far above their usual are held back like a rule" \
   || no "the ratchet did not count copies of denied files"
 
 # A row naming a restored repo stops condemning. A row missing its size column must not read

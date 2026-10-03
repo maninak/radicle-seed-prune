@@ -588,11 +588,12 @@ rule_label() {
 
 MAX_PRUNE_COUNT="${MAX_PRUNE_COUNT:-1000}"       # runaway guards (abort unless --force)
 MAX_PRUNE_GB="${MAX_PRUNE_GB:-80}"
-# The fixed caps above only catch a plan that jumps. They cannot catch one that CREEPS: at a
+# The fixed caps above only catch a plan that is too big at once, not one that CREEPS: at a
 # steady 2.5 GiB a week, a plan could grow for a year without ever touching MAX_PRUNE_GB, and
 # under sustained disk pressure the thresholds loosen on their own. So each rule's share of the
 # plan is also measured against what that rule normally prunes here, taken from the audit logs
-# the seed already writes, and a rule that jumps is held back while the others go ahead.
+# the seed already writes, and a rule far above its usual is held back while the others go
+# ahead.
 RATCHET_FACTOR="${RATCHET_FACTOR:-3}"            # times a rule's usual haul before it is held
 RATCHET_RUNS="${RATCHET_RUNS:-8}"                # past runs the usual is taken from (median)
 # A rule that usually prunes nothing has a usual of 0, and three times 0 would hold back its
@@ -909,7 +910,8 @@ OPTIONS
   --apply          carry out the plan: unseed, block and quarantine every repo in it
   --block-peers    act on the parasite-peer rule (G) as well, asking before each peer is blocked
   --yes, -y        answer y to every prompt this run asks, so it needs nobody present
-  --force          carry on past the runaway caps and the hold on a rule that jumps
+  --force          carry on past the runaway caps, and past the hold on a rule that plans far
+                   more repos than usual
   --restart-node   restart the node service afterwards, to flush its inventory
   --version        print the version and exit
   --help, -h       print this and exit
