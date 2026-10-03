@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Test double for `rad`, driven by env: RSP_HOME, RSP_NID, RSP_MANIFEST, RSP_NODE_DOWN,
-# RSP_NO_ROUTING, RSP_NO_LS, RSP_LS_FAIL, RSP_DELEGATES, RSP_BLOCK_FAIL. Manifest columns: rid
-# name seeds vis own days size desc
+# RSP_NO_ROUTING, RSP_NO_LS, RSP_LS_FAIL, RSP_DELEGATES, RSP_BLOCK_FAIL, RSP_UNSEED_FAIL,
+# RSP_SEED_LIST_FAIL. Manifest columns: rid name seeds vis own days size desc
+#
+# Every policy change is also a line in $RSP_HOME/.stub_policy ("block rad:z..."), and the last
+# line for a repo is its policy, which `rad seed` with no arguments lists. A test stands in for
+# blocks an earlier run made by writing lines there itself.
 set -uo pipefail
 # Real rad takes its home from the ENVIRONMENT, so record what we were actually handed: that is
 # the only way a test can tell an exported RAD_HOME from one the script merely set as a shell
@@ -60,8 +64,29 @@ case "$sub" in
   block)  [ "${RSP_BLOCK_FAIL:-0}" = 1 ] && exit 1
           grep -qxF -- "${1:-}" "$RSP_HOME/.stub_block" 2>/dev/null \
             || printf "✓ Policy for %s set to 'block'\n" "${1:-}"
-          echo "${1:-}" >> "$RSP_HOME/.stub_block" ;;
-  unseed) echo "${1:-}" >> "$RSP_HOME/.stub_unseed" ;;
-  seed)   echo "${1:-}" >> "$RSP_HOME/.stub_seed" ;;
+          echo "${1:-}" >> "$RSP_HOME/.stub_block"
+          echo "block ${1:-}" >> "$RSP_HOME/.stub_policy" ;;
+  unseed) [ "${RSP_UNSEED_FAIL:-0}" = 1 ] && exit 1
+          echo "${1:-}" >> "$RSP_HOME/.stub_unseed"
+          echo "unseed ${1:-}" >> "$RSP_HOME/.stub_policy" ;;
+  seed)
+    if [ -n "${1:-}" ]; then
+      echo "${1:-}" >> "$RSP_HOME/.stub_seed"
+      echo "seed ${1:-}" >> "$RSP_HOME/.stub_policy"
+      exit 0
+    fi
+    # A box, one row per repo: "│ rad:z...  <name>  <policy>  <scope> │". Heartwood master
+    # leaves the scope off a blocked row; rc.12 prints "all" there, RSP_SEED_SCOPED=1.
+    [ "${RSP_SEED_LIST_FAIL:-0}" = 1 ] && { echo "Error: database is locked" >&2; exit 1; }
+    echo "╭──────────────────────────────╮"
+    echo "│ Repository  Name  Policy  Scope │"
+    [ -r "$RSP_HOME/.stub_policy" ] || exit 0
+    awk -v scoped="${RSP_SEED_SCOPED:-0}" '
+        $1 != "unseed" { policy[$2] = $1 } $1 == "unseed" { delete policy[$2] }
+        END { for (r in policy) {
+                scope = (policy[r] == "block" && scoped == 0) ? "" : "all"
+                printf "│ %s  (name)  %s  %s │\n", r, policy[r], scope } }' \
+      "$RSP_HOME/.stub_policy"
+    ;;
   *) : ;;
 esac

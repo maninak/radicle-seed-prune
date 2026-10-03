@@ -8,6 +8,8 @@ All notable changes to this project are documented here. The format is based on 
 
 Replace the script, then do a dry run. The media rule (F) now needs `gzip` and OpenSSL 3, and the dry run stops and says so if either is missing.
 
+The first `--apply` may lift the block on repos earlier releases pruned, including repos pruned for inactivity that a node has announced refs for since. A dry run lists them in `last-run/undo.tsv`. Those releases recorded neither a repo's delegates nor a block that stood before the prune, so to keep one blocked, add its repo id to `deny.txt` first. To lift none, set `UNDO=0`.
+
 The files rad-prune writes in the audit directory now open with a few `#` lines saying what they hold, so the line naming the run is no longer the first ([details](./README.md#audit-trail)). A script that reads them must skip lines starting with `#`. Five files in `last-run/` are renamed:
 
 | Before | Now |
@@ -22,6 +24,7 @@ A run that holds back a rule exits `4`. A monitor that alerts on exit `3` should
 
 ### Added
 
+- **`--apply` lifts the block on repos that rad-prune may have pruned by mistake.** These are repos pruned under a verdict a later release no longer trusts, repos pruned for inactivity that a node announced new refs for since (needs `sqlite3`), and known mistakes the script lists ([details](./README.md#blocks-the-tool-lifts-on-its-own)).
 - **You can name repos and identities to prune and block on sight.** List them in `deny.txt` in the audit directory. `--apply` prunes and blocks each listed repo and every repo a listed identity is a delegate of, and blocks the identity too ([details](./README.md#deny-list)). Pinned, private, your own and kept repos are spared.
 - **Repos that hold copies of files from a repo `deny.txt` names are pruned too.** A repo is pruned when at least 5 MiB of files listed in `deny-files.tsv` make up half or more of what its delegates committed ([details](./README.md#copies-of-denied-files)). `rad prune quarantine files <rid>` prints a quarantined repo's files in that list's format.
 - **The media rule (F) catches more media dumps.** A repo with 6 MiB or more of images, video and audio, at most one README and almost nothing else is now pruned as `media-ratio` ([details](./README.md#rule-f-media-dumps)).
