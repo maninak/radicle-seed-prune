@@ -36,7 +36,7 @@ chmod +x rad-prune
 sudo mv rad-prune /usr/local/bin/
 ```
 
-Needs `bash`, `git`, `jq` and `rad` on `PATH`. Run it as the user that owns the Radicle home you want pruned, or set `RAD_HOME` to that home.
+Needs `bash`, `git`, `jq`, `rad` and OpenSSL 3 on `PATH`. Run it as the user that owns the Radicle home you want pruned, or set `RAD_HOME` to that home.
 
 Anywhere on `PATH` under the name `rad-prune`, `rad` runs it as one of its own subcommands, which is what the examples below use. `rad-prune ...` does the same thing, and so does `./rad-prune ...` from wherever you put it.
 
@@ -67,7 +67,7 @@ RAD=/nix/store/.../bin/rad rad-prune         # a specific rad binary
 sudo -u <node-user> env RAD_HOME=/var/lib/radicle rad-prune   # as the user the node runs as
 ```
 
-Run it as the user that owns storage, or it stops rather than scanning nothing. It needs `rad`, `git`, `jq`, `awk`, `sed`, `grep`, `find` and coreutils on the `PATH` you hand it, and a run missing one of them names it and stops. That is worth checking whenever the `PATH` is not your own login one: a systemd unit, a Nix wrapper, and `sudo`, which replaces `PATH` with its own `secure_path` wherever sudoers sets one. If a run names a command you know is installed, hand it the `PATH` you meant: `sudo -u <node-user> env PATH="$PATH" RAD_HOME=/var/lib/radicle rad-prune`.
+Run it as the user that owns storage, or it stops rather than scanning nothing. It needs `rad`, `git`, `jq`, `openssl`, `awk`, `sed`, `grep`, `find` and coreutils on the `PATH` you hand it, and a run missing one of them names it and stops. That is worth checking whenever the `PATH` is not your own login one: a systemd unit, a Nix wrapper, and `sudo`, which replaces `PATH` with its own `secure_path` wherever sudoers sets one. If a run names a command you know is installed, hand it the `PATH` you meant: `sudo -u <node-user> env PATH="$PATH" RAD_HOME=/var/lib/radicle rad-prune`.
 
 ### Example output
 
@@ -547,7 +547,7 @@ A repo is flagged when all of:
 
 What a file *is* decides, not what it is called. Extensions (`MEDIA_EXTS`, `MEDIA_TEXT_EXTS`, `MEDIA_TEXT_NAMES`) are only a fast path: an unrecognised file has its first 16 bytes matched against media signatures, so renaming a video to `.dat` does not hide it. Archives (zip, gzip, rar, 7z) count as media; a file matching no signature counts as text and spares the repo. Reading is capped at `MEDIA_SNIFF_MAX_FILES` (200) per repo, and files past the cap count as text.
 
-Only the repo's own content counts: the canonical branches and tags, plus the namespaces of the delegates named in `refs/rad/id`, including the delegates' issues and comments across a COB's whole history. Every other peer's namespace is ignored, so a stranger pushing a video onto somebody's repo cannot put that repo in the plan.
+Only the repo's own content counts: the canonical branches and tags, plus the namespaces of the delegates named in `refs/rad/id`, including every issue and patch comment a delegate signed, older ones too. Every other peer's namespace is ignored, and so is a stranger's patch or comment a delegate replied to, so a stranger pushing a video onto somebody's repo cannot put that repo in the plan. A repo with a branch whose commit is missing from storage is not judged.
 
 A branch or tag is read at its tip, so media committed and then deleted in a later commit is missed. A repo whose listing dies part-way, or with more than `MEDIA_MAX_REFS` (10000) refs, is left unjudged.
 
@@ -585,7 +585,7 @@ tests/run.sh                 # everything
 tests/run.sh -k quarantine   # only the sections that mention "quarantine"
 ```
 
-Needs only `bash`, `git` and coreutils. It builds a hermetic fixture and runs the real script against it, so it never reads or writes the real node.
+Needs only `bash`, `git`, `openssl` and coreutils. It builds a hermetic fixture and runs the real script against it, so it never reads or writes the real node.
 
 The suite is cut into sections, one per fixture rebuild, and a section run on its own is the same run it gets in the whole suite. Whole runs take minutes and a single section takes seconds, so `-k` is the loop to be in while changing one rule. It takes a regular expression and runs every section whose text contains a match, so a test name, a repo id, a knob name or a rule letter all select one. The fixture is built once and kept under `TMPDIR` for an hour; `RSP_FIXTURE_CACHE=0` builds it fresh every time.
 

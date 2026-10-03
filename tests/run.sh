@@ -157,9 +157,17 @@ e_push(){
 }
 # A peer that pushes into zmediapeer and zvictimten without being a delegate of either.
 STRANGER_NID=zSTRANGERxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+# Radicle signs each issue and patch op with its author's ed25519 key, over the op's tree id,
+# and rule F counts an op only once that signature checks out. So the repos whose delegates
+# write ops get a real key: a throwaway made for this suite, and the node id it spells.
+COB_KEY=$HERE/fixtures/throwaway-test-key.pem
+COB_NID=z6Mkei8KLNDCqpfdk9KbvUNQJ4YrTep1EWMJqjTsKWw1pR4X
 # The node id this fixture hands out as a delegate of $1. It has to survive the script's base58
 # filter, so the rid's own characters are mapped into the alphabet and the rest is padding.
 dlg(){
+  case $1 in
+    zmediacob|zmediapast|zmediamirr|zmediacobm|zmediapeer) printf '%s' "$COB_NID"; return ;;
+  esac
   local n="zDLG$1"
   printf '%s' "$n"
   local i=${#n}; while [ "$i" -lt 45 ]; do printf x; i=$((i+1)); done
@@ -169,6 +177,32 @@ dlg(){
 e_cob(){
   local rid=$1 nid=$2; shift 2
   e_push "$rid" "refs/namespaces/$nid/refs/cobs/xyz.radicle.issue/aaa" issue.json "$@"
+}
+# Rewrites commit $1 of the repo at $GIT_DIR as an op COB_KEY signed, the way Radicle signs
+# one: ed25519 over the 20 bytes of the tree id, in an SSH signature block under the "gpgsig"
+# header, with the author's node id as the email. Prints the new commit's id.
+hex(){ od -An -tx1 -v | tr -d ' \n'; }
+u32(){ printf '%08x' "$1"; }
+sshstr(){ local h; h=$(printf '%s' "$1" | hex); printf '%s%s' "$(u32 $(( ${#h} / 2 )))" "$h"; }
+sign_op(){
+  local c=$1 w tree pub sig kblob sblob blob
+  w=$(mktemp -d -p "$ROOT")
+  tree=$(git rev-parse "$c^{tree}")
+  printf '%s' "$tree" | sed 's/../\\x&/g' | xargs -0 printf > "$w/msg"
+  openssl pkeyutl -sign -inkey "$COB_KEY" -rawin -in "$w/msg" -out "$w/sig"
+  pub=$(openssl pkey -in "$COB_KEY" -pubout -outform DER | hex); pub=${pub:24}
+  sig=$(hex < "$w/sig")
+  kblob="$(sshstr ssh-ed25519)$(u32 32)$pub"; sblob="$(sshstr ssh-ed25519)$(u32 64)$sig"
+  blob="$(printf SSHSIG | hex)$(u32 1)$(u32 $(( ${#kblob} / 2 )))$kblob$(sshstr radicle)"
+  blob="$blob$(u32 0)$(sshstr sha256)$(u32 $(( ${#sblob} / 2 )))$sblob"
+  { git cat-file commit "$c" | sed -n '/^$/q; s/ <[^>]*> / <op@'"$COB_NID"'> /; p'
+    echo "gpgsig -----BEGIN SSH SIGNATURE-----"
+    printf '%s' "$blob" | sed 's/../\\x&/g' | xargs -0 printf | base64 -w 70 | sed 's/^/ /'
+    echo " -----END SSH SIGNATURE-----"
+    git cat-file commit "$c" | sed '1,/^$/d' | sed '1i\\'
+  } > "$w/commit"
+  git hash-object -t commit -w "$w/commit"
+  rm -rf "$w"
 }
 # Replaces one ref of $rid with a tree holding exactly the given "name:bytes" files, which is
 # how rule F's fixtures control what a repo tracks. Random bytes, so nothing compresses to a
@@ -209,7 +243,11 @@ e_tree(){
   git -C "$w" add -A
   local ts; ts=$(date -u -d "$days days ago" +%s)
   GIT_AUTHOR_DATE="@$ts +0000" GIT_COMMITTER_DATE="@$ts +0000" git -C "$w" commit -q -m m
-  git -C "$w" push -q --force "$STORAGE/$rid" "master:$ref"
+  local tip=master
+  case $ref in
+    refs/namespaces/$COB_NID/refs/cobs/*) tip=$(GIT_DIR="$w/.git" sign_op HEAD) ;;
+  esac
+  git -C "$w" push -q --force "$STORAGE/$rid" "$tip:$ref"
   rm -rf "$w"
   touch -d "10 days ago" "$STORAGE/$rid"
 }
@@ -1076,6 +1114,45 @@ grep -qE "^zmediaspc .*media-dump" <<<"$plan" \
 ! has "$plan" "zmediacobm" \
   && ok "a peer replicating a repo does not subtract the repo's own COB text from itself" \
   || no "replication erased zmediacobm's issue thread and left it looking like a dump"
+
+# --- rule F counts only ops a delegate signed, and a repo it cannot list whole is unjudged ---
+# zmediapeer's delegate replies to the stranger's issue op, and Radicle makes that op a parent
+# of the reply, so the stranger's clip is in the history of the delegate's own COB ref. The
+# stranger's commit even names the delegate as its author and carries a signature the delegate
+# made, copied from the reply: only a signature over the commit's own tree ties the two
+# together. zmediacob's dump gains a branch whose tip commit is gone from the object
+# store; what it held is unknown, so the repo cannot be judged on the branch that is left.
+build_fixture; assert_isolated
+d="$STORAGE/zmediapeer"
+ts=$(date -u -d "60 days ago" +%s)
+reply=$(printf '100644 blob %s\t0\n' \
+          "$(printf '{"body":"thanks"}' | GIT_DIR="$d" git hash-object -w --stdin)" \
+        | GIT_DIR="$d" git mktree)
+c=$(GIT_DIR="$d" GIT_AUTHOR_DATE="@$ts +0000" GIT_COMMITTER_DATE="@$ts +0000" \
+      git -c user.name=a -c user.email=a@b commit-tree -m reply "$reply")
+sigblock=$(GIT_DIR="$d" git cat-file commit "$(GIT_DIR="$d" sign_op "$c")" \
+             | sed -n '/^gpgsig /,/END SSH SIGNATURE/p')
+s=$(GIT_DIR="$d" git rev-parse "refs/namespaces/$STRANGER_NID/refs/cobs/xyz.radicle.issue/aaa")
+forged=$({ GIT_DIR="$d" git cat-file commit "$s" \
+             | sed -n "/^\$/q; s/ <[^>]*> / <op@$COB_NID> /; p"
+           printf '%s\n\n' "$sigblock"
+           GIT_DIR="$d" git cat-file commit "$s" | sed '1,/^$/d'; } \
+         | GIT_DIR="$d" git hash-object -t commit -w --stdin)
+c=$(GIT_DIR="$d" GIT_AUTHOR_DATE="@$ts +0000" GIT_COMMITTER_DATE="@$ts +0000" \
+      git -c user.name=a -c user.email=a@b commit-tree -p "$forged" -m reply "$reply")
+GIT_DIR="$d" git update-ref "refs/namespaces/$COB_NID/refs/cobs/xyz.radicle.issue/eee" \
+  "$(GIT_DIR="$d" sign_op "$c")"
+touch -d "10 days ago" "$d"
+e_tree zmediacob 60 extra "README.md:4096"
+gone=$(GIT_DIR="$STORAGE/zmediacob" git rev-parse extra)
+rm -f "$STORAGE/zmediacob/objects/${gone:0:2}/${gone:2}"
+plan=$(run)
+! has "$plan" "zmediapeer" \
+  && ok "a stranger's op a delegate replied to is not the repo's, whoever it names as author" \
+  || no "rule F counted a stranger's op reached through a delegate's reply"
+{ ! has "$plan" "zmediacob" && grep -q 'left 2 repo(s) unjudged' <<<"$plan"; } \
+  && ok "a branch whose tip is gone leaves the repo unjudged, not judged on the rest" \
+  || no "rule F judged a repo on the branches it could still read"
 
 
 build_fixture; assert_isolated

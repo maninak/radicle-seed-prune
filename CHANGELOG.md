@@ -8,6 +8,8 @@ All notable changes to this project are documented here. The format is based on 
 
 Replace the script, then do a dry run. If it exits `5` because `rad ls` failed, every run stops the same way until `rad ls` works again. A directory in storage whose name is not a repo id is enough to make `rad ls` fail, so move any such directory out of storage.
 
+The media rule now needs OpenSSL 3. With an older `openssl`, a run says so and stops with exit `1`; leave `F` out of `RULES` to run without the media rule.
+
 ### Added
 
 - **You can list repos and identities to prune and block on sight.** Put one repo id or identity (`did:key:z6Mk...`) per line in `deny.txt` in the audit directory, and a list another operator shares works as is. `--apply` prunes and blocks every listed repo and every repo a listed identity maintains, unless it is pinned, private, your own or in `keep.txt`.
@@ -21,6 +23,8 @@ Replace the script, then do a dry run. If it exits `5` because `rad ls` failed, 
 
 ### Fixed
 
+- **A stranger can no longer get a repo pruned as a media dump by sending it a patch.** When a delegate commented on a stranger's patch or issue, the media rule counted the stranger's files as the repo's own. It now counts only comments and patches the delegates signed.
+- **The media rule no longer judges a repo with a branch whose commit is missing.** It used to skip that branch, and a repo missing its README could look like a dump.
 - **Your own and private repos stay out of the plan even if `rad ls` leaves them out.** Every repo is also checked on disk, and a warning counts the ones kept that way and names the first few. They used to be recognised only from `rad ls`, whose output a rad release can change. This also keeps your own repos this node no longer seeds, which used to be prunable.
 - **A run stops with exit `5` when `rad ls` fails, and prints its error.** A directory in storage whose name is not a repo id is enough to make it fail. A run used to go on as if this node had no own or private repos. A malformed node id stops the run the same way.
 - **The media and peer rules no longer mistake an identity named in a repo's description for one of its owners.** The media rule counted that identity's uploads as the repo's own, and the peer rule never flagged it.

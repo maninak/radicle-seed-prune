@@ -186,7 +186,9 @@
 #   identity document's signatures. The delegates' own issues and comments therefore count,
 #   because a dump hides as well in an attachment as in a commit. A COB is read across its
 #   whole history, since it gains one commit per op and each tree holds only that op's own
-#   files, so an attachment from an older comment is still on disk. Every OTHER peer's
+#   files, so an attachment from an older comment is still on disk. Only the ops a delegate
+#   signed count: that history also reaches every other commenter's ops, and the commits of
+#   any patch a delegate replied to. openssl checks each signature. Every OTHER peer's
 #   namespace is skipped, so pushing a video onto a stranger's near-empty repo cannot put THEIR
 #   repo in the plan. Skipping beats subtracting what those namespaces hold: replication
 #   mirrors a repo's own branches and COBs into every peer that seeds it, so subtracting on
@@ -651,6 +653,72 @@ delegate_branches() {
       split($0, p, "/"); if (index(dids, " " p[3] " ")) print }'
 }
 
+# Writes the bytes the hex digits in $1 spell. Defined at the top level, so a worker can carry
+# a copy of it.
+unhex() {
+  local esc="" i
+  for ((i = 0; i < ${#1}; i += 2)); do esc+="\\x${1:i:2}"; done
+  printf "$esc"
+}
+
+# The ed25519 key a did:key names, as 64 hex digits. The part after "z" is base58 of the bytes
+# ed 01 followed by the key. Defined at the top level, so a worker can carry a copy of it.
+did_key_hex() {
+  awk -v s="$1" 'BEGIN {
+    a = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+    for (i = 2; i <= length(s); i++) {
+      c = index(a, substr(s, i, 1)) - 1
+      for (j = 0; j < n; j++) { c += b[j] * 58; b[j] = c % 256; c = int(c / 256) }
+      while (c > 0) { b[n++] = c % 256; c = int(c / 256) }
+    }
+    for (j = n - 1; j >= 0; j--) printf "%02x", b[j] }' | sed -n 's/^ed01//p'
+}
+
+# Prints the tree of every issue and patch op the given COB refs reach that one of the repo's
+# delegates signed, one per line, and "torn" if the refs could not be walked whole.
+# Reads $dids as read_delegates sets it, and writes scratch files under $2.
+# An op's parents are the newest ops already there, whoever wrote them, and a patch op's are
+# also the patch's own commits, so a delegate's COB ref reaches strangers' files. The author
+# line names a key, but anybody can write any author line, so it only picks which key to check.
+# A Radicle op carries an ed25519 signature over its tree id, in an SSH signature block whose
+# last 64 bytes are the signature itself. A check that passes ties the tree to the delegate,
+# and the tree is all that is counted: the op's parents are not.
+delegate_ops() {
+  local d=$1 w=$2 nid key tree sig; shift 2
+  [ $# -gt 0 ] || return 0
+  local -A der=()
+  for nid in $dids; do
+    key=$(did_key_hex "$nid")
+    [ ${#key} = 64 ] || continue
+    # The DER form openssl reads an ed25519 public key in: a fixed 12-byte header, the key.
+    unhex "302a300506032b6570032100$key" > "$w/$nid.der"
+    der[$nid]=$w/$nid.der
+  done
+  printf '%s\n' "$@" \
+    | GIT_DIR="$d" git rev-list --stdin --pretty=raw 2>/dev/null \
+    | awk '
+        /^commit / { if (tree != "" && sig != "") print tree, nid, sig
+                     tree = ""; nid = ""; sig = ""; insig = 0; next }
+        /^tree /   { tree = $2; next }
+        /^author / { if (match($0, /@z[1-9A-HJ-NP-Za-km-z]+>/))
+                       nid = substr($0, RSTART + 1, RLENGTH - 2)
+                     next }
+        /^gpgsig -----BEGIN SSH SIGNATURE-----$/ { insig = 1; next }
+        insig && /^ -----END SSH SIGNATURE-----$/ { insig = 0; next }
+        insig { sig = sig substr($0, 2) }
+        END { if (tree != "" && sig != "") print tree, nid, sig }' \
+    | while read -r tree nid sig; do
+        [ -n "${der[$nid]:-}" ] || continue
+        printf '%s' "$sig" | base64 -d 2>/dev/null | tail -c 64 > "$w/sig"
+        unhex "$tree" > "$w/msg"
+        # A signature that does not check out leaves the op uncounted, malformed or not.
+        # Were it to leave the repo unjudged, one bad op would shield a dump from this rule.
+        openssl pkeyutl -verify -pubin -keyform DER -inkey "${der[$nid]}" -rawin \
+          -in "$w/msg" -sigfile "$w/sig" >/dev/null 2>&1 && echo "$tree"
+      done
+  case ${PIPESTATUS[1]} in 0) ;; *) echo torn ;; esac
+}
+
 # What the first 16 bytes say a file is, as lowercase hex, whatever its name says. Most
 # signatures below hold a control byte, or one that cannot appear in UTF-8, which text does not
 # start with. GIF8, ID3, fLaC, 8BPS, and RIFF or ftyp a few bytes in, are plain letters, which
@@ -773,6 +841,7 @@ if [ "$CMD" != quarantine ]; then
   need="$need uniq wc xargs"
 fi
 if [ "$QVERB" = files ]; then need="$need awk git od"; fi
+if [ "$CMD" != quarantine ] && rule_on F; then need="$need base64 openssl"; fi
 missing=
 for c in $need; do
   command -v "$c" >/dev/null 2>&1 || missing="$missing $c"
@@ -782,6 +851,26 @@ done
   echo "PATH=$PATH" >&2
   exit 1
 }
+# Rule F counts an issue or patch op only once openssl has checked its signature. An openssl
+# that cannot check ed25519 (before 3.0, pkeyutl has no -rawin) would turn every op down and
+# leave each repo looking as if it had none, so it is tried first on RFC 8032's second test
+# vector: a key, the one-byte message 72, and its signature.
+if [ "$CMD" != quarantine ] && rule_on F; then
+  vec=$(mktemp -d)
+  { unhex 302a300506032b6570032100
+    unhex 3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c; } > "$vec/key"
+  unhex 72 > "$vec/msg"
+  { unhex 92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da
+    unhex 085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00; } > "$vec/sig"
+  openssl pkeyutl -verify -pubin -keyform DER -inkey "$vec/key" -rawin -in "$vec/msg" \
+    -sigfile "$vec/sig" >/dev/null 2>&1 && ed_ok=1 || ed_ok=0
+  rm -rf "$vec"
+  [ "$ed_ok" = 1 ] || {
+    echo "openssl here cannot check ed25519 signatures, which rule F needs; OpenSSL 3 can." >&2
+    echo "To run without rule F, leave F out of RULES." >&2
+    exit 1
+  }
+fi
 # rad answers for what this seed holds, who else seeds it, and what is pinned or private. With
 # no rad the routing table comes back empty, and the abort that follows names seed counts
 # rather than the binary that never ran. `restore` needs it too: it re-seeds what it puts back.
@@ -1717,7 +1806,7 @@ if rule_on F; then
   echo "# measuring repo trees for rule F ($JOBS workers)..." >&2
   cat > "$tmp/media.sh" <<MEDIA
 #!/usr/bin/env bash
-$(declare -f read_delegates is_media)
+$(declare -f read_delegates is_media unhex did_key_hex delegate_ops)
 media_exts='$MEDIA_EXTS'
 text_exts='$MEDIA_TEXT_EXTS'
 text_names='$MEDIA_TEXT_NAMES'
@@ -1729,14 +1818,18 @@ sniff_max=$MEDIA_SNIFF_MAX_FILES
 max_refs=$MEDIA_MAX_REFS
 # One file per worker, so parallel writers appending blob ids cannot interleave a line.
 blobs=$tmp/blobs/\$\$
+# Where delegate_ops writes the keys and signatures it hands to openssl.
+work=$tmp/ops.\$\$
+mkdir -p "\$work"
 MEDIA
   cat >> "$tmp/media.sh" <<'MEDIA'
-# The files the given refs reach, as "<oid> <size> <path>". A branch or tag comes in as
-# "<ref>^{tree}", which lists what it holds now and nothing before it. A COB ref comes in
-# whole, so its history comes too: a COB gains one commit per op and each commit's tree holds
-# only that op's own files, so its tip alone shows the newest comment's attachment and nothing
-# earlier. --ignore-missing keeps one broken ref from costing us the rest, and %(rest) hands
-# each object's path from rev-list straight through cat-file, which knows the sizes.
+# The files the given trees hold, as "<oid> <size> <path>". A branch or tag comes in as
+# "<ref>^{tree}", which lists what it holds now and nothing before it. An issue or patch comes
+# in as the trees of its ops: a COB gains one commit per op and each commit's tree holds only
+# that op's own files, so its tip alone shows the newest comment's attachment and nothing
+# earlier. A tree that is missing fails the walk, and the repo goes unjudged: skipping it would
+# read as a repo holding less. %(rest) hands each object's path from rev-list straight through
+# cat-file, which knows the sizes.
 files_in() {
   local d=$1; shift
   [ $# -gt 0 ] || return 0
@@ -1744,8 +1837,7 @@ files_in() {
   # size limit a ref list can reach. The filter keeps trees and commits out of the reader,
   # which is two thirds of what walking a COB emits and none of what we want.
   printf '%s\n' "$@" \
-    | GIT_DIR="$d" git rev-list --objects --ignore-missing --stdin \
-        --filter=object:type=blob 2>/dev/null \
+    | GIT_DIR="$d" git rev-list --objects --stdin --filter=object:type=blob 2>/dev/null \
     | GIT_DIR="$d" git cat-file \
         --batch-check='%(objectname) %(objecttype) %(objectsize) %(rest)' 2>/dev/null \
     | awk '$2 == "blob" { path = $0; sub(/^[^ ]+ [^ ]+ [^ ]+ /, "", path)
@@ -1759,47 +1851,14 @@ files_in() {
   case $lister in 0|141) ;; *) echo torn; return ;; esac
   case $reader in 0|141) ;; *) echo torn ;; esac
 }
-for d; do
-  rid=${d##*/}
-  # --count stops the read one ref past the cap, which is both how we notice we hit it and
-  # what keeps a 152k-ref repo from being read into a variable at all. First, so a repo over
-  # the cap costs this one call and nothing else.
-  allrefs=$(GIT_DIR="$d" git for-each-ref --count=$(( max_refs + 1 )) \
-              --format='%(refname)' 2>/dev/null) || { echo "$rid" >&4; continue; }
-  mapfile -t refs <<<"$allrefs"
-  [ "${#refs[@]}" -le "$max_refs" ] || { echo "$rid" >&4; continue; }
-  # A dump hides as well in an issue attachment as in a commit, so the repo's OWN COBs count
-  # too. "Own" is decided by refs/rad/id, the identity document, which the local node writes
-  # only after verifying its signatures; a stranger's push can never move it. Their content
-  # lands under refs/namespaces/<their-nid>/ and is what the subtraction below drops.
-  read_delegates "$d"
-  # Collect the refs this repo's own delegates control, and only those. That is the canonical
-  # branches and tags, which only a delegate can move, plus the delegates' own namespaces and
-  # COBs. Any other peer's namespace is left out of the walk entirely: what a stranger pushed
-  # is not evidence about this repo, so it must not condemn the repo, and it cannot be used to
-  # spare one either. A branch or tag gets the "^{tree}" suffix here, so that files_in lists
-  # what it holds now rather than walking its whole history; a COB ref goes in bare, because
-  # for a COB the history IS the content.
-  ours=""
-  for ref in "${refs[@]}"; do
-    case $ref in
-      refs/heads/*|refs/tags/*) ours="$ours $ref^{tree}"; continue ;;
-      refs/cobs/*)              ours="$ours $ref"; continue ;;
-      refs/namespaces/*)
-        nid=${ref#refs/namespaces/}; nid=${nid%%/*}
-        case " $dids " in (*" $nid "*) ;; (*) continue ;; esac ;;
-      *) continue ;;
-    esac
-    case $ref in
-      */refs/cobs/*) ours="$ours $ref" ;;
-      *)             ours="$ours $ref^{tree}" ;;
-    esac
-  done
-  [ -n "$ours" ] || { printf '%s\t0\t0\n' "$rid"; continue; }
-  # Sort into three: known media, known text, and everything else, which gets looked at. A
-  # recognised text file bigger than sniff_big is looked at too, or naming a video README.md
-  # would both hide it and blow the text budget that spares the repo.
-  sums=$(files_in "$d" $ours \
+# The totals for the given trees of repo $d, as "= <media> <text> <unknown>" on the last line,
+# after a line per file still to be looked at ("? <oid> <size>") and per media file ("m <oid>
+# <size>").
+# Sorts files into three: known media, known text, and everything else, which gets looked at.
+# A recognised text file bigger than sniff_big is looked at too, or naming a video README.md
+# would both hide it and blow the text budget that spares the repo.
+measure() {
+  files_in "$d" "$@" \
     | awk -v m="$media_exts" -v t="$text_exts" -v tn="$text_names" -v big="$sniff_big" \
           -v ceil="$text_ceil" '
         # index, not a regex: a file literally called "[" would not compile as one.
@@ -1832,11 +1891,60 @@ for d; do
           printf "? %s %.0f\n", oid, size; unk += size
         }
         END { if (torn) exit 1
-              printf "= %.0f %.0f %.0f\n", media, text, unk }')
-  # The awk above prints "=" last, so anything else there means it died part-way and the
-  # totals are a fragment. A fragment is not evidence: report the repo, and leave it out of
-  # the batch corpus below as well as out of its own verdict.
+              printf "= %.0f %.0f %.0f\n", media, text, unk }'
+}
+for d; do
+  rid=${d##*/}
+  # --count stops the read one ref past the cap, which is both how we notice we hit it and
+  # what keeps a 152k-ref repo from being read into a variable at all. First, so a repo over
+  # the cap costs this one call and nothing else.
+  allrefs=$(GIT_DIR="$d" git for-each-ref --count=$(( max_refs + 1 )) \
+              --format='%(refname)' 2>/dev/null) || { echo "$rid" >&4; continue; }
+  mapfile -t refs <<<"$allrefs"
+  [ "${#refs[@]}" -le "$max_refs" ] || { echo "$rid" >&4; continue; }
+  # A dump hides as well in an issue attachment as in a commit, so the repo's OWN COBs count
+  # too. "Own" is decided by refs/rad/id, the identity document, which the local node writes
+  # only after verifying its signatures; a stranger's push can never move it. Their content
+  # lands under refs/namespaces/<their-nid>/ and is what the subtraction below drops.
+  read_delegates "$d"
+  # Collect the refs this repo's own delegates control, and only those. That is the canonical
+  # branches and tags, which only a delegate can move, plus the delegates' own namespaces and
+  # COBs. Any other peer's namespace is left out of the walk entirely: what a stranger pushed
+  # is not evidence about this repo, so it must not condemn the repo, and it cannot be used to
+  # spare one either. A branch or tag gets the "^{tree}" suffix here, so that files_in lists
+  # what it holds now and not its whole history. An issue or patch ref goes to delegate_ops,
+  # which hands back the trees of the ops a delegate signed: for a COB the history is the
+  # content, but that history also reaches what everybody else wrote.
+  ours=""; cobs=()
+  for ref in "${refs[@]}"; do
+    case $ref in
+      refs/heads/*|refs/tags/*) ours="$ours $ref^{tree}"; continue ;;
+      refs/cobs/*)              cobs+=("$ref"); continue ;;
+      refs/namespaces/*)
+        nid=${ref#refs/namespaces/}; nid=${nid%%/*}
+        case " $dids " in (*" $nid "*) ;; (*) continue ;; esac ;;
+      *) continue ;;
+    esac
+    case $ref in
+      */refs/cobs/*) cobs+=("$ref") ;;
+      *)             ours="$ours $ref^{tree}" ;;
+    esac
+  done
+  [ -n "${ours// /}" ] || [ "${#cobs[@]}" -gt 0 ] || { printf '%s\t0\t0\n' "$rid"; continue; }
+  sums=$(measure $ours)
   read -r tag media text unk <<<"${sums##*$'\n'}"
+  # The issues and patches come second, and only while the branches leave room for a verdict:
+  # past text_ceil nothing they hold can change it, and checking each op's signature is most
+  # of what a repo with thousands of ops costs.
+  if [ "$tag" = "=" ] && [ "$text" -lt "$text_ceil" ] && [ "${#cobs[@]}" -gt 0 ]; then
+    ops=$(delegate_ops "$d" "$work" "${cobs[@]}")
+    case $'\n'$ops$'\n' in (*$'\n'torn$'\n'*) echo "$rid" >&4; continue ;; esac
+    sums=$(measure $ours $ops)
+    read -r tag media text unk <<<"${sums##*$'\n'}"
+  fi
+  # measure prints "=" last, so anything else there means it died part-way and the totals are
+  # a fragment. A fragment is not evidence: report the repo, and leave it out of the batch
+  # corpus below as well as out of its own verdict.
   [ "$tag" = "=" ] || { echo "$rid" >&4; continue; }
   awk -v rid="$rid" '$1=="m" { printf "%s\t%s\t%s\n", $2, rid, $3 }' <<<"$sums" >> "$blobs"
   # Reading only pays off while the repo could still be a dump: once the text it already has
