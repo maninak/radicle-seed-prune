@@ -305,7 +305,7 @@ mv <storage>/<rid> <audit>/quarantine/<rid>   # out of storage, still on disk
 
 ### Quarantine
 
-A pruned repo moves to `$AUDIT_DIR/quarantine/<rid>` instead of being deleted. Once it has been there `QUARANTINE_DAYS` (7) days, the next `--apply` run that gets past the caps and the prompt deletes it for real, even if that run prunes nothing itself or holds every rule back, unless the run [lifts its block](#blocks-the-tool-lifts-on-its-own). At or under the critical free-space threshold, an `--apply` run that gets past the caps and the prompt empties the whole quarantine, however recent each entry is. `QUARANTINE=0` deletes outright and keeps nothing.
+A pruned repo moves to `$AUDIT_DIR/quarantine/<rid>` instead of being deleted. Once `QUARANTINE_DAYS` (7) days have passed since the start of the run that pruned it, less three hours so that a weekly cron is not a few seconds or a daylight-saving hour short, the next `--apply` run that gets past the caps and the prompt deletes it for real, even if that run prunes nothing itself or holds every rule back, unless the run [lifts its block](#blocks-the-tool-lifts-on-its-own). At or under the critical free-space threshold, an `--apply` run that gets past the caps and the prompt empties the whole quarantine, however recent each entry is. `QUARANTINE=0` deletes outright and keeps nothing.
 
 Every repo was unseeded and blocked before it was moved there, so nothing on the node points at the quarantine. Deleting the directory by hand (`rm -rf`) is safe at any time and only costs the ability to restore.
 

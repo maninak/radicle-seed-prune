@@ -2284,12 +2284,17 @@ out=$("$SCRIPT" quarantine delete "../../../../../..${canary}" 2>&1 || true)
   || no "a path argument reached rm through a quarantine verb"
 
 # The same window a run applies, on demand, so an operator can free the disk without waiting.
+# A copy is due three hours before its 7 days are up, so the next weekly run a few seconds, or
+# a daylight-saving hour, early still purges it. zedgeq1 is two hours short, zfreshq1 four.
 build_fixture; assert_isolated
 Q="$RSP_HOME/prune-audit/quarantine"
-mkdir -p "$Q/zexpq1" "$Q/zfreshq1"; touch -d "40 days ago" "$Q/zexpq1"
+mkdir -p "$Q/zexpq1" "$Q/zedgeq1" "$Q/zfreshq1"; touch -d "40 days ago" "$Q/zexpq1"
+week=$(( $(date +%s) - 7*86400 ))
+touch -d "@$(( week + 7200 ))" "$Q/zedgeq1"; touch -d "@$(( week + 14400 ))" "$Q/zfreshq1"
 out=$("$SCRIPT" quarantine purge 2>&1)
-{ [ ! -e "$Q/zexpq1" ] && [ -d "$Q/zfreshq1" ] && grep -q 'purged 1 repo' <<<"$out"; } \
-  && ok "quarantine purge deletes what is past its window and nothing else" \
+{ [ ! -e "$Q/zexpq1" ] && [ ! -e "$Q/zedgeq1" ] && [ -d "$Q/zfreshq1" ] \
+  && grep -q 'purged 2 repo' <<<"$out"; } \
+  && ok "quarantine purge deletes what is past its window, less 3 hours, and nothing else" \
   || no "quarantine purge deleted the wrong repos"
 
 # --- the run cache --- Rules E and F read every repo's contents, and almost nothing changes

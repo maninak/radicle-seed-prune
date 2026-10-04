@@ -628,6 +628,11 @@ AUDIT_DIR="${AUDIT_DIR:-$RAD_HOME/prune-audit}"
 # short enough that the parked disk stays small.
 QUARANTINE="${QUARANTINE:-1}"                    # 0 deletes outright, with no way back
 QUARANTINE_DAYS="${QUARANTINE_DAYS:-7}"          # days a pruned repo stays recoverable
+# Seconds of QUARANTINE_DAYS a purge may cut short. A copy is dated to the start of the run
+# that pruned it, and the run on the same schedule QUARANTINE_DAYS later starts within seconds
+# of that, either side, or an hour early across a daylight-saving change for a cron on local
+# time. Missing it by one second would keep the copy a whole extra cycle.
+QUAR_SLACK_SECS=10800
 quar="$AUDIT_DIR/quarantine"
 # Repos to never prune, one rid per line, blank lines and #-comments ignored. Written by
 # "quarantine restore" and editable by hand: a verdict a human has overruled once should not
@@ -1153,7 +1158,7 @@ is_rid() { [[ $1 =~ ^z[1-9A-HJ-NP-Za-km-z]+$ ]]; }
 # The instant a quarantined repo becomes deletable, compared in seconds: `find -mtime +N` means
 # "older than N+1 whole days", so a repo the countdown shows as due would survive the next
 # purge by a day.
-quar_cut=$(( now - QUARANTINE_DAYS*86400 ))
+quar_cut=$(( now - QUARANTINE_DAYS*86400 + QUAR_SLACK_SECS ))
 quar_expired() {                  # prints every quarantined repo past its window
   local d born
   for d in "$quar"/z*; do
@@ -5002,13 +5007,15 @@ while IFS=$'\t' read -r rid _; do
         if mv -- "$d" "$quar/$rid" 2>"$tmp/prune-err"; then
           deleted=$((deleted+1))
           printf '%s\n' "$rid" >> "$tmp/pruned" || ticks_ok=0
-          # The purge measures the window by directory mtime and mv keeps the old one, so a
-          # copy that could not be re-dated counts its window from a date this run did not
-          # choose and may already be past it. Rules B and C select repos nothing has touched
+          # The purge measures the window by directory mtime and mv keeps the old one. The
+          # copy is dated to this run's start, not to the move, so that the run
+          # QUARANTINE_DAYS later finds it due however long this one took. A copy that could
+          # not be re-dated counts its window from a date this run did not choose and may
+          # already be past it. Rules B and C select repos nothing has touched
           # for 90 to 730 days, and they read ref dates rather than mtime, so how much window
           # is left is not something this loop can work out. The repo has left storage either
           # way, which makes this a shortened undo and not a failed prune.
-          touch "$quar/$rid" 2>/dev/null \
+          touch -d "@$now" "$quar/$rid" 2>/dev/null \
             || { undated=$((undated+1))
                  progress_warn "#   WARN $rid kept its own date in quarantine, so its window" \
                                "runs from that date and may already have passed"; }
