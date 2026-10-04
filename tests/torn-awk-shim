@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Test double for `awk`: forwards to the next awk on PATH, except for the stage that turns rule
+# F's listing into "<oid> <size> <path>" lines, which it cuts down to the media files and then
+# exits the way an awk killed for memory does. Put its dir first on PATH to make that listing
+# come back short while the git readers before it finish cleanly.
+set -uo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+rest=""
+IFS=: read -ra dirs <<<"$PATH"
+for dir in "${dirs[@]}"; do [ "$dir" -ef "$here" ] || rest="$rest${rest:+:}$dir"; done
+real=$(PATH="$rest" command -v awk)
+for a in "$@"; do
+  case "$a" in
+    *'printf "%s %.0f %s\n", $1, $3, path'*)
+      "$real" "$@" | grep -E '\.(mp4|mkv|webm|png|jpe?g|gif)$'
+      exit 137 ;;
+  esac
+done
+exec "$real" "$@"

@@ -1288,6 +1288,19 @@ grep -qE "^zmediaspc .*media-dump" <<<"$plan" \
   && ok "a peer replicating a repo does not subtract the repo's own COB text from itself" \
   || no "replication erased zmediacobm's issue thread and left it looking like a dump"
 
+# --- rule F leaves a repo unjudged when the stage that shapes its listing dies --- The git
+# readers before it finish cleanly and see only a closed pipe, so the death shows only in that
+# stage's own exit. zmediatwo's README is the text that spares it, and the cut listing holds
+# the clip alone.
+build_fixture; assert_isolated
+tornawk="$ROOT/torn-awk"; mkdir -p "$tornawk"
+cp "$HERE/torn-awk-shim" "$tornawk/awk"; chmod +x "$tornawk/awk"
+plan=$(PATH="$tornawk:$PATH" run)
+{ ! has "$plan" "zmediatwo" \
+    && grep -q '^zmediatwo'$'\t' "$AUDIT_DIR/last-run/F-media-unjudged.tsv"; } \
+  && ok "a listing whose last stage dies leaves the repo unjudged, not pruned on the rest" \
+  || no "rule F judged a repo on a listing cut short by its last stage"
+
 # --- rule F counts only ops a delegate signed, and a repo it cannot list whole is unjudged ---
 # zmediapeer's delegate replies to the stranger's issue op, and Radicle makes that op a parent
 # of the reply, so the stranger's clip is in the history of the delegate's own COB ref. The

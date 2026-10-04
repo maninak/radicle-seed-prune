@@ -2794,10 +2794,12 @@ files_in() {
   # short list reads as a repo holding less: less text, which is the direction that condemns.
   # Say so on the stream instead, and the classifier below drops the repo. 141 is SIGPIPE: the
   # classifier stops reading once the repo has more text than any verdict allows, and that
-  # short circuit is not a tear.
-  local lister=${PIPESTATUS[1]} reader=${PIPESTATUS[2]}
+  # short circuit is not a tear. The awk counts too: a tree entry with a name of gigabytes
+  # can get it killed for memory, and the git stages before it then see only a closed pipe.
+  local lister=${PIPESTATUS[1]} reader=${PIPESTATUS[2]} shaper=${PIPESTATUS[3]}
   case $lister in 0|141) ;; *) echo torn; return ;; esac
-  case $reader in 0|141) ;; *) echo torn ;; esac
+  case $reader in 0|141) ;; *) echo torn; return ;; esac
+  case $shaper in 0|141) ;; *) echo torn ;; esac
 }
 # The totals for the given trees of repo $d, as "= <media> <text> <unknown> <av>" on the last
 # line, after a line per file still to be looked at ("? <oid> <size>", or "z" for compressed
