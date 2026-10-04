@@ -2713,7 +2713,7 @@ sed -i "${edits[@]}" "$RSP_MANIFEST"
 out=$("$SCRIPT" 2>&1); rc=$?
 { [ "$rc" = 0 ] \
   && grep -q 'REVIEW, MALWARE OPERATIONS: 1 identity(s), from the malware rule (H)' <<<"$out" \
-  && grep -q "#   $OPS, 2 of the 3 repos it is a delegate of and signed refs in:" <<<"$out" \
+  && grep -q "#   $OPS, 2 of the 3 repos it signed as a delegate (matching ones only where it was a founder):" <<<"$out" \
   && grep -q "#       rad:zcode4  # c2-panel (c2,panel,loader)" <<<"$out" \
   && grep -qx "#     did:key:$OPS" <<<"$out"; } \
   && ok "an identity whose repos read like a malware operation is named for review" \
@@ -2744,6 +2744,30 @@ row=$(printf '%s\t2\t3\tzcode6\tdrainer,payload\twallet_drainers' "$OPS")
 grep -qxF "$row" "$AUDIT_DIR/last-run/H-malware-identities.tsv" \
   && ok "last-run/H-malware-identities.tsv holds every repo that matched" \
   || no "rule H's evidence did not reach last-run"
+# A delegate can add anybody who cloned a repo as a co-delegate, and a clone signs refs of its
+# own. FRAMED is added that way to the operation's two repos, in a later revision of each
+# document.
+FRAMED=$(dlg zframed)
+for r in zcode4 zcode6; do
+  d="$STORAGE/$r"; w=$(mktemp -d -p "$ROOT")
+  git -C "$w" init -q -b master
+  git -C "$w" fetch -q "$d" refs/rad/id && git -C "$w" reset -q --hard FETCH_HEAD
+  printf '{"delegates":["did:key:%s","did:key:%s","did:key:%s"],"payload":{},"threshold":1}\n' \
+    "$OPS" "$VIC" "$FRAMED" > "$w/embeds/radicle.json"
+  git -C "$w" -c user.email=a@b -c user.name=a commit -qam 'add a delegate'
+  git -C "$w" push -q --force "$d" master:refs/rad/id \
+    "master:refs/namespaces/$FRAMED/refs/rad/sigrefs"
+  rm -rf "$w"; touch -d "10 days ago" "$d"
+done
+out=$("$SCRIPT" 2>&1); rc=$?
+{ [ "$rc" = 0 ] && ! grep -q "$FRAMED" <<<"$out" \
+  && grep -q "#   $OPS, 2 of the 3 repos it signed as a delegate (matching ones only where it was a founder):" <<<"$out"; } \
+  && ok "an identity added as a co-delegate after a repo was created is not named for it" \
+  || no "rule H named an identity only added as a co-delegate later"
+for r in zcode4 zcode6; do
+  set_delegate "$r" "$OPS" "$VIC"
+  GIT_DIR="$STORAGE/$r" git update-ref -d "refs/namespaces/$FRAMED/refs/rad/sigrefs"
+done
 # A kept repo vouches for every delegate it names, one who never signed there included, since
 # the deny list would not block them either.
 set_delegate zfarm1 "$FEW" "$OPS"
@@ -2774,7 +2798,7 @@ set_delegate zpriv7 "$OPS"
 sed -i 's/^\(zrot3\t[^\t]*\t[^\t]*\t\)public/\1private/' "$RSP_MANIFEST"
 out=$("$SCRIPT" 2>&1); rc=$?
 { [ "$rc" = 0 ] \
-  && grep -q "#   $OPS, 2 of the 4 repos it is a delegate of and signed refs in:" <<<"$out"; } \
+  && grep -q "#   $OPS, 2 of the 4 repos it signed as a delegate (matching ones only where it was a founder):" <<<"$out"; } \
   && ok "an identity delegating a private repo is still named" \
   || no "a private repo kept its delegate from rule H"
 ! grep -q '^#     rad:zrot3 ' <<<"$out" \

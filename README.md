@@ -623,13 +623,13 @@ A `RULES` without `G` turns it off.
 
 ## Rule H: malware operations
 
-Rule H names identities and repos whose names, descriptions, file paths or commit subjects read like a malware operation: a stealer, a drainer, a botnet and the panel that runs it. It prunes and blocks nothing. It also names security research, and somebody who cloned a malware repo and was then made its delegate, so read each one before acting on it.
+Rule H names identities and repos whose names, descriptions, file paths or commit subjects read like a malware operation: a stealer, a drainer, a botnet and the panel that runs it. It prunes and blocks nothing. It also names security research, and somebody a repo's creator named as a delegate from the start who then cloned it, so read each one before acting on it.
 
 The words come in two kinds, strong (`MALWARE_STRONG_WORDS`: `hvnc`, `stealer`, `crypter`, `drainer`, `keylogger`, `ransomware`, `botnet`, `scam`) and weak (`MALWARE_WEAK_WORDS`: `c2`, `payload`, `panel`, `loader`, `zombie`, `rat`, `exploit`). A word matches whole or with one trailing `s`, so `stealers` matches and `pirate` does not match `rat`. Joined words like `TokenStealer` or `infostealer` do not match.
 
 ### Identities
 
-An identity's repos here are the ones it is a delegate of and signed refs in. A repo that only lists it as a delegate does not count, and neither does one it only cloned. The identity is named when, across the names and descriptions of its repos:
+An identity's repos here are the ones it is a delegate of and signed refs in. A repo that only lists it as a delegate does not count, and neither does one it only cloned. A repo whose name or description holds a word counts for it only if the identity was a delegate when the repo was created, since a delegate can add anybody who cloned the repo as a co-delegate. Otherwise that repo is left out of its repos altogether. The identity is named when, across the names and descriptions of its repos:
 
 1. at least one strong word appears;
 2. at least 3 different words appear, strong or weak;

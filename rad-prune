@@ -193,6 +193,7 @@
 #       one of MALWARE_STRONG_WORDS
 #       AND >= MALWARE_MIN_WORDS distinct words of MALWARE_STRONG_WORDS and MALWARE_WEAK_WORDS
 #       AND >= MALWARE_MIN_REPOS repos, and >= MALWARE_MIN_SHARE_PCT% of its repos, holding any
+#     where a repo holding a word counts only if the identity was among its founding delegates
 #     Then one repo the identity review did not list, that is not pinned, private, kept, our
 #     own or on the deny list, and none of whose signers that review leaves out:
 #       one of MALWARE_STRONG_WORDS in its name or description
@@ -789,7 +790,8 @@ JUNK_EXACT_REGEX='^(foo|bar|baz)$'
 JUNK_ID_MIN_LEN="${JUNK_ID_MIN_LEN:-8}"
 
 # Sets $dids to a repo's delegates, space-separated, and to nothing when they cannot be read,
-# and $iddoc to the identity document they come from. $1 = the repo's git dir. They come from
+# and $iddoc to the identity document they come from. $1 = the repo's git dir, $2 = the
+# revision of refs/rad/id to read, its newest when not given. They come from
 # the identity document's top-level "delegates" list and nowhere else. refs/rad/id is written
 # by the local node only after it verifies the document's signatures, so no stranger can add a
 # name. The rest of that ref's tree is free text the delegates wrote, a description or a
@@ -801,11 +803,11 @@ JUNK_ID_MIN_LEN="${JUNK_ID_MIN_LEN:-8}"
 # activity scan calls it once per repo in storage and a command substitution would fork for
 # each one.
 read_delegates() {
-  local doc list did='"did:key:z[1-9A-HJ-NP-Za-km-z]+"'
+  local doc list rev=${2:-refs/rad/id} did='"did:key:z[1-9A-HJ-NP-Za-km-z]+"'
   local re_list="^\\{\"delegates\":\\[($did(,$did)*)\\]"
   local re_did='did:key:(z[1-9A-HJ-NP-Za-km-z]+)(.*)'
   dids=""; iddoc=""
-  doc=$(GIT_DIR="$1" git cat-file blob refs/rad/id:embeds/radicle.json 2>/dev/null) || return 0
+  doc=$(GIT_DIR="$1" git cat-file blob "$rev:embeds/radicle.json" 2>/dev/null) || return 0
   # shellcheck disable=SC2034  # read by the activity scan's worker, a heredoc shellcheck skips
   iddoc=$doc
   if [[ $doc =~ $re_list ]]; then
@@ -3940,17 +3942,34 @@ if rule_on H; then
       "$tmp/vouched" "$tmp/lives"
     cat "$tmp/kept-nids" "$tmp/deny-nids"
     echo "$OUR_NID"; } | sort -u > "$tmp/malware-skip"
+  # The delegates each matching repo was created with. A delegate can add as a co-delegate
+  # anybody who cloned the repo, and a clone signs refs of its own, so only a founder's repos
+  # count as theirs. A repo whose first revision does not read counts for nobody. An identity
+  # that only ever joins repos somebody else created is not named for them, which is the price
+  # of not naming whoever was added to an operation's repos after cloning them.
+  : > "$tmp/malware-founders"
+  while IFS=$'\t' read -r rid _; do
+    root=$(GIT_DIR="$STORAGE/$rid" git rev-list --max-parents=0 refs/rad/id 2>/dev/null \
+             | tail -n 1) || root=""
+    [ -n "$root" ] || continue
+    read_delegates "$STORAGE/$rid" "$root"
+    printf '%s\t%s\n' "$rid" "$dids" >> "$tmp/malware-founders"
+  done < "$tmp/malware-words"
   # Each identity's repos, counted only where it is a delegate and signed refs of its own, so
-  # naming somebody as a co-delegate of a malware repo does not put them here. Then the bars.
+  # naming somebody as a co-delegate of a malware repo does not put them here. A matching repo
+  # counts for an identity only if the identity was among the repo's founders, and a matching
+  # repo it did not found leaves its share untouched. Then the bars.
   awk -F'\t' -v minwords="$MALWARE_MIN_WORDS" -v minrepos="$MALWARE_MIN_REPOS" \
       -v share="$MALWARE_MIN_SHARE_PCT" '
     FILENAME == ARGV[1] { skip[$1] = 1; next }
     FILENAME == ARGV[2] { words[$1] = $2; strong[$1] = $3; name[$1] = $4; next }
+    FILENAME == ARGV[3] { founders[$1] = " " $2 " "; next }
     $6 != "-" {
       n = split($6, signer, ",")
       for (i = 1; i <= n; i++) {
         d = signer[i]
         if (d in skip) continue
+        if (($1 in words) && !index(founders[$1], " " d " ")) continue
         repos[d]++
         if (!($1 in words)) continue
         hits[d]++; row[d, hits[d]] = $1 "\t" words[$1] "\t" name[$1]
@@ -3967,7 +3986,7 @@ if rule_on H; then
         for (i = 1; i <= hits[d]; i++)
           printf "%s\t%d\t%d\t%s\n", d, hits[d], repos[d], row[d, i]
       }
-    }' "$tmp/malware-skip" "$tmp/malware-words" "$tmp/lives" \
+    }' "$tmp/malware-skip" "$tmp/malware-words" "$tmp/malware-founders" "$tmp/lives" \
     | sort -t$'\t' -k1,1 -k4,4 > "$tmp/malware"
 fi
 nmalware=$(cut -f1 "$tmp/malware" | sort -u | wc -l)
@@ -4674,7 +4693,7 @@ if [ "$nmalware" -gt 0 ]; then
   for nid in $(cut -f1 "$tmp/malware" | sort -u); do
     grep "^$nid"$'\t' "$tmp/malware" > "$tmp/malware-one"
     IFS=$'\t' read -r _ nhit nall _ < "$tmp/malware-one"
-    printf '#   %s, %d of the %d repos it is a delegate of and signed refs in:\n' \
+    printf '#   %s, %d of the %d repos it signed as a delegate (matching ones only where it was a founder):\n' \
            "$nid" "$nhit" "$nall"
     head -n "$top_evidence" "$tmp/malware-one" \
       | while IFS=$'\t' read -r _ _ _ rid found rname; do
