@@ -41,9 +41,10 @@ A run that holds back a rule exits `4`. A monitor that alerts on exit `3` should
 - **The media rule (F) spares more real projects.** A source file or a build file (such as a `Makefile` or `package.json`) now spares a repo from `media-dump`, and a build file spares it from `media-batch` too. Compressed text such as `rows.csv.gz` counts as text, and a repo named after a seed's hostname with under 1 MiB of media is never flagged. Only repos with almost no text count toward a media batch, and a repo with a branch whose commit is missing from storage is no longer judged.
 - **`keep.txt` is read correctly however it was saved.** A byte-order mark from some Windows editors, or a `quarantine restore` onto a file with no final line break, could make a run ignore a listed repo and prune it.
 - **Repos that `rad ls` lists as `local` are no longer pruned as `spam-batch`.** Their head commit was read as their description.
+- **`--apply` stops with exit `1` before it touches any repo when it cannot write storage or the quarantine.** It used to block every repo in the plan and leave them all in storage.
 - **A stopped run no longer deletes expired repos from the quarantine.** A run stopped by the runaway caps or by an `n` at the prompt used to delete them first.
 - **A disk at or under the critical free-space threshold counts as full pressure even when `PRESSURE_CRIT_*` is set above `PRESSURE_RELAX_*`.**
-- **A typo in `MAX_PRUNE_COUNT`, a `RATCHET_*` setting or `DISK_AWARE` stops the run with exit `2`.** It used to turn a check off without a word.
+- **A typo in `MAX_PRUNE_COUNT`, a `RATCHET_*` setting, `DISK_AWARE` or `QUARANTINE` stops the run with exit `2`.** It used to turn a check off without a word, and a `QUARANTINE` typo deleted repos outright.
 - **A run by hand and a run from cron no longer drop each other's cache when they start bash from different paths.** Each used to read every repo again, as on a first run.
 - **An unexpected failure always exits `1`.** It used to pass on the failed command's exit code, which could look like exit `3` or `5`.
 - **rad-prune keeps working once `rad` drops `rad self --nid`.** rad 1.10 deprecates the flag.

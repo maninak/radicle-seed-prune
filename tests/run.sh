@@ -2051,20 +2051,68 @@ else
 fi
 unset PARASITE_MIN_REPOS PARASITE_MIN_BYTES PARASITE_TEXT_MAX_BYTES
 
-# --- a failed deletion is never reported as reclaimed disk --- A read-only storage dir lets
-# the whole plan compute, then makes every rm fail. The audit log and the GiB total are both
-# written from the plan, so silence here would record disk that never freed.
+# --- a failed deletion is never reported as reclaimed disk --- A repo dir that is not writable
+# lets the whole plan compute, then fails its move, since moving a directory to another parent
+# rewrites its "..". The audit log and the GiB total are both written from the plan, so
+# silence here would record disk that never freed.
 build_fixture; assert_isolated
 before=$(ls "$STORAGE" | wc -l)
-chmod 555 "$STORAGE"
+chmod 555 "$STORAGE"/z*
 out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
-chmod 755 "$STORAGE"
+chmod 755 "$STORAGE"/z*
 after=$(ls "$STORAGE" | wc -l)
 { [ "$before" = "$after" ] && grep -q 'WARN quarantine failed' <<<"$out" \
     && grep -qE 'WARN: [0-9]+ of [0-9]+ deletions failed' <<<"$out" \
     && grep -q 'DONE: quarantined 0 repos' <<<"$out"; } \
   && ok "a failed quarantine move is reported, not counted as reclaimed" \
   || no "failed quarantine reported (rc=$rc)"
+
+# --- a quarantine the run cannot write stops it before the scan --- Every repo is unseeded and
+# blocked before it moves, so carrying on would leave the whole plan blocked and still in
+# storage, and an audit log of a plan that never ran would count as pruned on the next run. A
+# regular file where the quarantine goes defeats mkdir even for root.
+build_fixture; assert_isolated
+before=$(ls "$STORAGE" | wc -l)
+mkdir -p "$AUDIT_DIR"; : > "$AUDIT_DIR/quarantine"
+: > "$RSP_HOME/.stub_unseed"; : > "$RSP_HOME/.stub_block"
+out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
+{ [ "$rc" = 1 ] && grep -q 'cannot write the quarantine' <<<"$out" \
+    && [ "$(ls "$STORAGE" | wc -l)" = "$before" ] \
+    && [ ! -s "$RSP_HOME/.stub_unseed" ] && [ ! -s "$RSP_HOME/.stub_block" ] \
+    && ! ls "$AUDIT_DIR"/prune-*.log >/dev/null 2>&1; } \
+  && ok "a quarantine that cannot be made stops the run before any repo is blocked" \
+  || no "the run went on without a quarantine (rc=$rc)"
+# A quarantine that exists but is read-only passes mkdir -p. Root writes it regardless.
+if [ "$(id -u)" != 0 ]; then
+  rm -f "$AUDIT_DIR/quarantine"; mkdir "$AUDIT_DIR/quarantine"; chmod 555 "$AUDIT_DIR/quarantine"
+  out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
+  chmod 755 "$AUDIT_DIR/quarantine"
+  { [ "$rc" = 1 ] && grep -q 'cannot write the quarantine' <<<"$out" \
+      && [ ! -s "$RSP_HOME/.stub_block" ]; } \
+    && ok "a read-only quarantine stops the run before any repo is blocked" \
+    || no "the run went on with a read-only quarantine (rc=$rc)"
+else
+  skip "running as root, which writes a read-only quarantine anyway"
+fi
+# A storage dir the run can read but not write fails every repo the same way.
+chmod 555 "$STORAGE"
+out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
+chmod 755 "$STORAGE"
+if [ "$(id -u)" != 0 ]; then
+  { [ "$rc" = 1 ] && grep -q 'cannot write storage dir' <<<"$out" \
+      && [ ! -s "$RSP_HOME/.stub_block" ]; } \
+    && ok "a read-only storage dir stops --apply before any repo is blocked" \
+    || no "--apply went on with a read-only storage dir (rc=$rc)"
+else
+  skip "running as root, which writes a read-only storage dir anyway"
+fi
+# Any value but 1 would delete outright, which a typo meant as "on" must not do.
+out=$(QUARANTINE=yes DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply \
+        </dev/null 2>&1); rc=$?
+{ [ "$rc" = 2 ] && grep -q 'QUARANTINE must be 0 or 1' <<<"$out" \
+    && [ "$(ls "$STORAGE" | wc -l)" = "$before" ]; } \
+  && ok "a mistyped QUARANTINE stops the run instead of deleting outright" \
+  || no "QUARANTINE=yes was read as off (rc=$rc)"
 
 # --- quarantine --- The three floor-0 verdicts may prune the last copy the network is known to
 # hold, so "re-fetch it" is not an undo for exactly the repos that most need one.

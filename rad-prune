@@ -1051,6 +1051,21 @@ if [ "$CMD" != quarantine ] || [ "$QVERB" = restore ]; then
   { [ -r "$STORAGE" ] && [ -x "$STORAGE" ]; } \
     || { echo "cannot read storage dir $STORAGE (wrong user?)" >&2; exit 1; }
 fi
+# A pruned repo is unseeded and blocked before it leaves storage, so a storage dir or a
+# quarantine this run cannot write would leave the whole plan blocked and still in storage.
+# Checked before the scan, so that nothing is lifted, purged or logged on the way to a prune
+# that cannot work.
+if [ "$CMD" != quarantine ] && [ "$APPLY" = 1 ]; then
+  [ -w "$STORAGE" ] \
+    || { echo "cannot write storage dir $STORAGE (wrong user?)" >&2; exit 1; }
+fi
+if [ "$CMD" != quarantine ] && [ "$APPLY" = 1 ] && [ "$QUARANTINE" = 1 ]; then
+  quar_err=$(mkdir -p "$quar" 2>&1) || true
+  { [ -d "$quar" ] && [ -w "$quar" ] && [ -x "$quar" ]; } \
+    || { echo "cannot write the quarantine at $quar (wrong user?)" >&2
+         [ -z "$quar_err" ] || echo "$quar_err" >&2
+         exit 1; }
+fi
 [ -n "$OUR_NID" ] \
   || echo "# WARN: could not determine our NID; seed counts will include us" >&2
 
@@ -1317,6 +1332,11 @@ done
 case $DISK_AWARE in
   0|1) ;;
   *) echo "# DISK_AWARE must be 0 or 1, not '$DISK_AWARE'." >&2; exit 2 ;;
+esac
+# Anything but 1 would read as off, so a typo meant as "on" would delete with no way back.
+case $QUARANTINE in
+  0|1) ;;
+  *) echo "# QUARANTINE must be 0 or 1, not '$QUARANTINE'." >&2; exit 2 ;;
 esac
 # Anything but 0 or 1 would read as on, so a typo meant as "off" would lift blocks.
 case $UNDO in
@@ -4782,7 +4802,7 @@ open_audit
 
 if [ "$QUARANTINE" = 1 ]; then
   echo "# unseed + block + quarantine $nplan repos (recoverable for ${QUARANTINE_DAYS}d)..."
-  # A quarantine that cannot be made fails each move below, which warns per repo.
+  # Brings back a quarantine deleted by hand while the scan ran, which the README allows.
   mkdir -p "$quar" 2>/dev/null || true
 else
   echo "# unseed + block + delete $nplan repos..."
