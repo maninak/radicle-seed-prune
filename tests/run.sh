@@ -723,7 +723,7 @@ past_run(){
       case $spec in rules:*|held:*) continue ;; esac
       reason=${spec%%:*}; count=${spec#*:}
       for r in $(seq 1 "$count"); do
-        printf 'zpast%s%s%s\t1\t1\t1\t%s\tpast\t1\t\n' "$i" "${reason%%-*}" "$r" "$reason"
+        printf 'zpast%s%s%s\t1\t1\t1\t%s\tpast\t1\t\n' "$i" "${reason//-/}" "$r" "$reason"
       done
     done; } > "$AUDIT_DIR/$log"
   printf '2026-01-0%sT00:00:00Z\tdeleted=1\taudit=%s\n' "$i" "$log" >> "$AUDIT_DIR/history.log"
@@ -2910,6 +2910,16 @@ out=$(RATCHET_RUNS=9 RATCHET_FACTOR=1 RATCHET_FLOOR=0 "${NOTTY[@]}" "$SCRIPT" --
 { [ "$rc" = 0 ] && [ ! -e "$STORAGE/ztwoyr3" ]; } \
   && ok "a run that held a rule, or ran without it, is no sample of what that rule prunes" \
   || no "held or switched-off runs dragged a rule's usual down to a hold (rc=$rc)"
+
+# A repo pruned again after an undo let it back is not a new verdict, on the past side as on
+# this run's. Runs 2 and 3 prune run 1's three repos again, so C's usual is 0, not 3.
+build_fixture; assert_isolated
+for i in 1 2 3; do past_run "$i" $REST stale:3; done
+sed -i 's/^zpast[23]/zpast1/' "$AUDIT_DIR"/prune-2026010[23]T000000Z.log
+out=$(RATCHET_FLOOR=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
+{ [ "$rc" = 4 ] && grep -q $'^C\t4\t0\t1$' "$AUDIT_DIR/last-run/held.tsv"; } \
+  && ok "a repo pruned again in a past run does not raise its rule's usual" \
+  || no "repeat prunes in past runs set the usual a wave is measured against (rc=$rc)"
 
 # Two samples are no median: after six held weeks and one forced run, C's window holds that
 # forced wave and one ordinary week, and three times their mean would wave the next wave through.

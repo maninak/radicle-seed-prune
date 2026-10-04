@@ -4235,10 +4235,23 @@ done < "$tmp/ratchet-recent"
 awk -F'\t' 'FILENAME == ARGV[1] { before[$1] = 1; next } !($1 in before)' \
   "$tmp/undo-pruned-before" "$tmp/plan.sorted" > "$tmp/plan.new-verdicts"
 count_by_rule "$tmp/plan.new-verdicts" > "$tmp/ratchet-planned"
+# The past is measured the same way, or one undo wave pruned again weekly would set a usual
+# that lets the next real wave through. Each row is kept only in the oldest log that names its
+# repo: log name \t the row. The glob sorts the logs oldest first, by the time in their names.
+first_prunes() {
+  local f logs=()
+  for f in "$AUDIT_DIR"/prune-*.log; do [ -r "$f" ] && logs+=("$f"); done
+  [ ${#logs[@]} -gt 0 ] || return 0
+  awk -F'\t' '!/^#/ && NF >= 5 && !($1 in seen) {
+                 seen[$1] = 1; n = split(FILENAME, p, "/"); print p[n] "\t" $0 }' "${logs[@]}"
+}
+first_prunes > "$tmp/ratchet-firsts"
 : > "$tmp/ratchet-past"
 while IFS= read -r log; do
   rules_then=$(sed -n '/^# [0-9].*  rules=/ { s/.*  rules=//p; q }' "$log")
-  count_by_rule "$log" > "$tmp/ratchet-onelog"
+  awk -F'\t' -v name="${log##*/}" '$1 == name' "$tmp/ratchet-firsts" | cut -f2- \
+    > "$tmp/ratchet-onelog-firsts"
+  count_by_rule "$tmp/ratchet-onelog-firsts" > "$tmp/ratchet-onelog"
   while IFS=$'\t' read -r letter _; do
     case $letter in
       [A-Z]) [ -z "$rules_then" ] || [[ $rules_then == *$letter* ]] || continue ;;

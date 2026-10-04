@@ -48,6 +48,7 @@ A run that holds back a rule exits `4`. A monitor that alerts on exit `3` should
 - **`history.log` and the `DONE` line count only what left storage.** A run that could not remove every repo in its plan used to count the whole plan.
 - **A run no longer writes over the audit log of a run that opened its own in the same second.** It waits for the next second.
 - **A repo with a branch or tag git cannot walk sits out the link-farm rule (E).** It used to count with fewer of its own links, which could make a host its code depends on look like spam. The other rules still judge it.
+- **A repo pruned again after its block was lifted no longer raises its rule's usual count.** If it counted, an undo wave pruned again could let the next real wave past the hold-back.
 - **A stopped run no longer deletes expired repos from the quarantine.** A run stopped by the runaway caps or by an `n` at the prompt used to delete them first.
 - **A disk at or under the critical free-space threshold counts as full pressure even when `PRESSURE_CRIT_*` is set above `PRESSURE_RELAX_*`.**
 - **A typo in `MAX_PRUNE_COUNT`, `MAX_PRUNE_GB`, a `RATCHET_*` setting, `DISK_AWARE` or `QUARANTINE` stops the run with exit `2`.** It used to turn a check off without a word, and a `QUARANTINE` typo deleted repos outright.
