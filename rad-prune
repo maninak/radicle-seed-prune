@@ -715,6 +715,12 @@ case $RAD in */*) RAD=$(_abs "$RAD") ;; esac   # a bare "rad" keeps resolving th
 # pushed them, so rewriting every ref renews rules D, E and F indefinitely. This file cannot
 # be reached from outside the seed, and age is taken from whichever of the two is older.
 FIRST_SEEN=$(_abs "${FIRST_SEEN:-$AUDIT_DIR/first-seen.tsv}")
+# Set above, possibly relative (from AUDIT_DIR or the operator's own value), and read after
+# the cd below. A keep list that resolved against / would read as empty, and every repo a
+# person restored would go again.
+quar=$(_abs "$quar");             KEEP_FILE=$(_abs "$KEEP_FILE")
+DENY_FILE=$(_abs "$DENY_FILE");   DENY_FILES=$(_abs "$DENY_FILES")
+CACHE_DIR=$(_abs "$CACHE_DIR")
 SELF=$(_abs "$0")   # the run cache hashes this file, and cd would break a relative $0
 
 cd /

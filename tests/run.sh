@@ -2953,13 +2953,16 @@ else
 fi
 
 # The script runs from / so a launch directory it cannot read does not fail every find, and
-# that must not change what a RELATIVE RAD_HOME/STORAGE/RAD meant to the caller.
+# that must not change what a RELATIVE RAD_HOME/STORAGE/RAD meant to the caller. The keep list
+# under a relative AUDIT_DIR is read too: zjunk1 is on it, and zbig2 shows the plan is real.
 build_fixture; assert_isolated
+mkdir -p "$RSP_HOME/prune-audit"; printf 'zjunk1\n' > "$RSP_HOME/prune-audit/keep.txt"
 out=$(cd "$ROOT" && env RAD_HOME="./rad-home" STORAGE="./rad-home/storage" \
         CONFIG="./rad-home/config.json" AUDIT_DIR="./rad-home/prune-audit" \
         RAD="./bin/rad" "$SCRIPT" 2>&1); rc=$?
-{ [ "$rc" = 0 ] && grep -qE '^zjunk1 ' <<<"$out" && grep -q '# PLAN:' <<<"$out"; } \
-  && ok "relative RAD_HOME/STORAGE/RAD survive the cwd anchor" \
+{ [ "$rc" = 0 ] && grep -qE '^zbig2 ' <<<"$out" && ! grep -qE '^zjunk1 ' <<<"$out" \
+    && grep -q '# PLAN:' <<<"$out"; } \
+  && ok "relative RAD_HOME/STORAGE/RAD/AUDIT_DIR survive the cwd anchor" \
   || no "relative paths survive cd / (rc=$rc)"
 
 # Undo: which blocks a run lifts. A lifted block lets a repo back onto this seed, so every

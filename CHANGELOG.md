@@ -45,6 +45,7 @@ A run that holds back a rule exits `4`. A monitor that alerts on exit `3` should
 - **A stopped run no longer deletes expired repos from the quarantine.** A run stopped by the runaway caps or by an `n` at the prompt used to delete them first.
 - **A disk at or under the critical free-space threshold counts as full pressure even when `PRESSURE_CRIT_*` is set above `PRESSURE_RELAX_*`.**
 - **A typo in `MAX_PRUNE_COUNT`, a `RATCHET_*` setting, `DISK_AWARE` or `QUARANTINE` stops the run with exit `2`.** It used to turn a check off without a word, and a `QUARANTINE` typo deleted repos outright.
+- **rad-prune finds `keep.txt`, `deny.txt` and the quarantine when `AUDIT_DIR` or `RAD_HOME` is a relative path.** It used to look for them under `/`, so the keep list read as empty and repos on it could be pruned.
 - **A run by hand and a run from cron no longer drop each other's cache when they start bash from different paths.** Each used to read every repo again, as on a first run.
 - **An unexpected failure always exits `1`.** It used to pass on the failed command's exit code, which could look like exit `3` or `5`.
 - **rad-prune keeps working once `rad` drops `rad self --nid`.** rad 1.10 deprecates the flag.
