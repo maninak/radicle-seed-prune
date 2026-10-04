@@ -20,7 +20,7 @@ case "$sub" in
     [ "${RSP_LS_FAIL:-0}" = 1 ] && { echo "Error: invalid repository id 'notarid'" >&2; exit 1; }
     priv=0; allf=0
     for a in "$@"; do [ "$a" = --private ] && priv=1; [ "$a" = --all ] && allf=1; done
-    while IFS=$'\t' read -r rid name seeds vis own days size desc; do
+    while IFS=$'\t' read -r rid name _seeds vis own _days _size desc; do
       [ -z "$rid" ] && continue
       if   [ "$priv" = 1 ]; then [ "$vis" = private ] || continue
       elif [ "$allf" = 0 ]; then [ "$own" = 1 ] || continue   # bare `rad ls` = our own repos
@@ -35,7 +35,7 @@ case "$sub" in
     case "${1:-}" in
       routing)
         if [ "${RSP_NO_ROUTING:-0}" != 1 ]; then
-          while IFS=$'\t' read -r rid name seeds vis own days size desc; do
+          while IFS=$'\t' read -r rid name seeds vis own _days _size desc; do
             [ -z "$rid" ] && continue
             n=0; while [ "$n" -lt "${seeds:-0}" ]; do
               printf '{"rid":"rad:%s","nid":"zo%s%02d"}\n' "$rid" "$rid" "$n"; n=$((n+1))

@@ -806,6 +806,7 @@ read_delegates() {
   local re_did='did:key:(z[1-9A-HJ-NP-Za-km-z]+)(.*)'
   dids=""; iddoc=""
   doc=$(GIT_DIR="$1" git cat-file blob refs/rad/id:embeds/radicle.json 2>/dev/null) || return 0
+  # shellcheck disable=SC2034  # read by the activity scan's worker, a heredoc shellcheck skips
   iddoc=$doc
   if [[ $doc =~ $re_list ]]; then
     list=${BASH_REMATCH[1]}
@@ -1324,7 +1325,7 @@ if [ "$CMD" = quarantine ]; then
           rid=${rid#rad:}
           is_rid "$rid" || { echo "# not a repo id: $rid" >&2; continue; }
           [ -d "$quar/$rid" ] || { echo "# not in quarantine: $rid" >&2; continue; }
-          rm -rf -- "$quar/$rid" && ndel=$((ndel+1))
+          rm -rf -- "${quar:?}/$rid" && ndel=$((ndel+1))
         done
       fi
       echo "# deleted $ndel repo(s) for good."
@@ -4645,7 +4646,7 @@ if [ "$nparasite" -gt 0 ]; then
   echo
   echo "# PARASITE PEERS: $nparasite, from the parasite-peer rule (G)"
   echo "#   the count is repos reached by ONE file of theirs, not repos they touched"
-  while IFS=$'\t' read -r nid widest npeerrepos mb ob oid; do
+  while IFS=$'\t' read -r nid widest _npeerrepos mb ob oid; do
     printf '#   %s  %3d repos  %6.1f MB media  %6d B text  blob %s\n' \
            "$nid" "$widest" "$(awk -v b="$mb" 'BEGIN{printf "%.1f", b/1048576}')" \
            "$ob" "${oid:0:12}"
@@ -4926,7 +4927,7 @@ if [ "$BLOCK_PEERS" = 1 ] && [ "$nparasite" -gt 0 ]; then
     echo "# --block-peers has nobody to ask: no terminal, and no --yes standing in." >&2
     echo "# Nobody was blocked. The commands are listed above; run them yourself." >&2
   else
-    while IFS=$'\t' read -r nid widest npeerrepos mb ob oid; do
+    while IFS=$'\t' read -r nid widest _npeerrepos mb ob oid; do
       if [ "$YES" = 1 ]; then
         printf '# Blocking %s (--yes): it put %s in %s repos it is not a delegate of\n' \
                "$nid" "${oid:0:12}" "$widest"
@@ -5192,7 +5193,7 @@ while IFS=$'\t' read -r rid _; do
       if [ "$QUARANTINE" = 1 ]; then
         # A repo pruned twice (re-fetched, pruned again) would otherwise fail to move onto
         # its own older copy, so the older copy goes first.
-        rm -rf -- "$quar/$rid" 2>/dev/null
+        rm -rf -- "${quar:?}/$rid" 2>/dev/null
         if mv -- "$d" "$quar/$rid" 2>"$tmp/prune-err"; then
           deleted=$((deleted+1))
           printf '%s\n' "$rid" >> "$tmp/pruned" || ticks_ok=0

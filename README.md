@@ -658,7 +658,7 @@ tests/run.sh                 # everything
 tests/run.sh -k quarantine   # only the sections that mention "quarantine"
 ```
 
-Needs only `bash`, `git`, `gzip`, `openssl` and coreutils. It builds a hermetic fixture and runs the real script against it, so it never reads or writes the real node.
+Needs only `bash`, `git`, `gzip`, `openssl` and coreutils. With `shellcheck` installed, it also fails on any shellcheck warning in the script or the suite, outside the worker code the script keeps in quoted heredocs. Without it, that check is skipped and the suite says so. It builds a hermetic fixture and runs the real script against it, so it never reads or writes the real node.
 
 The suite is cut into sections, one per fixture rebuild, and a section run on its own is the same run it gets in the whole suite. Whole runs take minutes and a single section takes seconds, so `-k` is the loop to be in while changing one rule. It takes a regular expression and runs every section whose text contains a match, so a test name, a repo id, a knob name or a rule letter all select one. The fixture is built once and kept under `TMPDIR` for an hour; `RSP_FIXTURE_CACHE=0` builds it fresh every time.
 

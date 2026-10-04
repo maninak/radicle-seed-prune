@@ -424,7 +424,7 @@ _build_fixture(){
   printf '{ "web": { "pinned": { "repositories": ["rad:zpin6"] } } }\n' > "$CONFIG"
 
   # real bare git repos with controlled activity date + size (all under $ROOT)
-  while IFS=$'\t' read -r rid name seeds vis own days size desc; do
+  while IFS=$'\t' read -r rid name _seeds vis own days size desc; do
     [ -z "$rid" ] && continue
     local d="$STORAGE/$rid"
     git init -q --bare "$d"
@@ -576,7 +576,8 @@ _build_fixture(){
   e_tree zmediazip   60 master "payload.dat:40000:zip"          # a zip of something  -> pruned
   # An attachment from an earlier op. The COB's tip holds only the later reply, so anything
   # reading the tip alone sees a repo with no media at all.
-  local past=refs/namespaces/$(dlg zmediapast)/refs/cobs/xyz.radicle.issue/ccc
+  local past
+  past=refs/namespaces/$(dlg zmediapast)/refs/cobs/xyz.radicle.issue/ccc
   e_tree zmediapast  60 master   "notes.txt:100"
   e_tree zmediapast  60 "$past"  "clip.mp4:40000"
   e_tree zmediapast  60 "$past"  "reply.txt:50"
@@ -704,8 +705,9 @@ assert_isolated(){
   esac
 }
 
-# run the real script against the fixture; echoes combined output, sets RC
-run(){ local out; out=$("$SCRIPT" "$@" 2>&1); RC=$?; printf '%s' "$out"; }
+# run the real script against the fixture; echoes combined output
+# shellcheck disable=SC2120  # no caller passes flags today; they must still reach the script
+run(){ local out; out=$("$SCRIPT" "$@" 2>&1); printf '%s' "$out"; }
 # One past applied run, as the ratchet reads it: an audit log and the history.log line naming it.
 # $1 = which run (1-9, oldest first), then any of: "reason:count" for what it pruned,
 # "held:<rule>" for a rule it held back, "rules:<letters>" for the rules it ran with.
@@ -2311,7 +2313,7 @@ out=$("$SCRIPT" quarantine restore zjunk1 2>&1)
   && ok "quarantine restore puts the repo back, clears its block and keeps it" \
   || no "quarantine restore left the repo blocked, gone, or still condemned"
 
-DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 run | grep -q 'zjunk1' \
+grep -q 'zjunk1' <<<"$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 run)" \
   && no "a restored repo was planned for pruning all over again" \
   || ok "a repo on the keep list is left out of the next plan"
 
@@ -2369,7 +2371,7 @@ second=$(DISK_AWARE=0 run 2>&1)
 # The direction that matters on a deleter: a repo that has stopped looking like a dump must
 # not be pruned on last week's reading of it.
 e_tree zmediaone 60 master "clip.mp4:40000:mp4" "README.md:9000"
-DISK_AWARE=0 run | grep -qE "^zmediaone .*media-dump" \
+grep -qE "^zmediaone .*media-dump" <<<"$(DISK_AWARE=0 run)" \
   && no "a repo was condemned on cached evidence it no longer matches" \
   || ok "a repo that changed is read again, not judged on the cached reading"
 
@@ -2503,14 +2505,14 @@ rc=$?
 build_fixture; assert_isolated
 Q="$RSP_HOME/prune-audit/quarantine"
 mkdir -p "$Q/zoldquar2"; touch -d "40 days ago" "$Q/zoldquar2"
-out=$(DISK_AWARE=0 RULES= "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1)
+out=$(DISK_AWARE=0 RULES='' "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1)
 { [ ! -e "$Q/zoldquar2" ] && grep -q 'nothing to prune' <<<"$out"; } \
   && ok "an empty plan still purges quarantine past its window" \
   || no "a run with nothing to prune left expired quarantine on disk"
 
 # RULES= is set but empty, and on a deleter that has to mean NO rules. Read as unset it would
 # fall back to the default and run every rule, the one direction that cannot be undone.
-{ ! grep -qE '^z' <<<"$(RULES= run)" && has "$(run)" "zjunk1"; } \
+{ ! grep -qE '^z' <<<"$(RULES='' run)" && has "$(run)" "zjunk1"; } \
   && ok "RULES= means no rules, not the default set" \
   || no "an empty RULES fell back to running every rule"
 
@@ -2874,7 +2876,7 @@ grep -q "not-an-id is neither a repo id nor an identity" <<<"$out" \
 # person's list, and counting it in would stop every unattended run until somebody forced one.
 build_fixture; assert_isolated
 printf 'rad:zcode4\nrad:zcode6\nrad:zcode7\n' > "$AUDIT_DIR/deny.txt"
-out=$(RULES= MAX_PRUNE_COUNT=1 MAX_PRUNE_GB=0 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
+out=$(RULES='' MAX_PRUNE_COUNT=1 MAX_PRUNE_GB=0 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
 { [ "$rc" = 0 ] && [ ! -e "$STORAGE/zcode4" ] && [ ! -e "$STORAGE/zcode7" ]; } \
   && ok "repos on the deny list do not count against the runaway caps" \
   || no "a deny list longer than the cap stopped the run (rc=$rc)"
@@ -2944,7 +2946,7 @@ grep -qE "^zcode6 .* denied-copy " <<<"$plan" \
   || no "a listed text file made a copy, or went unnamed"
 # The caps and the ratchet count copies: they are the tool's inference, and a wrong row has no
 # limit otherwise.
-out=$(RULES= MAX_PRUNE_COUNT=1 "${NOTTY[@]}" "$SCRIPT" --apply \
+out=$(RULES='' MAX_PRUNE_COUNT=1 "${NOTTY[@]}" "$SCRIPT" --apply \
         </dev/null 2>&1); rc=$?
 { [ "$rc" = 3 ] && [ -e "$STORAGE/zcode4" ]; } \
   && ok "copies of denied files count against the runaway caps" \
@@ -3431,6 +3433,22 @@ EOF
     || no "a denied identity's own announcement revived a repo"
 else
   skip "revival (sqlite3 is not installed)"
+fi
+
+# --- lint --- shellcheck's warnings, over the script and the suite's own shell. An rm -rf
+# whose path can expand to "/", or a variable set and never read, is a bug this tool can afford
+# least. shellcheck does not parse the worker code the script keeps in quoted heredocs.
+# --norc and no SHELLCHECK_OPTS, so nothing on this machine can turn a check off.
+# The fixture build only opens the section.
+build_fixture
+if command -v shellcheck >/dev/null; then
+  if lint=$(env -u SHELLCHECK_OPTS shellcheck --norc -S warning \
+             "$SCRIPT" "$HERE/run.sh" "$HERE"/*-shim "$HERE/rad-stub" 2>&1)
+  then ok "shellcheck finds no warning"
+  else no "shellcheck $(shellcheck --version | awk '/^version:/ { print $2 }') warns:"; echo "$lint"
+  fi
+else
+  skip "shellcheck (not installed)"
 fi
 
 # ---- end of sections -------------------------------------------------------
