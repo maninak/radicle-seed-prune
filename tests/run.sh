@@ -810,8 +810,10 @@ sections(){                      # $1 = regex, or "" for all   $2 = index, or 0 
 # Settings every section runs under, so a section run on its own is the same run it gets in
 # the whole suite. PLAN_FULL because nearly every assertion looks for one repo's row, and the
 # folding that hides those rows on a real 519-row plan gets its own test rather than silencing
-# the rest.
-export DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 MEDIA_MIN_BYTES=20000 PLAN_FULL=1
+# the rest. Every rule, because the fixture has a case for each; the default leaves rule E out,
+# and that default gets its own test. DISK_AWARE=0 also lets rules B and C act at any free
+# space, which the host's disk would otherwise decide.
+export DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 MEDIA_MIN_BYTES=20000 PLAN_FULL=1 RULES=ABCDEFGH
 
 # The three ways to run something other than the whole file in one process:
 #
@@ -1445,6 +1447,26 @@ nof=$(RULES=ABCDE run)
   && has "$nof" "zjunk1"; } \
   && ok "a rule left out of RULES does not even run its scan" \
   || no "RULES=ABCDE still ran or planned rule F"
+dflt=$(env -u RULES "$SCRIPT" 2>&1)
+{ grep -q '^# rule E .*\[DISABLED: not in RULES' <<<"$dflt" && has "$dflt" "zjunk1"; } \
+  && ok "the default RULES leaves the link-farm rule (E) out and runs the rest" \
+  || no "the default RULES runs the link-farm rule (E), or nothing at all"
+
+# Rules B and C prune for space alone, so with free space above the relaxed threshold they
+# wait. The thresholds are set so this machine's disk cannot decide: a relaxed threshold of 0
+# free is never above the free space, and one of the whole disk always is. Under pressure the
+# B endpoints match the relaxed values, so zbig2 qualifies either way.
+calm=$(DISK_AWARE=1 PRESSURE_RELAX_PCT=0 PRESSURE_RELAX_GB=0 PRESSURE_CRIT_PCT=0 \
+         PRESSURE_CRIT_GB=0 run)
+tight=$(DISK_AWARE=1 PRESSURE_RELAX_PCT=100 PRESSURE_RELAX_GB=0 PRESSURE_CRIT_PCT=0 \
+          PRESSURE_CRIT_GB=0 ABS_SIZE_FLOOR_MB_AGG=1 REL_PCTL_AGG=95 OUTLIER_STALE_DAYS_AGG=90 \
+          run)
+{ ! has "$calm" "zbig2" && ! has "$calm" "ztwoyr3" && has "$calm" "zjunk1" \
+  && grep -q 'B size.*\[WAITING: no disk pressure\]' <<<"$calm" \
+  && grep -qE "^zbig2 .* size-outlier " <<<"$tight" \
+  && grep -qE "^ztwoyr3 .* stale " <<<"$tight"; } \
+  && ok "rules B and C wait for disk pressure, and act once there is some" \
+  || no "rules B and C pruned with no disk pressure, or not under pressure either"
 
 # Turning a rule off must not SPARE a repo the remaining rules would have pruned. Rule D is the
 # case that matters: its corpus scan runs whatever RULES says, because rule E reads its suspect
@@ -2974,6 +2996,17 @@ out=$(RATCHET_RUNS=9 RATCHET_FACTOR=1 RATCHET_FLOOR=0 "${NOTTY[@]}" "$SCRIPT" --
 { [ "$rc" = 0 ] && [ ! -e "$STORAGE/ztwoyr3" ]; } \
   && ok "a run that held a rule, or ran without it, is no sample of what that rule prunes" \
   || no "held or switched-off runs dragged a rule's usual down to a hold (rc=$rc)"
+
+# A rule's usual comes from the last runs it could prune in, however far back. Read from the
+# last three runs alone, C would have no sample and be held at the floor.
+build_fixture; assert_isolated
+for i in 1 2 3; do past_run "$i" $REST stale:4; done
+for i in 4 5 6; do past_run "$i" $REST rules:ABDEFG; done
+out=$(RATCHET_RUNS=3 RATCHET_FACTOR=1 RATCHET_FLOOR=0 "${NOTTY[@]}" "$SCRIPT" --apply \
+        </dev/null 2>&1); rc=$?
+{ [ "$rc" = 0 ] && [ ! -e "$STORAGE/ztwoyr3" ]; } \
+  && ok "a rule's usual reaches back past the runs it waited in" \
+  || no "a rule that waited for its last runs was judged against the floor (rc=$rc)"
 
 # A repo pruned again after an undo let it back is not a new verdict, on the past side as on
 # this run's. Runs 2 and 3 prune run 1's three repos again, so C's usual is 0, not 3.

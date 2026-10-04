@@ -77,8 +77,8 @@ A dry run against a seed of 12,292 repos:
 # radicle-seed-prune 0.8.0  2026-10-04T04:16:49Z   mode=DRY-RUN
 # home=/var/lib/radicle  audit=/var/lib/radicle/prune-audit
 # disk: 125.5GB free (46.5%)  pressure=0% [relax>=54GB crit<=2GB]
-# rules: A junk(>30d, seeds>=1, spare-import>14d; id-names seeds>=0)  B size(>500MB & >=P95, >90d, seeds>=3)  C stale(>730d, seeds>=3)  D spam(batch>=5 & desc>=80%, >7d, seeds>=0)
-# rule E link-farm(>=5 spam domains, each linked from >=0.4% of repos and from the code of <10% of them, >7d, seeds>=0)
+# rules: A junk(>30d, seeds>=1, spare-import>14d; id-names seeds>=0)  B size(>500MB & >=P95, >90d, seeds>=3) [WAITING: no disk pressure]  C stale(>730d, seeds>=3) [WAITING: no disk pressure]  D spam(batch>=5 & desc>=80%, >7d, seeds>=0)
+# rule E link-farm(>=5 spam domains, each linked from >=0.4% of repos and from the code of <10% of them, >7d, seeds>=0) [DISABLED: not in RULES, off by default]
 # rule F media-dump(>=64KB of media and <2048B of anything else, no source or build file, >7d, seeds>=0)  media-ratio(>=6144KB of images+video+audio at the tips, anything else <1/1000 of that, no archive, nothing else at the tips but <=1 README)  media-batch(>=64KB of media held by >=5 repos, <65536B of anything else)
 # rule G parasite-peer(one file of theirs in >=10 repos they are not a delegate of, >=1MB media, <16384B of anything else) [reports only; --block-peers asks per peer]
 # rule H malware-op(>=3 malware words, one strong, in the names and descriptions of >=2 and >=50% of the repos an identity signed as a delegate; or one repo with a strong word in its name or description and in a file path or commit subject, first commit <=7d before its rad init) [reports only]
@@ -90,16 +90,6 @@ A dry run against a seed of 12,292 repos:
 #     103  template-d-*-*
 #     102  template-e-*-*
 #   ...and 5 more (PLAN_FULL=1 lists them)
-# harvested 308659 repo/host pairs over 10963 repos
-# spam domains: 159 domain(s) linked from >=49 repos, <10% from code;
-#   893 repo(s) link to >=5 of them, before the age and seed checks:
-#     826 repos  spam-host-1.example
-#     707 repos  spam-host-2.example
-#     640 repos  spam-host-3.example
-#     616 repos  spam-host-4.example
-#     562 repos  spam-host-5.example
-#   ...and 154 more (PLAN_FULL=1 lists them)
-# the link-farm rule (E): 1 repo(s) spared, the spam links were pushed by peers that are not their delegates
 # repos=12292  sizes P50=0M P90=8M P95=28M P99=186M rel-cut(P95)=28M  abs-cut=500M
 # skipped: 0 unreadable, 1218 written in the last 2d, 0 with no readable refs
 
@@ -112,25 +102,20 @@ zEXAMPLEREPOeeeeeeeeeeeeeee           42.1MB     14      243 media-dump    -    
 zEXAMPLEREPOfffffffffffffff           30.8MB      7      191 media-dump    -               example-media-repo-6
 zEXAMPLEREPOggggggggggggggg           21.8MB     12      540 media-dump    -               example-media-repo-7
 zEXAMPLEREPOhhhhhhhhhhhhhhh           12.3MB      9      184 media-dump    -               example-media-repo-8
-zEXAMPLEREPOiiiiiiiiiiiiiii           11.2MB      5      730 stale         age             example-abandoned-repo
 zEXAMPLEREPOjjjjjjjjjjjjjjj            8.9MB     22      191 media-dump    -               example-media-repo-9
-[... 19 more single-repo rows ...]
+[... 17 more single-repo rows ...]
 zEXAMPLEREPOxxxxxxxxxxxxxxx          128.9KB      9       30 junk-name     age             example-demo-repo
 zEXAMPLEREPOyyyyyyyyyyyyyyy           75.0KB     10       30 junk-name     age             example-hello-world
-zEXAMPLEREPOzzzzzzzzzzzzzzz           74.3KB      8      731 stale         age             example-test-1
 zEXAMPLEREPOwwwwwwwwwwwwwww           73.9KB     13       31 junk-name     age             example-test-2
 (440 repos)                           50.8MB                 spam-batch    0 near          same pattern across many repos; PLAN_FULL=1 lists them
-(35 repos)                           405.4MB                 link-farm     2 near          same pattern across many repos; PLAN_FULL=1 lists them
 (23 repos)                             1.3GB                 media-batch   0 near          same pattern across many repos; PLAN_FULL=1 lists them
 
-# PLAN: prune 531 repos, 2.49 GiB out of storage but still on disk for 7d, until a later --apply run deletes them
+# PLAN: prune 492 repos, 2.08 GiB out of storage but still on disk for 7d, until a later --apply run deletes them
 #   junk-name         6 repos      0.00 GiB
-#   link-farm        35 repos      0.40 GiB
 #   media-batch      23 repos      1.29 GiB
 #   media-dump       23 repos      0.75 GiB
 #   spam-batch      440 repos      0.05 GiB
-#   stale             4 repos      0.01 GiB
-#   12 of them cleared a threshold by under 20%: see the NEAR column, which names the threshold that was close. Read those rows first.
+#   8 of them cleared a threshold by under 20%: see the NEAR column, which names the threshold that was close. Read those rows first.
 # the untrimmed plan and the evidence behind it: /var/lib/radicle/prune-audit/last-run/
 # DRY-RUN: nothing in storage changed. Re-run with --apply to execute.
 ```
@@ -187,7 +172,7 @@ A repo is pruned when one of these holds, unless it is pinned, private, your own
 - the [deny list](#deny-list) names it or one of its delegates;
 - it holds [copies of denied files](#copies-of-denied-files).
 
-`RULES` (default `ABCDEFGH`) selects which rules run. A letter absent from it means that rule neither scans nor puts anything in the plan, and a repo a disabled rule would have claimed falls through to the next rule.
+`RULES` (default `ABCDFGH`, every rule but the [link-farm rule (E)](#rule-e-link-farms)) selects which rules run. A letter absent from it means that rule neither scans nor puts anything in the plan, and a repo a disabled rule would have claimed falls through to the next rule.
 
 ### Exclusions (never touched by a rule)
 
@@ -244,6 +229,8 @@ Every rule has the same shape: **something about the repo**, *and* it is old eno
 | **F, media-ratio** | a great deal of images, video or audio beside one short file ([more](#rule-f-media-dumps))             | `MEDIA_STALE_DAYS`, 7d    | ≥ `MEDIA_MIN_SEEDS`, 0   |
 | **F, media-batch** | the same media files, published across many repos ([more](#rule-f-media-dumps))                        | `MEDIA_STALE_DAYS`, 7d    | ≥ `MEDIA_MIN_SEEDS`, 0   |
 
+The size (B) and stale (C) rules prune only under [disk pressure](#disk-pressure): a big or long-quiet repo costs nothing while the disk has room. The header marks them `WAITING` until then. `DISK_AWARE=0` lets them prune at any free space, and turns off the rest of [disk pressure](#disk-pressure) with it.
+
 The parasite-peer rule (G) is missing from the table because it judges a **peer**, not a repo, and prunes nothing. It names peers who use repos they are not a delegate of as file hosting of their own, and prints the `rad block` line for each such peer ([more](#rule-g-parasite-peers)). The malware rule (H) is missing because it prunes nothing either. It names identities, and single repos, for a person to review ([more](#rule-h-malware-operations)).
 
 #### How age is measured
@@ -276,7 +263,7 @@ The thresholds above are the **relaxed** values. As free disk falls, pressure `p
 
 The header prints the live pressure and the effective thresholds every run. On one node, pruning scaled from ~1.3k repos / 18 GiB at `p=0` to ~7.1k repos / 92 GiB at `p=1`.
 
-**Hard floors never scale.** `MIN_OTHER_SEEDS` bottoms out at 1, every exclusion holds at any pressure, and none of the link-farm rule (E)'s thresholds move with pressure. `DISK_AWARE=0` turns the scaling off, so every knob keeps its relaxed value, and a disk at the critical free-space threshold neither empties the quarantine nor holds back the blocks a run lifts.
+**Hard floors never scale.** `MIN_OTHER_SEEDS` bottoms out at 1, every exclusion holds at any pressure, and none of the link-farm rule (E)'s thresholds move with pressure. `DISK_AWARE=0` turns the scaling off, so every knob keeps its relaxed value, the size (B) and stale (C) rules prune at any free space, and a disk at the critical free-space threshold neither empties the quarantine nor holds back the blocks a run lifts.
 
 ## Safety and recovery
 
@@ -284,7 +271,7 @@ The header prints the live pressure and the effective thresholds every run. On o
 - **Quarantine instead of deletion.** A pruned repo stays on disk for `QUARANTINE_DAYS` (7) and is restorable with one command ([details](#quarantine)).
 - **Minimum seed counts** keep the last copy we know of, except for the [deny list](#deny-list) and [copies of denied files](#copies-of-denied-files), and under `junk-id`, `spam-batch`, `link-farm` and the three verdicts of the media rule (F) ([why](#verdicts-that-may-delete-the-last-copy-we-know-of)).
 - **Runaway caps** (`MAX_PRUNE_COUNT`, `MAX_PRUNE_GB`) abort a plan whose rules picked more than either cap; repos on the deny list are not counted, [copies of denied files](#copies-of-denied-files) are. Two things get past them: `--force`, or a person answering `y` at the prompt, which is a human signing off on the numbers just printed. `--yes` is not one of them, so an unattended run still stops.
-- **A rule that suddenly plans far more repos than usual is held back.** An unattended run compares each rule's part of the plan with the median that rule pruned over the last `RATCHET_RUNS` (8) applied runs. A rule that plans more than `RATCHET_FACTOR` (3) times its median, and more than `RATCHET_FLOOR` (20) repos, is held back. Its repos stay in storage, the other rules go ahead, and the run exits 4. A dry run lists what would be held, and every run writes it to `last-run/held.tsv`. `--force` or a `y` at the prompt gets past it. The median comes from the audit logs `history.log` names. A run that held a rule back, or ran without it, does not count for that rule, and neither does a repo pruned again after its block was lifted. A rule with fewer than 3 runs that count has `RATCHET_FLOOR` as its limit, and with fewer than 3 readable logs nothing is held. The spam-batch (D), link-farm (E) and media (F) rules usually prune nothing, so a sudden batch of more than 20 repos from one of them waits for `--force` or a `y`.
+- **A rule that suddenly plans far more repos than usual is held back.** An unattended run compares each rule's part of the plan with the median that rule pruned over the last `RATCHET_RUNS` (8) applied runs in which it could prune, however far back those are. A rule that plans more than `RATCHET_FACTOR` (3) times its median, and more than `RATCHET_FLOOR` (20) repos, is held back. Its repos stay in storage, the other rules go ahead, and the run exits 4. A dry run lists what would be held, and every run writes it to `last-run/held.tsv`. `--force` or a `y` at the prompt gets past it. The median comes from the audit logs `history.log` names. A run that held a rule back, ran without it, or had it waiting for disk pressure does not count for that rule, and neither does a repo pruned again after its block was lifted. A rule with fewer than 3 runs that count has `RATCHET_FLOOR` as its limit, and with fewer than 3 readable logs nothing is held. The spam-batch (D) and media (F) rules usually prune nothing, and the size (B) and stale (C) rules nothing until disk pressure starts, so a sudden batch of more than 20 repos from one of them waits for `--force` or a `y`.
 - **A stopped run deletes nothing from quarantine and lifts no block.** A run the runaway caps stop, or an `n` at the prompt, leaves expired repos there ([more](#quarantine)).
 - **Freshness guard** skips any repo whose storage directory was written within `FRESH_GUARD_DAYS` (2), which is what a fetch still arriving looks like. The [deny list](#deny-list) and [copies of denied files](#copies-of-denied-files) do not wait for it.
 - **Preflight** aborts any run if the node is down or `rad ls` fails, and an `--apply` also if exclusions cannot be read.
@@ -381,7 +368,7 @@ Every knob is an environment variable. Defaults shown.
 
 | Variable | Default   | Meaning                                                                                       |
 | -------- | --------- | --------------------------------------------------------------------------------------------- |
-| `RULES`  | `ABCDEFGH` | The rules that run; a letter absent from it means that rule neither scans nor plans anything |
+| `RULES`  | `ABCDFGH`  | The rules that run; a letter absent from it means that rule neither scans nor plans anything |
 
 `RULES=`, set but empty, means no rules at all, not the default set.
 
@@ -442,15 +429,15 @@ Every knob is an environment variable. Defaults shown.
 
 **Brakes**
 
-| Variable            | Default | Meaning                                                             |
-| ------------------- | ------- | ------------------------------------------------------------------- |
-| `FRESH_GUARD_DAYS`  | `2`     | Skip repos written this recently (an in-flight fetch)               |
-| `MAX_PRUNE_COUNT`   | `1000`  | Runaway guard: abort over this many repos                           |
-| `MAX_PRUNE_GB`      | `80`    | Runaway guard: abort over this many whole GiB                       |
-| `RATCHET_FACTOR`    | `3`     | Hold back a rule that plans over this multiple of its recent median |
-| `RATCHET_RUNS`      | `8`     | Applied runs the median is taken over; under 3 holds nothing back   |
-| `RATCHET_FLOOR`     | `20`    | A rule planning this many repos or fewer is never held back         |
-| `MAX_SCAN_FAIL_PCT` | `10`    | Abort if more than this share of storage was vanished, unreadable or ageless |
+| Variable            | Default | Meaning                                                                                                                                                     |
+| ------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FRESH_GUARD_DAYS`  | `2`     | Skip repos written this recently (an in-flight fetch)                                                                                                       |
+| `MAX_PRUNE_COUNT`   | `1000`  | Runaway guard: abort over this many repos                                                                                                                   |
+| `MAX_PRUNE_GB`      | `80`    | Runaway guard: abort over this many whole GiB                                                                                                               |
+| `RATCHET_FACTOR`    | `3`     | Hold back a rule that plans over this multiple of its recent median                                                                                         |
+| `RATCHET_RUNS`      | `8`     | A rule's median is taken over its last this many applied runs in which it could prune. With fewer than 3 readable logs, or a value under 3, nothing is held |
+| `RATCHET_FLOOR`     | `20`    | A rule planning this many repos or fewer is never held back                                                                                                 |
+| `MAX_SCAN_FAIL_PCT` | `10`    | Abort if more than this share of storage was vanished, unreadable or ageless                                                                                |
 
 **Undo** ([what it does](#blocks-the-tool-lifts-on-its-own))
 
@@ -478,7 +465,7 @@ Every knob is an environment variable. Defaults shown.
 
 | Variable                                   | Default     | Meaning                                          |
 | ------------------------------------------ | ----------- | ------------------------------------------------ |
-| `DISK_AWARE`                               | `1`         | Scale thresholds with free disk (`0` to disable) |
+| `DISK_AWARE`                               | `1`         | Scale thresholds with free disk, and hold the size (B) and stale (C) rules until there is pressure (`0` turns [disk pressure](#disk-pressure) off) |
 | `PRESSURE_RELAX_PCT` / `PRESSURE_RELAX_GB` | `20` / `20` | Above this much free: no pressure                |
 | `PRESSURE_CRIT_PCT` / `PRESSURE_CRIT_GB`   | `10` / `2`  | At/below `min()` of these: full pressure         |
 | `*_AGG`, e.g. `STALE_YEARS_DAYS_AGG`       | per knob    | Full-pressure endpoint for each knob that scales (defaults in the script, next to the knob) |
@@ -559,6 +546,8 @@ Only the members carrying the agreed description are pruned; repos with no descr
 On a real seed mirroring the whole public network the rule flags 442 repos in 10 batches and nothing else, leaving large mirror imports alone.
 
 ## Rule E: link farms
+
+Rule E is off by default, because none of the 36 repos it pruned on one 13k-repo seed was a link farm. `RULES=ABCDEFGH` turns it on.
 
 A **link farm** is a repo published to carry links rather than code. Rule E matches on the addresses a repo points its readers at, so it also reaches a spammer who injects links into a clone of a real project.
 

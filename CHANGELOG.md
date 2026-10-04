@@ -20,6 +20,8 @@ The files rad-prune writes in the audit directory now open with a few `#` lines 
 | `media-unjudged.tsv` | `F-media-unjudged.tsv` |
 | `parasite-peers.tsv` | `G-parasite-peers.tsv` |
 
+The link-farm rule (E) is off by default, and the size (B) and stale (C) rules wait for disk pressure (see Changed). A cron that sets `RULES=ABCDEFGH` keeps E on, so drop the `E` there. `DISK_AWARE=0` lets B and C prune at any free space.
+
 A run that holds back a rule exits `4`. A monitor that alerts on exit `3` should alert on `4` too.
 
 ### Added
@@ -34,6 +36,8 @@ A run that holds back a rule exits `4`. A monitor that alerts on exit `3` should
 
 - **When one rule plans far more repos than usual, an unattended run holds back only that rule.** The other repos in the plan are pruned, and the run exits `4` ([details](./README.md#safety-and-recovery)). It used to prune nothing and exit `3`.
 - **Changing `MAX_PRUNE_*`, `MAX_SCAN_FAIL_PCT`, a `RATCHET_*`, `UNDO*` or `QUARANTINE*` setting, or `NEAR_PCT` no longer clears the run cache**, so the next run doesn't re-read every repo. None of them changes what a run reads.
+- **The link-farm rule (E) is off by default.** None of the 36 repos it pruned on one 13k-repo seed was a link farm. The block each one left is [lifted](./README.md#blocks-the-tool-lifts-on-its-own) once, so a seed that seeds by default fetches them again.
+- **The size (B) and stale (C) rules prune only under disk pressure.** While free space is above the relaxed threshold, a big or long-quiet repo costs nothing, so they wait and the header marks them `WAITING`. `DISK_AWARE=0` lets them prune at any free space, and turns off the rest of disk pressure with it. Their usual count comes from the last runs in which they could prune, however far back. Where those runs pruned little or nothing of theirs, or number fewer than 3, the first spell of pressure holds either one back past `RATCHET_FLOOR` (20) repos until `--force`. Pressure counts the quarantine copies a run is about to purge as free.
 - **The media rule (F)'s warning about repos it could not judge comes only when one of them is new since the last run, and names the new ones.** The same busy repos are left unjudged every week, and a warning that repeats weekly stops being read. `last-run/F-media-unjudged.tsv` gains each repo's size.
 - **`quarantine restore` writes when it restored the repo and what it was pruned as beside its id in `keep.txt`.**
 - **An `--apply` or `--block-peers` run that gets past its settings check prints its exit code last and records it in its audit log.**

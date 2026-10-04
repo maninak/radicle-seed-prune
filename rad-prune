@@ -85,6 +85,9 @@
 #       no new commit/COB for > STALE_YEARS_DAYS
 #       AND other-seeds >= MIN_OTHER_SEEDS
 #
+#   Rules B and C prune only under disk pressure, while free space is under the relaxed
+#   threshold (see DISK_AWARE below). DISK_AWARE=0 lets them prune at any free space.
+#
 #   A SPAM BATCH is a set of repos one script stamped out from a single template: the same name
 #   shape with a slot filled in, the same description with a number swapped.
 #
@@ -142,7 +145,8 @@
 #   this, faster and unsafe. (a) and (b) still count every peer's content: a domain a stranger
 #   pastes into a thousand repos is a spam domain, whoever pasted it.
 #
-#   Rule E reads file content, which is where its cost is; a RULES without E disables it.
+#   Rule E is off by default (RULES=ABCDEFGH turns it on). It reads file content, which is
+#   where its cost is.
 #   Within a repo's own refs, where a link sits does not matter: issues, patches, comments and
 #   committed files all count. Only (b) cares, and it reads the canonical branches alone.
 #
@@ -574,7 +578,9 @@ MALWARE_BYTES=4194304        # of paths and subjects read per repo in all; a tre
 # means that rule neither scans nor puts anything in the plan. RULES= (set but empty) means no
 # rules at all, not the default: an operator who writes that means none, and on a tool that
 # deletes, reading it as "all of them" fails in the one direction that cannot be undone.
-RULES="${RULES-ABCDEFGH}"
+# The link-farm rule (E) is left out: none of the 36 repos it pruned on a 13k-repo seed was a
+# link farm, so it waits for a redesign. RULES=ABCDEFGH turns it on.
+RULES="${RULES-ABCDFGH}"
 rule_on(){ case "$RULES" in (*"$1"*) return 0 ;; (*) return 1 ;; esac; }
 # How the output names a rule: by what it does, and by the letter RULES takes.
 rule_label() {
@@ -600,7 +606,7 @@ MAX_PRUNE_GB="${MAX_PRUNE_GB:-80}"
 # the seed already writes, and a rule far above its usual is held back while the others go
 # ahead.
 RATCHET_FACTOR="${RATCHET_FACTOR:-3}"            # times a rule's usual haul before it is held
-RATCHET_RUNS="${RATCHET_RUNS:-8}"                # past runs the usual is taken from (median)
+RATCHET_RUNS="${RATCHET_RUNS:-8}"                # a rule's past runs its usual is taken from
 # A rule that usually prunes nothing has a usual of 0, and three times 0 would hold back its
 # very first verdict. Below this many repos a rule is never held back, so an ordinary week's
 # handful goes through and only a wave waits for a human. Measured on radicle.at: rule A's
@@ -677,7 +683,9 @@ UNDO_MAX_GB="${UNDO_MAX_GB:-10}"                 # GiB those repos held when pru
 # minor releases after it went in, so the list empties as seeds upgrade.
 #   media-dump, media-batch: 15 of 54 media verdicts checked by hand on radicle.at were wrong,
 #   all of them at most 23 MiB; 27 of the 39 right ones were 2.5 MiB to 409 MiB.
-UNDO_CHANGED="0.8.0:media-dump:32M 0.8.0:media-batch:32M"
+#   link-farm: none of the 36 link-farm verdicts on radicle.at was a link farm, and all 36
+#   together held 0.40 GiB.
+UNDO_CHANGED="0.8.0:media-dump:32M 0.8.0:media-batch:32M 0.8.0:link-farm:512M"
 # Repos known to be wrongly pruned that the current rules still flag, as rid:version. Lifted
 # whatever the budget, and spared by the rules, until the release named, which is the one that
 # has to change the rule that flags it or drop the entry. A dev build of that release already
@@ -1422,6 +1430,21 @@ if [ "$DISK_AWARE" = 1 ] \
     " %.1f GB), so pressure is either 0%% or 100%%.\n", r/1e9, c/1e9}' >&2
 fi
 
+# Rules B and C prune for space alone: a big or long-quiet repo is not junk, only a cost. While
+# free space is above the relaxed threshold there is no cost to cut, and an honest project they
+# prune is lost for nothing, so they wait. With DISK_AWARE=0 pressure is always 0, and they act
+# as configured.
+space_rules=1
+if [ "$DISK_AWARE" = 1 ] && awk -v p="$p" 'BEGIN { exit !(p == 0) }'; then
+  space_rules=0
+fi
+# The rules that may prune this run, as its audit log records them. A waiting rule is left out,
+# so the ratchet reads the run as no sample of it, like a run with the rule off.
+# "-" stands for none, since an empty value reads as a log from before rules were recorded.
+rules_live=$RULES
+[ "$space_rules" = 1 ] || rules_live=${rules_live//[BC]/}
+[ -n "$rules_live" ] || rules_live=-
+
 # interpolate each knob relaxed->aggressive by p
 lerp(){ awk -v a="$1" -v b="$2" -v p="$p" 'BEGIN{printf "%d", a+(b-a)*p+0.5}'; }
 eff_abs_mb=$(lerp "$ABS_SIZE_FLOOR_MB" "$ABS_SIZE_FLOOR_MB_AGG")
@@ -1463,8 +1486,10 @@ rule_c="C stale(>${eff_stale_days}d, seeds>=${eff_seeds})"
 rule_d="D spam(batch>=${SPAM_MIN_BATCH} & desc>=${SPAM_DESC_AGREE_PCT}%,"
 rule_d="$rule_d >${eff_spam_days}d, seeds>=${SPAM_MIN_SEEDS})"
 rule_on A || rule_a="$rule_a [DISABLED: not in RULES]"
-rule_on B || rule_b="$rule_b [DISABLED: not in RULES]"
-rule_on C || rule_c="$rule_c [DISABLED: not in RULES]"
+if ! rule_on B; then rule_b="$rule_b [DISABLED: not in RULES]"
+elif [ "$space_rules" = 0 ]; then rule_b="$rule_b [WAITING: no disk pressure]"; fi
+if ! rule_on C; then rule_c="$rule_c [DISABLED: not in RULES]"
+elif [ "$space_rules" = 0 ]; then rule_c="$rule_c [WAITING: no disk pressure]"; fi
 rule_on D || rule_d="$rule_d [DISABLED: not in RULES]"
 echo "# rules: $rule_a  $rule_b  $rule_c  $rule_d"
 
@@ -1472,7 +1497,7 @@ rule_e="E link-farm(>=${LINK_MIN_SCORE} spam domains, each linked from"
 rule_e="$rule_e >=${LINK_MIN_REPOS_PCT}% of repos and from the code of"
 rule_e="$rule_e <${LINK_CODE_MAX_PCT}% of them, >${LINK_STALE_DAYS}d,"
 rule_e="$rule_e seeds>=${LINK_MIN_SEEDS})"
-rule_on E     || rule_e="$rule_e [DISABLED: not in RULES]"
+rule_on E     || rule_e="$rule_e [DISABLED: not in RULES, off by default]"
 echo "# rule $rule_e"
 
 rule_f="F media-dump(>=$((MEDIA_MIN_BYTES/1024))KB of media and"
@@ -1869,7 +1894,7 @@ open_audit() {
       "blocks it lifted, on # unblocked: lines." \
       "A repo in the quarantine can be put back: rad prune quarantine restore <rid>"
     printf '# %s  version=%s  pressure=%s%%  rules=%s\n' \
-           "$run_ts" "$VERSION" "$press_pct" "$RULES"; } > "$audit"
+           "$run_ts" "$VERSION" "$press_pct" "$rules_live"; } > "$audit"
   echo "# audit log: $audit"
 }
 
@@ -4190,14 +4215,15 @@ while IFS=$'\t' read -r rid sz mt life birth; do
     reason="junk-name"
     near_age "$life" "$junk_cut"; near_min "$seeds" "$JUNK_MIN_SEEDS" seeds
     near_max "${gap:-0}" "$import_cut" import
-  elif rule_on B && [ "$is_big" = 1 ] && [ "$life" -lt "$outlier_cut" ] \
-       && [ "$seeds" -ge "$eff_seeds" ]; then
+  elif rule_on B && [ "$space_rules" = 1 ] && [ "$is_big" = 1 ] \
+       && [ "$life" -lt "$outlier_cut" ] && [ "$seeds" -ge "$eff_seeds" ]; then
     reason="size-outlier"
     near_age "$life" "$outlier_cut"; near_min "$seeds" "$eff_seeds" seeds
     # Both size bars have to be cleared, so the tighter of the two is the one worth reporting.
     if [ "$abscut" -gt "$relcut" ]; then near_min "$sz" "$abscut" size
     else                                 near_min "$sz" "$relcut" size; fi
-  elif rule_on C && [ "$life" -lt "$stale_cut" ] && [ "$seeds" -ge "$eff_seeds" ]; then
+  elif rule_on C && [ "$space_rules" = 1 ] && [ "$life" -lt "$stale_cut" ] \
+       && [ "$seeds" -ge "$eff_seeds" ]; then
     reason="stale"
     near_age "$life" "$stale_cut"; near_min "$seeds" "$eff_seeds" seeds
   fi
@@ -4330,9 +4356,10 @@ fi
 
 # ------------------------------------------------------------------------- the history ratchet
 # Each rule's share of the plan is measured against the median of what that rule pruned in the
-# last RATCHET_RUNS applied runs, and a rule over RATCHET_FACTOR times that is held back. It is
-# per rule so that one rule's wave holds back that rule alone: the others' verdicts are as sound
-# as they were the week before, and a whole-plan ratchet would make them wait for a human too.
+# last RATCHET_RUNS applied runs in which it could prune, and a rule over RATCHET_FACTOR times
+# that is held back. It is per rule so that one rule's wave holds back that rule alone: the
+# others' verdicts are as sound as they were the week before, and a whole-plan ratchet would
+# make them wait for a human too.
 #
 # The past comes from the audit logs history.log names, since those list every verdict an
 # applied run acted on with its reason. Only worked out here, so a dry run can show it; whether
@@ -4362,7 +4389,8 @@ grep -oE 'audit=[^[:space:]]+' "$AUDIT_DIR/history.log" 2>/dev/null | sed 's/^au
   > "$tmp/ratchet-named" || true
 while IFS= read -r log; do
   [ -r "$AUDIT_DIR/$log" ] && printf '%s\n' "$AUDIT_DIR/$log"
-done < "$tmp/ratchet-named" | tail -n "$RATCHET_RUNS" > "$tmp/ratchet-logs" || true
+done < "$tmp/ratchet-named" > "$tmp/ratchet-readable" || true
+tail -n "$RATCHET_RUNS" "$tmp/ratchet-readable" > "$tmp/ratchet-logs"
 nratchet=$(wc -l < "$tmp/ratchet-logs")
 tail -n "$RATCHET_RUNS" "$tmp/ratchet-named" > "$tmp/ratchet-recent"
 nrecent=$(wc -l < "$tmp/ratchet-recent")
@@ -4397,8 +4425,14 @@ first_prunes() {
                  seen[$1] = 1; n = split(FILENAME, p, "/"); print p[n] "\t" $0 }' "${logs[@]}"
 }
 first_prunes > "$tmp/ratchet-firsts"
+# Newest first, and a rule's samples stop at RATCHET_RUNS. A rule that waits for disk pressure
+# most weeks then keeps the usual of the last runs it could prune in, however far back those
+# are, so each new spell of pressure is not judged against a floor. The walk stops once every
+# rule this run plans has its samples, since a seed's logs only ever accumulate.
 : > "$tmp/ratchet-past"
-while IFS= read -r log; do
+declare -A nsamples=()
+nplanned=$(wc -l < "$tmp/ratchet-planned"); nfull=0
+while [ "$nfull" -lt "$nplanned" ] && IFS= read -r log; do
   rules_then=$(sed -n '/^# [0-9].*  rules=/ { s/.*  rules=//p; q }' "$log")
   awk -F'\t' -v name="${log##*/}" '$1 == name' "$tmp/ratchet-firsts" | cut -f2- \
     > "$tmp/ratchet-onelog-firsts"
@@ -4408,19 +4442,22 @@ while IFS= read -r log; do
       [A-Z]) [ -z "$rules_then" ] || [[ $rules_then == *$letter* ]] || continue ;;
     esac
     grep -q "^# held back: rule $letter," "$log" && continue
+    [ "${nsamples[$letter]:-0}" -lt "$RATCHET_RUNS" ] || continue
+    nsamples[$letter]=$(( ${nsamples[$letter]:-0} + 1 ))
+    [ "${nsamples[$letter]}" -lt "$RATCHET_RUNS" ] || nfull=$((nfull + 1))
     past=$(awk -F'\t' -v l="$letter" '$1 == l { print $2 }' "$tmp/ratchet-onelog")
     printf '%s\t%s\n' "$letter" "${past:-0}" >> "$tmp/ratchet-past"
   done < "$tmp/ratchet-planned"
-done < "$tmp/ratchet-logs"
+done < <(tac "$tmp/ratchet-readable")
 
 # rule \t planned \t usual \t limit, for every rule this run would hold back. Fewer than three
 # past runs is no baseline at all, and then nothing is held. --force holds nothing either, so
 # nothing here claims a hold that will not happen.
 #
-# A rule with fewer than three samples of its own, one that was off or held for most of the
-# window, has a usual of 0, so RATCHET_FLOOR is its limit. Its median would otherwise come from
-# one or two runs, and the one forced run that let a held wave through would set a limit three
-# times that wave.
+# A rule with fewer than three samples of its own, one history.log shows able to prune in
+# fewer than three runs, has a usual of 0, so RATCHET_FLOOR is its limit. Its median would
+# otherwise come from one or two runs, and the one forced run that let a held wave through
+# would set a limit three times that wave.
 : > "$tmp/held"
 if [ "$nratchet" -ge 3 ] && [ "$FORCE" = 0 ]; then
   while IFS=$'\t' read -r letter planned; do
@@ -4522,7 +4559,7 @@ if [ -s "$tmp/held" ]; then
   echo "#   HELD BACK unless --force or a yes at the prompt, as each rule is far over its usual:"
   while IFS=$'\t' read -r letter planned usual limit; do
     echo "#     $(rule_label "$letter"): $planned repos, where its median over the last" \
-         "$nratchet runs is $usual a run (limit $limit)"
+         "runs it could prune in is $usual a run (limit $limit)"
   done < "$tmp/held"
 fi
 
@@ -4632,7 +4669,7 @@ staging="$lastrun.new"
 lr_head() {  # each argument is one line of what the file holds, in plain words
   printf '# %s\n' "$@"
   printf '# %s  version=%s  mode=%s  rules=%s  storage=%s\n' \
-         "$run_ts" "$VERSION" "$run_mode" "$RULES" "$STORAGE"
+         "$run_ts" "$VERSION" "$run_mode" "$rules_live" "$STORAGE"
 }
 
 lr_ok=1
@@ -4945,7 +4982,8 @@ nheld=0
 if [ "$CONFIRMED" = 0 ] && [ -s "$tmp/held" ]; then
   while IFS=$'\t' read -r letter planned usual limit; do
     echo "# HELD BACK $(rule_label "$letter"): $planned repos, where its median over the last" \
-         "$nratchet runs is $usual a run (limit $limit). None of them is pruned this run." >&2
+         "runs it could prune in is $usual a run (limit $limit). None of them is pruned this" \
+         "run." >&2
   done < "$tmp/held"
   echo "# Review them in the plan above, then re-run with --force (unattended), or confirm" \
        "interactively. The rest of the plan goes ahead." >&2
