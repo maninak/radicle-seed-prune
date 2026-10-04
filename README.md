@@ -50,6 +50,7 @@ rad prune --apply --force    # apply even past a runaway cap, or a rule planning
 rad prune --apply --restart-node  # ...and restart the node afterwards
 rad prune --block-peers      # block what the parasite-peer rule (G) found, one [y/N] per peer; prunes nothing
 rad prune quarantine ...     # list, restore, delete, purge quarantined repos
+rad prune check              # which of your own public repos a seed would prune, and why
 rad prune --version
 ```
 
@@ -152,14 +153,40 @@ A phase counts the repos it has to read this run, not everything in storage, so 
 
 | Code | Meaning                                                                                                                                                                                                                                                                                 |
 | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `0`  | Success, including a dry run and an `--apply` you declined at the prompt                                                                                                                                                                                                                |
+| `0`  | Success, including a dry run, an `--apply` you declined at the prompt, and a `check` that flagged nothing                                                                                                                                                                               |
 | `1`  | Storage missing or unreadable; storage, the quarantine or the audit directory not writable by `--apply`, or the audit directory by `--block-peers`; a repo that could not be removed (the run names it); or an unexpected failure (the run prints the line, the command and its status) |
 | `2`  | Bad argument, or a setting with a bad value (the run names it)                                                                                                                                                                                                                          |
 | `3`  | The plan tripped a runaway cap; nothing was pruned. Read it, then re-run with `--force`                                                                                                                                                                                                 |
 | `4`  | A rule planned far more than usual, so its repos were held back; the other repos in the plan were pruned. Read it, then `--force`                                                                                                                                                       |
 | `5`  | Refused to guess: node unreachable, NID unknown or malformed, `rad ls` failed, routing table empty, exclusions unreadable, the disk's size unreadable while `DISK_AWARE=1`, or too much of storage could not be read                                                                    |
+| `6`  | `check` found a repo of yours that a seed running rad-prune would prune                                                                                                                                                                                                                 |
 
 Exit 5 means the tool could not see enough to be trusted. Nothing was touched.
+
+### Checking your own repos
+
+`rad prune check` tells a publisher which of their own public repos a seed running rad-prune would prune, and why:
+
+```text
+$ rad prune check
+# 2 public repo(s) of yours, judged by the media (F) and spam-batch (D) rules as a seed running rad-prune would judge them once they are old enough
+would-prune  example-clips  rad:z<rid>  as media-dump
+  It holds images, video, audio or archives, no source or build file, and under 2048 bytes of anything else.
+  Fix: add what the media belongs to, such as its source, its build files or pages that use it, or host the media elsewhere and link to it.
+  The media rule (F) also counts the delegates' issue and patch attachments and the other delegates' branches. The list below leaves those out.
+  Biggest files on its branches and tags:
+       48.0 MiB  main  assets/intro.mp4
+ok           example-project  rad:z<rid>
+# Not checked: the junk-name (A), size (B) and stale (C) rules, ...
+```
+
+Your own repos are the ones `rad ls` lists whose identity document names your node as a delegate, so a repo you only forked is left out. Private repos are left out too. A repo you pinned is checked, because your pin does not protect it on a seed.
+
+The check runs only the media rule (F) and the spam-batch rule (D). When it finds repos of yours, its last line names what it leaves out. The check ignores the [minimum age](#how-age-is-measured) those rules require, so a repo you published today gets the verdict a seed gives it once it is old enough. On a seed with default settings, neither rule requires other seeds to hold a repo, and the check ignores any minimum you set. The rules' other settings are the defaults, unless you set them in your environment.
+
+The check and a seed look for batches among different repos, so either can find a batch the other does not. The spam-batch rule (D) compares names and descriptions across the repos your node holds. The media rule (F) looks for the same media files only among your own repos.
+
+The check changes nothing. It writes only to a temporary directory and ignores your node's keep and deny lists. A repo it could not judge, marked `unjudged`, does not change the exit code.
 
 ## What gets pruned
 
@@ -233,7 +260,7 @@ The parasite-peer rule (G) is missing from the table because it judges a **peer*
 
 The junk-name (A), size (B) and stale (C) rules measure **last activity**. Activity is any signed change, however small: a commit, an issue, a comment, a reaction, a label. The tool uses the newest `creatordate` across every peer's refs.
 
-The spam-batch (D) and media (F) rules measure **creation** instead, because spam that comments on its own repos would reset a last-activity clock. Creation is the older of the repo's oldest ref date and the day this seed first saw it (`$RAD_HOME/prune-audit/first-seen.tsv`, appended on every run, dry or not). A pusher controls the first date and cannot reach the second.
+The spam-batch (D) and media (F) rules measure **creation** instead, because spam that comments on its own repos would reset a last-activity clock. Creation is the older of the repo's oldest ref date and the day this seed first saw it (`$RAD_HOME/prune-audit/first-seen.tsv`, appended on every run, dry or not, but not by `check`). A pusher controls the first date and cannot reach the second.
 
 #### Verdicts that may delete the last copy we know of
 
@@ -491,7 +518,7 @@ Anything this tool does is written to `$RAD_HOME/prune-audit/` (default `~/.radi
 - **`cache/`**: what the media (F) and parasite-peer (G) rules, and the check for copies, last read out of each repo. Safe to delete at any time; the next run reads everything again.
 - **`history.log`**: one line appended per applied run that went ahead with its plan: timestamp, repos pruned, GiB moved out of storage, whether the quarantine was on, disk pressure, the run's audit log, and free space and what storage and the quarantine held on that disk when the run started. An unattended run reads the audit logs named here to learn what each rule usually prunes.
 - **`cron.log`**: with the cron recipe above, the full console output of every run.
-- **`first-seen.tsv`**: when this seed first saw each repo. The spam-batch (D) and media (F) rules read it as a repo's creation date, and the check for copies to tell which repo held a listed file first. Written on every run, dry or not. Deleting it counts every listed file the check had set aside against its copies again.
+- **`first-seen.tsv`**: when this seed first saw each repo. The spam-batch (D) and media (F) rules read it as a repo's creation date, and the check for copies to tell which repo held a listed file first. Written on every run, dry or not, but not by `rad prune check`. Deleting it counts every listed file the check had set aside against its copies again.
 - **`last-run/`**: what the last run decided and what it decided it on, untrimmed and tab-separated, whether or not that run acted. The terminal folds repetitive rows and cuts each evidence table to its top few; these files hold all of it, for reading later or piping elsewhere. A file named after a rule starts with that rule's letter, so a rule's files sit together. Replaced whole by the next run that gets far enough to write them. A run that aborts earlier leaves the previous run's files, and of the `#` lines at the top of each file, the one that starts with a time names the run that wrote it (time, version, dry or applying, rules, storage path).
   - `plan.tsv`: every repo the run planned to prune, one row each, same columns as the audit log above. It is the plan, not the outcome; what an applying run actually removed is in that run's `prune-*.log`.
   - `held.tsv`: every rule an unattended run would hold back for planning far more than usual, with its planned count, its usual and its limit. Its repos are still listed in `plan.tsv`, since `--force` or a yes would prune them.

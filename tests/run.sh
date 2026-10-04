@@ -1282,6 +1282,86 @@ nod=$(STALE_YEARS_DAYS=30 RULES=ABCFG run)
   && ok "a repo a disabled rule would have claimed falls through to the next rule" \
   || no "RULES=ABCFG let a batch member escape rule C as well as rule D"
 
+# --- check: a publisher's own public repos, judged as a seed would judge them --- It runs on
+# the publisher's own node, so it must leave that node as it found it: nothing blocked, nothing
+# removed, nothing written beside the operator's audit trail. It answers for a seed, not for
+# this node, so a repo this node's deny list names is still judged on its own.
+build_fixture; assert_isolated
+# Ours: the repos `rad ls` lists whose identity document names this node. zcode4 is listed but
+# names somebody else, as a fork does. zpin6 is pinned here, which spares nothing on a seed.
+# zpriv7 is private, and its description quotes zmediaone, which is public all the same.
+awk -F'\t' -v OFS='\t' '$1 ~ /^(zmediaone|zmediafresh|zpin6|zcode4|zpriv7|zspam1)$/ { $5 = 1 }
+                         $1 == "zpriv7" { $8 = "notes on rad:zmediaone" } 1' \
+  "$RSP_MANIFEST" > "$ROOT/manifest.new" && mv "$ROOT/manifest.new" "$RSP_MANIFEST"
+for r in zmediaone zmediafresh zpin6 zown22 zpriv7 zspam1; do
+  w=$(mktemp -d -p "$ROOT"); mkdir -p "$w/embeds"
+  git -C "$w" -c init.defaultBranch=master init -q
+  git -C "$w" config user.email a@b; git -C "$w" config user.name a
+  vis=""; [ "$r" != zpriv7 ] || vis=',"visibility":{"type":"private"}'
+  printf '{"delegates":["did:key:%s"],"payload":{},"threshold":1%s}\n' "$RSP_NID" "$vis" \
+    > "$w/embeds/radicle.json"
+  git -C "$w" add -A; git -C "$w" commit -q -m id
+  git -C "$w" push -q --force "$STORAGE/$r" master:refs/rad/id; rm -rf "$w"
+  touch -d "10 days ago" "$STORAGE/$r"
+done
+# zmediafresh's commits are dated a day ahead, as a clock running fast dates them. A seed waits
+# out a repo's age, however young.
+ahead="@$(date -u -d "1 day" +%s) +0000"
+for ref in $(GIT_DIR="$STORAGE/zmediafresh" git for-each-ref --format='%(refname)'); do
+  c=$(GIT_DIR="$STORAGE/zmediafresh" GIT_AUTHOR_NAME=a GIT_AUTHOR_EMAIL=a@b \
+      GIT_COMMITTER_NAME=a GIT_COMMITTER_EMAIL=a@b \
+      GIT_AUTHOR_DATE="$ahead" GIT_COMMITTER_DATE="$ahead" \
+      git commit-tree -m m "$ref^{tree}")
+  GIT_DIR="$STORAGE/zmediafresh" git update-ref "$ref" "$c"
+done
+touch -d "10 days ago" "$STORAGE/zmediafresh"
+# File names a delegate chose reach the publisher's terminal, escape sequences included.
+w=$(mktemp -d -p "$ROOT"); git clone -q -b master "$STORAGE/zmediaone" "$w"
+printf x > "$w/$(printf 'a\033[2Jb.mp4')"; printf x > "$w/$(printf 'c\302\233d.mp4')"
+git -C "$w" add -A; git -C "$w" -c user.email=a@b -c user.name=a commit -q -m m
+git -C "$w" push -q "$STORAGE/zmediaone" HEAD:master; rm -rf "$w"
+touch -d "10 days ago" "$STORAGE/zmediaone"
+# A repo the node writes to while the check runs is not one it can call ok.
+touch -d "+1 hour" "$STORAGE/zown22"
+mkdir -p "$AUDIT_DIR"; echo zpin6 > "$AUDIT_DIR/deny.txt"
+audit_before=$(find "$AUDIT_DIR" -type f -exec sha1sum {} + | sort)
+out=$("$SCRIPT" check 2>"$ROOT/check.err"); rc=$?
+{ [ "$rc" = 6 ] && ! grep -q 'WARN' "$ROOT/check.err" \
+  && grep -qxE 'would-prune +clipdump +rad:zmediaone +as media-dump' <<<"$out" \
+  && grep -qxE ' +39 KiB  master  clip\.mp4' <<<"$out" \
+  && grep -qxE ' +1 B +master  cd\.mp4' <<<"$out" \
+  && ! grep -qF $'\033' <<<"$out" && ! grep -qF $'\302\233' <<<"$out" \
+  && grep -qxE 'would-prune +newclip +rad:zmediafresh +as media-dump' <<<"$out" \
+  && grep -qxE 'would-prune +flatten-1-[0-9a-f]+ +rad:zspam1 +as spam-batch' <<<"$out" \
+  && grep -qxE 'ok +pinnedproj +rad:zpin6' <<<"$out" \
+  && grep -qxE 'unjudged +myproj +rad:zown22' <<<"$out" \
+  && [ "$(grep -cE '^(ok|would-prune|unjudged) ' <<<"$out")" = 5 ]; } \
+  && ok "check judges the public repos you are a delegate of, pinned and young ones too" \
+  || no "check misjudged your repos, judged a fork or somebody else's, warned, or exited $rc"
+{ [ "$(find "$AUDIT_DIR" -type f -exec sha1sum {} + | sort)" = "$audit_before" ] \
+  && [ ! -s "$RSP_HOME/.stub_policy" ] && [ ! -s "$RSP_HOME/.stub_unseed" ]; } \
+  && ok "check writes nothing to the audit dir and changes no policy" \
+  || no "check left something in the audit dir or changed a policy"
+# A repo the media rule (F) cannot read in full is not one the check can call ok.
+out=$(MEDIA_MAX_REFS=1 "$SCRIPT" check 2>/dev/null); rc=$?
+{ [ "$rc" = 6 ] && grep -qxE 'unjudged +clipdump +rad:zmediaone' <<<"$out" \
+  && grep -q '^  The media rule (F) could not judge it' <<<"$out"; } \
+  && ok "check calls a repo the media rule (F) could not read unjudged" \
+  || no "check judged, or called ok, a repo the media rule (F) could not read (rc=$rc)"
+out=$("$SCRIPT" check --apply 2>&1); rc=$?
+[ "$rc" = 2 ] \
+  && ok "check refuses --apply" || no "check took --apply (rc=$rc)"
+# With the media dumps and the batch member no longer listed by `rad ls`, nothing of ours is
+# pruned, though zpriv7 quotes zmediaone, whose identity document still names this node. An
+# unjudged repo is no reason to fail, nor is an empty routing table, since a seed's count is
+# not this node's, nor a stopped node, since rad reads all a check needs from disk.
+awk -F'\t' -v OFS='\t' '$1 ~ /^(zmediaone|zmediafresh|zspam1)$/ { $5 = 0 } 1' \
+  "$RSP_MANIFEST" > "$ROOT/manifest.new" && mv "$ROOT/manifest.new" "$RSP_MANIFEST"
+out=$(RSP_NO_ROUTING=1 RSP_NODE_DOWN=1 "$SCRIPT" check 2>/dev/null); rc=$?
+{ [ "$rc" = 0 ] && grep -qxE 'ok +pinnedproj +rad:zpin6' <<<"$out"; } \
+  && ok "check exits 0 when no repo of yours would be pruned" \
+  || no "check flagged a clean set of repos (rc=$rc)"
+
 
 build_fixture; assert_isolated
 

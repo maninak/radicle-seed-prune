@@ -340,6 +340,25 @@ OUR_NID="${OUR_NID:-$("$RAD" self --did 2>/dev/null || true)}"
 OUR_NID=${OUR_NID#did:key:}
 SERVICE="${SERVICE:-radicle-node}"          # systemd unit for --restart-node
 
+# `check` shows a publisher which of their own public repos a seed running this tool would
+# prune. It writes into a directory of its own, so the operator's audit trail, keep list,
+# deny list, ledger and cache are neither read nor changed. It runs the media (F) and
+# spam-batch (D) rules, which judge what a repo holds and how it is named, with their age
+# windows at 0, so a repo published today shows the verdict it gets once it is old enough.
+# Their seed floors are 0, as by default, since this node's routing table is not a seed's, and
+# there is no disk pressure, so this machine's free space plays no part. Set before the
+# settings below, which keep a value already set.
+CHECK_DIR=""
+if [ "${1:-}" = check ]; then
+  CHECK_DIR=$(mktemp -d)
+  trap 'rm -rf "$CHECK_DIR"' EXIT
+  AUDIT_DIR=$CHECK_DIR
+  unset KEEP_FILE FIRST_SEEN CACHE_DIR
+  CACHE=0; UNDO=0; DISK_AWARE=0; RULES=DF
+  SPAM_STALE_DAYS=0; MEDIA_STALE_DAYS=0; FRESH_GUARD_DAYS=0
+  SPAM_MIN_SEEDS=0; MEDIA_MIN_SEEDS=0
+fi
+
 ABS_SIZE_FLOOR_MB="${ABS_SIZE_FLOOR_MB:-500}"   # rule B absolute floor
 REL_PCTL="${REL_PCTL:-95}"                       # rule B relative percentile
 OUTLIER_STALE_DAYS="${OUTLIER_STALE_DAYS:-90}"   # rule B staleness  (~3 months)
@@ -892,13 +911,15 @@ is_archive() {
 }
 
 # ---------------------------------------------------------------------------------------- args
-# One subcommand, "quarantine", for dealing with repos an earlier run pruned. Everything else
-# is a flag on the prune run itself.
+# Two subcommands: "quarantine", for dealing with repos an earlier run pruned, and "check" (see
+# CHECK_DIR above). Everything else is a flag on the prune run itself.
 CMD=""; QVERB=""; QARGS=()
 if [ "${1:-}" = quarantine ]; then
   CMD=quarantine; shift
   QVERB="${1:-}"; [ "$#" = 0 ] || shift
   QARGS=("$@"); set --
+elif [ "${1:-}" = check ]; then
+  CMD=check; shift
 fi
 
 # What --help prints. The comment block at the top of this file is the design document, not a
@@ -916,6 +937,8 @@ Automatically detect and prune lower-value repos, spam and abuse from a Radicle 
 USAGE
   $me [options]                    plan a prune, and with --apply carry it out
   $me quarantine <verb> [rid...]   deal with what a past run already pruned
+  $me check                        say which of your own public repos a seed running
+                                   $me would prune, and why; changes nothing
 
   Dry run by default: with no options it prints the plan and changes nothing.
 
@@ -965,6 +988,16 @@ for a in "$@"; do
     *) echo "unknown arg: $a (try --help)" >&2; exit 2 ;;
   esac
 done
+# A check judges your own repos as if they were somebody else's, so it must never act on what
+# it finds.
+if [ "$CMD" = check ] && [ $((APPLY + YES + FORCE + RESTART + BLOCK_PEERS)) != 0 ]; then
+  echo "check only reports; it takes none of --apply, --yes, --force, --restart-node," \
+       "--block-peers" >&2
+  exit 2
+fi
+# The scan's own report is written for an operator, so a check keeps it off stdout and prints
+# its answer to fd 3 once the plan is made. Warnings still reach stderr.
+if [ "$CMD" = check ]; then exec 3>&1 1>/dev/null; fi
 
 # Answered before the preflight below, the same as the main --help is answered before it: a
 # reader asking what the verbs are gets an answer rather than a list of what is not installed.
@@ -1431,8 +1464,13 @@ junk_cut=$(( now - eff_junk_days*86400 ))
 spam_cut=$(( now - eff_spam_days*86400 ))
 stale_cut=$(( now - eff_stale_days*86400 ))
 media_cut=$(( now - MEDIA_STALE_DAYS*86400 ))
+# A check first sees every repo now, so a repo whose commits all carry a date ahead of this
+# clock is created now by its reckoning, and a window of 0 would never pass it. A seed that
+# first saw it earlier would.
+[ "$CMD" != check ] || { spam_cut=$((now + 1)); media_cut=$((now + 1)); }
 
 run_mode=$([ "$APPLY" = 1 ] && echo APPLY || echo DRY-RUN)
+[ "$CMD" != check ] || run_mode=CHECK
 echo "# radicle-seed-prune $VERSION  $run_ts   mode=$run_mode"
 # Named at the top and not only at the end: the plan, the per-run log and the quarantine are
 # all under it, and they are what an operator goes looking for while the run is still going.
@@ -1672,6 +1710,7 @@ on_exit() {
   local rc=$?
   progress_kill
   rm -rf "$tmp"
+  [ -z "$CHECK_DIR" ] || rm -rf "$CHECK_DIR"
   # The exit code says whether a run held a rule back, failed a removal or refused to guess,
   # and a cron job keeps only what the run printed. The audit log keeps it beside what the run
   # did.
@@ -1710,6 +1749,27 @@ sed $'1s/^\xef\xbb\xbf//; s/#.*//; s/did:key://' "$KEEP_FILE" 2>/dev/null \
   | grep -oE '^\s*z[1-9A-HJ-NP-Za-km-z]{40,}' \
   | tr -d ' \t' | sort -u > "$tmp/kept-nids" || true
 cat "$tmp/pinned" "$tmp/private" "$tmp/own" "$tmp/kept" 2>/dev/null | sort -u > "$tmp/excluded"
+# A check judges the public repos this node's identity is a delegate of, and nothing else in
+# storage. `rad ls` alone is not enough: it lists the repos this node forked as well, which the
+# publisher cannot change. A pin is this node's own and protects nothing on a seed, so pinned
+# repos are judged. The media rule (F) skips reading the excluded repos (see cache_hits).
+# A row's own id is its first, because a description may quote another repo's. An id that
+# opens a later line of a description still gets through, and is judged only if its identity
+# document names this node as a delegate. Private is read from that document, for the same
+# reason.
+if [ "$CMD" = check ]; then
+  : > "$tmp/check-repos"
+  while IFS= read -r rid; do
+    read_delegates "$STORAGE/$rid"
+    case " $dids " in (*" $OUR_NID "*) ;; (*) continue ;; esac
+    jq -e '.visibility.type == "private"' <<<"$iddoc" >/dev/null 2>&1 && continue
+    printf '%s\n' "$rid" >> "$tmp/check-repos"
+  done < <(awk '{ for (i = 1; i <= NF; i++)
+                    if ($i ~ /^rad:z[1-9A-HJ-NP-Za-km-z]+$/) { print substr($i, 5); break } }' \
+              "$tmp/ls-own")
+  find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' \
+    | grep -vxFf "$tmp/check-repos" > "$tmp/excluded" || true
+fi
 # The deny list, split into repo ids and identities. An identity is 48 characters and a repo id
 # under 40, which is what tells the two apart once their prefixes are dropped. A line that is
 # neither is said out loud: it is a verdict somebody wrote down that would otherwise do nothing.
@@ -1804,7 +1864,8 @@ echo "# excluded: $(wc -l < "$tmp/pinned") pinned," \
 # repos, which reads as "nothing to prune" when it means "saw nothing at all". Bail out in BOTH
 # modes, up front.
 mode=${run_mode,,}
-"$RAD" node status >/dev/null 2>&1 \
+# A check needs no live node: rad answers its ls and self from disk, node stopped or not.
+[ "$CMD" = check ] || "$RAD" node status >/dev/null 2>&1 \
   || { echo "# ABORT($mode): node unreachable via '$RAD' (home=$RAD_HOME)." >&2; exit 5; }
 [ -n "$OUR_NID" ] \
   || { echo "# ABORT($mode): no NID from '$RAD' (home=$RAD_HOME)." >&2; exit 5; }
@@ -2403,12 +2464,14 @@ fi
 "$RAD" node routing --json 2>/dev/null \
   | jq -r --arg us "$OUR_NID" 'select(.nid != $us) | (.rid|sub("^rad:";""))' \
   | sort | uniq -c | awk '{print $2"\t"$1}' > "$tmp/seeds" || true
-# Every rule requires a minimum other-seed count, so an empty routing table can only ever
-# produce an empty plan. Say so, instead of scanning the whole seed to report a misleading
-# "prune 0 repos".
-[ -s "$tmp/seeds" ] || {
+# An empty routing table means the node knows no other seed, so every seed count reads 0 and
+# the rules that keep the last copy could only ever spare everything. Say so, instead of
+# scanning the whole seed to report a misleading plan. A check holds the seed floors of both
+# its rules at 0, so it reads no seed count.
+[ -s "$tmp/seeds" ] || [ "$CMD" = check ] || {
   echo "# ABORT($mode): routing table empty via '$RAD' (home=$RAD_HOME)." >&2
-  echo "# Every rule requires a minimum other-seed count, so no repo could qualify." >&2
+  echo "# Every seed count would read 0, so the rules that keep the last copy could prune" \
+       "nothing." >&2
   exit 5
 }
 
@@ -2615,6 +2678,12 @@ fi
 # them again instead of treating silence as a verdict.
 cache_hits() {                      # $1 = rule's cache name; writes the rids it can reuse
   : > "$tmp/cached-$1"
+  # A check has the rule read only the repos it judges. The rest count as answered by the
+  # cache, which brings no row for them.
+  if [ "$CMD" = check ]; then
+    cut -f1 "$tmp/keys" | grep -xFf "$tmp/excluded" > "$tmp/cached-$1" || true
+    return 0
+  fi
   [ "$cache_ok" = 1 ] || return 0
   awk -F'\t' -v old="$CACHE_DIR/keys-$1" \
       'FILENAME == old { k[$1] = $2; next } ($1 in k) && k[$1] == $2 { print $1 }' \
@@ -2964,8 +3033,9 @@ MEDIA
         > "$tmp/media" 4> "$tmp/media-fail" || true
   progress_stop
   # The reused rows go back beside the ones just measured, so everything downstream (the
-  # media-batch corpus above all) sees every repo, not only the ones this run read. A repo
-  # that has since left storage is absent from this run's keys, so its rows cannot come back.
+  # media-batch corpus above all) sees every repo, not only the ones this run read. A check
+  # reads its own repos and no others. A repo that has since left storage is absent from this
+  # run's keys, so its rows cannot come back.
   cache_reuse "media" 1 media      >> "$tmp/media"
   cache_reuse "media-fail" 1 media >> "$tmp/media-fail"
   cache_reuse "blobs" 2 media       > "$tmp/blobs/cached"
@@ -3451,7 +3521,9 @@ done < "$tmp/lives"
 awk -F'\t' 'FILENAME == ARGV[1] { gone[$1] = 1; next }
             ($5 == "ours" || $5 == "private") && !($1 in gone) { print $1 "\t" $5 }' \
   "$tmp/excluded" "$tmp/lives" | sort > "$tmp/unlisted"
-if [ -s "$tmp/unlisted" ]; then
+# A check leaves unexcluded only the repos it judges, its own by design, so this would exclude
+# them.
+if [ "$CMD" != check ] && [ -s "$tmp/unlisted" ]; then
   nunlisted=$(wc -l < "$tmp/unlisted")
   echo "# WARN: $nunlisted repo(s) are ours or private on disk, but '$RAD ls' did not list" \
        "them; they are kept. 'rad seed' the ones marked ours that you want, 'rad rm' what you" \
@@ -3876,6 +3948,7 @@ fi
 
 # ---------- classify (map lookups + native bash regex; git only for rule A's import spare)
 : > "$tmp/plan"   # rid \t size \t seeds \t life \t reason \t name \t age_from \t near
+: > "$tmp/check-judged"
 : > "$tmp/media-review"
 nblind=0; nfresh=0; nnoage=0
 : > "$tmp/deny-kept"        # rid \t why, for every denied repo an exclusion kept
@@ -3914,7 +3987,10 @@ while IFS=$'\t' read -r rid sz mt life birth; do
     fi
     continue
   fi
-  [ -n "${PARDON[$rid]:-}" ] && continue              # wrongly pruned before (UNDO_PARDON)
+  if [ -n "${PARDON[$rid]:-}" ]; then                 # wrongly pruned before (UNDO_PARDON)
+    [ "$CMD" != check ] || printf '%s\n' "$rid" >> "$tmp/check-judged"
+    continue
+  fi
   # A copy of files a denied repo carried. It asks for no age and no settled fetch either:
   # what condemns it is files on its own delegates' branches, and a copy of a leak is worth
   # catching in the week it lands. It is the tool's inference, not a person's verdict, so it
@@ -3943,6 +4019,8 @@ while IFS=$'\t' read -r rid sz mt life birth; do
   # yet and would otherwise count as ageless against the scan guard below.
   [ "$mt" -ge "$fresh_cut" ] && { nfresh=$((nfresh+1)); continue; }   # in-flight fetch
   [ "$life" = 0 ] && { nnoage=$((nnoage+1)); continue; }               # unknown age: leave it
+  # A check calls a repo ok only when it reached the rules below.
+  [ "$CMD" != check ] || printf '%s\n' "$rid" >> "$tmp/check-judged"
 
   # Rules D and F measure age from here: the older of the repo's own oldest ref date and
   # the day this seed first saw it. A pusher controls the first and cannot reach the second.
@@ -4090,6 +4168,115 @@ sort -t$'\t' -k2,2nr "$tmp/plan" > "$tmp/plan.sorted"
 nplan=$(wc -l < "$tmp/plan.sorted")
 bytes=$(awk -F'\t' '{s+=$2} END{printf "%.0f", s}' "$tmp/plan.sorted")
 gib=$(awk -v b="$bytes" 'BEGIN{printf "%.2f", b/1073741824}')
+
+# ---------------------------------------------------------------------------------- the check
+# A check stops here, before anything acts on the plan, and says per repo what the rule saw
+# and what would change the verdict. It never says how close a repo came to a threshold: for
+# a spam template that is a way to tune the next batch until it passes.
+# The 5 biggest files at the tips of repo $1's branches and tags, as "bytes \t ref \t path",
+# read from the canonical refs and this node's own namespace. The media rule (F) also counts
+# issue and patch attachments and the other delegates' branches, which this does not list.
+# %.0f, because mawk prints a size of 2 GiB or more as 2.1e+09, which sort -n misreads.
+# File and branch names are whatever a delegate pushed, and they reach the terminal. With
+# quotePath off, git still escapes a path's control characters, but not the C1 ones spelled
+# in UTF-8, which a ref name may hold as well, so those go.
+check_biggest() {
+  local d="$STORAGE/$1" ref short
+  { GIT_DIR="$d" git for-each-ref --format='%(refname)' refs/heads refs/tags \
+      "refs/namespaces/$OUR_NID/refs/heads" "refs/namespaces/$OUR_NID/refs/tags" 2>/dev/null \
+      || true; } \
+    | while IFS= read -r ref; do
+        short=${ref#refs/namespaces/"$OUR_NID"/}; short=${short#refs/heads/}
+        short=${short#refs/tags/}
+        { GIT_DIR="$d" git -c core.quotePath=false ls-tree -r -l "$ref" 2>/dev/null \
+            || true; } \
+          | awk -F'\t' -v ref="$short" '{ split($1, f, " ")
+                                          printf "%.0f\t%s\t%s\n", f[4], ref, $2 }'
+      done \
+    | LC_ALL=C sed $'s/\xc2\xc2*[\x80-\x9f][\x80-\x9f]*//g' \
+    | sort -t$'\t' -k1,1nr | awk -F'\t' '!seen[$3]++ && n++ < 5'
+}
+check_pruned=0
+check_report() {
+  local rid name reason nrepos
+  local -A VERDICT=() JUDGED=() UNREAD=()
+  while IFS=$'\t' read -r rid _ _ _ reason _; do VERDICT[$rid]=$reason; done < "$tmp/plan.sorted"
+  while IFS= read -r rid; do JUDGED[$rid]=1; done < "$tmp/check-judged"
+  while IFS=$'\t' read -r rid _; do UNREAD[$rid]=1; done < "$tmp/media-fail"
+  nrepos=$(wc -l < "$tmp/check-repos")
+  if [ "$nrepos" = 0 ]; then
+    echo "# Nothing to check: no public repo in $STORAGE names this node's identity" \
+         "($OUR_NID) as a delegate."
+    return 0
+  fi
+  echo "# $nrepos public repo(s) of yours, judged by the media (F) and spam-batch (D) rules" \
+       "as a seed running rad-prune would judge them once they are old enough"
+  while IFS= read -r rid; do
+    name=${NAME[$rid]:-(?)}
+    reason=${VERDICT[$rid]:-}
+    if [ -z "$reason" ] && [ -n "${UNREAD[$rid]:-}" ]; then
+      printf 'unjudged     %s  rad:%s\n' "$name" "$rid"
+      echo "  The media rule (F) could not judge it: it has more refs, issue and patch ops or" \
+           "files of unknown type than the rule's limits allow, or git could not read part of it."
+      continue
+    fi
+    if [ -z "$reason" ] && [ -z "${JUDGED[$rid]:-}" ]; then
+      printf 'unjudged     %s  rad:%s\n' "$name" "$rid"
+      echo "  It could not be read, or it changed while the check ran. Run the check again."
+      continue
+    fi
+    if [ -z "$reason" ]; then
+      printf 'ok           %s  rad:%s\n' "$name" "$rid"
+      continue
+    fi
+    check_pruned=$((check_pruned + 1))
+    printf 'would-prune  %s  rad:%s  as %s\n' "$name" "$rid" "$reason"
+    case $reason in
+      media-dump)
+        echo "  It holds images, video, audio or archives, no source or build file, and" \
+             "under $MEDIA_TEXT_MAX_BYTES bytes of anything else."
+        echo "  Fix: add what the media belongs to, such as its source, its build files or" \
+             "pages that use it, or host the media elsewhere and link to it." ;;
+      media-ratio)
+        echo "  Its branches and tags hold images, video or audio, and besides them nothing" \
+             "but a README."
+        echo "  Fix: add what the media belongs to, such as its source, its build files or" \
+             "pages that use it, or host the media elsewhere and link to it." ;;
+      media-batch)
+        echo "  It holds the same media files as $((MEDIA_MIN_BATCH - 1)) or more other" \
+             "repos of yours, and little else."
+        echo "  Fix: keep each media file in one repo, or host it elsewhere and link to it." ;;
+      spam-batch)
+        echo "  Its name and description follow one template that $SPAM_MIN_BATCH or more" \
+             "repos on this node share."
+        echo "  Fix: give it a name and a description of its own." ;;
+    esac
+    case $reason in media-*)
+      echo "  The media rule (F) also counts the delegates' issue and patch attachments and" \
+           "the other delegates' branches. The list below leaves those out."
+      echo "  Biggest files on its branches and tags:"
+      check_biggest "$rid" > "$tmp/check-biggest"
+      [ -s "$tmp/check-biggest" ] || echo "    none"
+      # Names are read as input, never passed with -v, which would turn a quoted "\033" back
+      # into an escape.
+      awk -F'\t' '{
+        if      ($1 >= 1048576) printf "    %7.1f MiB  %s  %s\n", $1 / 1048576, $2, $3
+        else if ($1 >= 1024)    printf "    %7.0f KiB  %s  %s\n", $1 / 1024, $2, $3
+        else                    printf "    %7.0f B    %s  %s\n", $1, $2, $3 }' \
+        "$tmp/check-biggest" ;;
+    esac
+  done < <(while IFS= read -r rid; do printf '%s\t%s\n' "${NAME[$rid]:-}" "$rid"; done \
+             < "$tmp/check-repos" | sort | cut -f2)
+  echo "# Not checked: the junk-name (A), size (B) and stale (C) rules, which wait for a repo" \
+       "to go quiet or a seed's disk to fill; the parasite-peer (G) and malware (H) rules; and" \
+       "the deny lists seed operators keep. A media batch is looked for among your own repos" \
+       "only, so a seed holding copies elsewhere can find one the check does not."
+}
+if [ "$CMD" = check ]; then
+  check_report >&3
+  [ "$check_pruned" = 0 ] || exit 6
+  exit 0
+fi
 
 # Repos the newest run that planned them blocked and then could not remove ("# prune-failed:").
 # They are still in storage under rad-prune's own block.

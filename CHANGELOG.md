@@ -30,6 +30,7 @@ The files rad-prune writes in the audit directory now open with a few `#` lines 
 - **Repos that hold copies of files you list in `deny-files.tsv` are pruned.** A repo is pruned when at least 5 MiB of those files make up half or more of what its delegates committed ([details](./README.md#copies-of-denied-files)). A listed file that some repo here held before every repo it is listed from counts against no repo, and the run names it for you to check. `rad prune quarantine files <rid>` prints a quarantined repo's images, video, audio and archives as rows for that list.
 - **The media rule (F) catches more media dumps.** A repo with 6 MiB or more of images, video and audio, at most one README and almost nothing else is now pruned as `media-ratio` ([details](./README.md#rule-f-media-dumps)).
 - **Identities and repos that look like a malware operation are listed for you to review.** The malware rule (H) prunes and blocks nothing ([details](./README.md#rule-h-malware-operations)).
+- **`rad prune check` says which of your own public repos a seed running rad-prune would prune, and why.** It runs the media (F) and spam-batch (D) rules on the public repos you are a delegate of, and changes nothing ([details](./README.md#checking-your-own-repos)). It exits `6` when a seed would prune at least one of them.
 
 ### Changed
 
@@ -68,6 +69,7 @@ The files rad-prune writes in the audit directory now open with a few `#` lines 
 - **A run by hand and a run from cron no longer drop each other's cache when they start bash from different paths or run with a different `HOME`.** Each used to read every repo again, as on a first run.
 - **An unexpected failure always exits `1`.** It used to pass on the failed command's exit code, which could look like exit `3` or `5`.
 - **rad-prune keeps working once `rad` drops `rad self --nid`.** rad 1.10 deprecates the flag.
+- **A run that stops on an empty routing table no longer says that every rule needs other seeds.** It now says the rules that keep the last copy could prune nothing.
 
 ### Security
 
