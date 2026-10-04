@@ -52,7 +52,8 @@
 #       let it condemn any repo it can comment on.
 #     - every repo whose delegates' branches and tags, history included, hold copies of the
 #       files listed in AUDIT_DIR/deny-files.tsv: at least COPY_MIN_BYTES of them, making up at
-#       least COPY_MIN_PCT% of the bytes there. This one is the tool's inference from a
+#       least COPY_MIN_PCT% of the bytes there. A file some repo held before every repo it is
+#       listed from counts for none. This one is the tool's inference from a
 #       person's verdict, so the runaway caps and the ratchet count it like a rule's.
 #
 #   Rule A - junk-named & abandoned, in two branches that differ in how sure we are:
@@ -3094,6 +3095,7 @@ fi
 # is what ties a file to the repo's delegates. A listed file those branches do not reach
 # condemns nothing, or pushing one into a repo would be a way to get it deleted.
 : > "$tmp/copy"; : > "$tmp/copy-fail"; : > "$tmp/copy-done"; : > "$tmp/copies"
+: > "$tmp/copy-disowned"; : > "$tmp/deny-oids-owned"
 if [ -s "$tmp/deny-oid-list" ]; then
   echo "# checking repos for copies of denied files ($JOBS workers)..." >&2
   cat > "$tmp/copy.sh" <<COPY
@@ -3207,12 +3209,63 @@ COPY
   awk -F'\t' '$1 == "=" { print $2 }' "$tmp/copy" | sort -u > "$tmp/answered-copy"
   if [ "$copy_set_saved" = 1 ]; then cache_save_keys copy "$tmp/answered-copy"; fi
 
+  # A listed file some repo held before every repo it is listed from is not the sources' own.
+  # A denied fork of an honest project lists the project's files, which the project and its
+  # other forks hold too. Such a file counts against no repo, and the run names it with its
+  # earliest holder. First-seen is the one date a pusher cannot backdate, but it dates the
+  # repo, not the file, so an old repo given the file later disowns it too, until deny.txt
+  # names that repo or its delegate. Only a repo holding COPY_MIN_BYTES of listed files is
+  # read for them, so only such a repo can disown one. Three steps follow.
+  #
+  # 1. Repos that cannot be the original: the ones deny.txt prunes, named by id or by a
+  #    delegate. A pinned, private, own or kept repo it spares stays able to be one, those
+  #    found private or our own only on disk included.
+  awk -F'\t' 'FILENAME == ARGV[1] { denied[$1] = 1; next }
+              $5 == "ours" || $5 == "private" { next }
+              { n = split($7, d, ",")
+                for (i = 1; i <= n; i++) if (d[i] in denied) print $1 }' \
+    "$tmp/deny-nids" "$tmp/lives" | sort -u - "$tmp/deny-rids" > "$tmp/copy-denied"
+  grep -vxFf "$tmp/excluded" "$tmp/copy-denied" > "$tmp/copy-untrusted" || true
+  # 2. oid \t first-seen of its oldest source \t its sources, for each listed file whose every
+  #    source is a repo the ledger dates. Free text dates nothing, so its files keep counting.
+  awk -F'\t' -v seenfile="$FIRST_SEEN" '
+      BEGIN { while ((getline line < seenfile) > 0) {
+                split(line, f, "\t")
+                if (f[1] != "" && f[2] ~ /^[0-9]+$/) seen[f[1]] = f[2]
+              } }
+      { src = $2; sub(/^rad:/, "", src) }
+      !(src in seen)                            { undated[$1] = 1; next }
+      index(" " srcs[$1] " ", " " src " ")      { next }
+      { srcs[$1] = srcs[$1] (srcs[$1] == "" ? "" : " ") src
+        if (!($1 in oldest) || seen[src] < oldest[$1]) oldest[$1] = seen[src] }
+      END { for (o in srcs) if (!(o in undated)) printf "%s\t%s\t%s\n", o, oldest[o], srcs[o] }' \
+    "$tmp/deny-oids" > "$tmp/copy-source-dates"
+  # 3. oid \t earliest holder \t sources, for each of those files some other repo held first.
+  #    A tie is no proof, since every repo already here when the ledger started shares its
+  #    first day. Equal holders go by name, so the same storage always names the same one.
+  awk -F'\t' -v seenfile="$FIRST_SEEN" -v untrusted="$tmp/copy-untrusted" '
+      BEGIN { while ((getline line < seenfile) > 0) {
+                split(line, f, "\t")
+                if (f[1] != "" && f[2] ~ /^[0-9]+$/) seen[f[1]] = f[2]
+              }
+              while ((getline line < untrusted) > 0) skip[line] = 1 }
+      FILENAME == ARGV[1] { oldest[$1] = $2; srcs[$1] = $3; next }
+      $1 != "h" || !($3 in oldest) || !($2 in seen) || ($2 in skip) { next }
+      seen[$2] >= oldest[$3]                         { next }
+      !($3 in first)                                 { first[$3] = $2; next }
+      seen[$2] < seen[first[$3]]                     { first[$3] = $2; next }
+      seen[$2] == seen[first[$3]] && $2 < first[$3]  { first[$3] = $2 }
+      END { for (o in first) printf "%s\t%s\t%s\n", o, first[o], srcs[o] }' \
+    "$tmp/copy-source-dates" "$tmp/copy" | sort > "$tmp/copy-disowned"
+  awk -F'\t' 'FILENAME == ARGV[1] { gone[$1] = 1; next } !($1 in gone)' \
+    "$tmp/copy-disowned" "$tmp/deny-oids" > "$tmp/deny-oids-owned"
+
   # rid \t listed bytes \t total bytes \t % \t files \t source \t other sources, for every
   # repo whose delegates' branches hold a listed file. Only ids on this run's list count. The
   # cache already checks every repo again when the list changes, and this holds should a cached
   # row from a longer list ever get through. The source named is the one most of its
   # files came from, ties broken by name so the same storage always prints the same plan.
-  awk -F'\t' -v src="$tmp/deny-oids" '
+  awk -F'\t' -v src="$tmp/deny-oids-owned" '
       FILENAME == src            { if (!($1 in from)) from[$1] = $2; next }
       $1 == "=" && $3 > 0        { total[$2] = $3 }
       $1 == "h" && ($3 in from)  { held[$2] += $4; files[$2]++; per[$2 SUBSEP from[$3]]++ }
@@ -3225,7 +3278,7 @@ COPY
         for (r in held) if (r in total)
           printf "%s\t%.0f\t%.0f\t%d\t%d\t%s\t%d\n", r, held[r], total[r],
                  int(held[r] * 100 / total[r]), files[r], top[r], nsrc[r] - 1
-      }' "$tmp/deny-oids" "$tmp/copy" | sort -t$'\t' -k2,2nr -k1,1 > "$tmp/copies"
+      }' "$tmp/deny-oids-owned" "$tmp/copy" | sort -t$'\t' -k2,2nr -k1,1 > "$tmp/copies"
 
   # Sorted into a file first: head leaving a long pipe early would fail it under pipefail.
   sort -u -o "$tmp/copy-fail" "$tmp/copy-fail"
@@ -3282,6 +3335,17 @@ COPY
                     { printf fmt, $1, $2 / 1048576, $5, $4 }' >&2
     [ "$nunder" -le "$top_evidence" ] \
       || echo "#   ...and $((nunder - top_evidence)) more (PLAN_FULL=1 lists them)" >&2
+  fi
+  ndisowned=$(wc -l < "$tmp/copy-disowned")
+  if [ "$ndisowned" -gt 0 ]; then
+    echo "# WARN: $ndisowned listed file(s) were on this seed, in a repo it saw before every" \
+         "repo they are listed from, so they count against no repo. If that repo holds them as" \
+         "a copy, add it or its delegate to $DENY_FILE. If they are its own, drop their rows" \
+         "from $DENY_FILES. Check them:" >&2
+    head -n "$top_evidence" "$tmp/copy-disowned" \
+      | awk -F'\t' '{ printf "#   %s  first in %s, listed from %s\n", $1, $2, $3 }' >&2
+    [ "$ndisowned" -le "$top_evidence" ] \
+      || echo "#   ...and $((ndisowned - top_evidence)) more (PLAN_FULL=1 lists them)" >&2
   fi
 fi
 
@@ -3774,8 +3838,10 @@ done < "$FIRST_SEEN"
 if mkdir -p "$AUDIT_DIR" 2>/dev/null && { : >> "$FIRST_SEEN"; } 2>/dev/null; then
   add_header "$FIRST_SEEN" \
     "The day this seed first saw each repo: repo id, then Unix time. It tells the spam-batch" \
-    "(D), link-farm (E) and media (F) rules how old a repo really is. Deleting it leaves" \
-    "them only the commit dates, which whoever pushed the repo can set to anything." \
+    "(D), link-farm (E) and media (F) rules how old a repo really is, and the check for" \
+    "copies which repo held a listed file first. Deleting it leaves the rules only the commit" \
+    "dates, which whoever pushed the repo can set to anything, and counts every listed file" \
+    "against its copies again." \
     || echo "# WARN: could not add a header to $FIRST_SEEN; its rows are unaffected." >&2
   for rid in "${!SIZE[@]}"; do
     [ -n "${FIRSTSEEN[$rid]:-}" ] && continue
@@ -4837,11 +4903,11 @@ if [ "$lr_ok" = 1 ]; then
   # Every listed file each copy holds, so a wrong copy can be traced to the rows behind it.
   { lr_head "Each listed file that each repo in deny-copies.tsv holds."
     printf '# rid\toid\tbytes\n'
-    awk -F'\t' -v why="$tmp/copy-why" -v src="$tmp/deny-oid-list" '
+    awk -F'\t' -v why="$tmp/copy-why" -v src="$tmp/deny-oids-owned" '
         FILENAME == why  { copy[$1] = 1; next }
         FILENAME == src  { listed[$1] = 1; next }
         $1 == "h" && ($2 in copy) && ($3 in listed) { print $2 "\t" $3 "\t" $4 }' \
-        "$tmp/copy-why" "$tmp/deny-oid-list" "$tmp/copy" | sort; } \
+        "$tmp/copy-why" "$tmp/deny-oids-owned" "$tmp/copy" | sort; } \
     > "$staging/deny-copy-files.tsv" 2>/dev/null || lr_ok=0
   { lr_head "Everything the last run could not read."
     cat "$scanerr"; } > "$staging/scan-errors.txt" 2>/dev/null || lr_ok=0

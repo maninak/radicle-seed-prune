@@ -2993,6 +2993,52 @@ plan=$(RATCHET_FLOOR=0 run)
 grep -q '^#     rule denied-copy: 2 repos' <<<"$plan" \
   && ok "copies far above their usual are held back like a rule" \
   || no "the ratchet did not count copies of denied files"
+# zpoison5 holds the clip too, and this seed saw it before the repo the clip is listed from,
+# so the clip may be zpoison5's own, and the repos holding it are no copies of that source.
+e_tree zpoison5 90 master "leak.mp4:6291456:same" "README.md:100"
+# Sets the day the ledger says this seed first saw zgonesrc and zpoison5, in days ago.
+seen_days_ago(){
+  local now; now=$(date -u +%s)
+  sed -i '/^zgonesrc\t/d; /^zpoison5\t/d' "$AUDIT_DIR/first-seen.tsv"
+  printf 'zgonesrc\t%s\nzpoison5\t%s\n' "$((now - $1 * 86400))" "$((now - $2 * 86400))" \
+    >> "$AUDIT_DIR/first-seen.tsv"
+}
+seen_days_ago 5 20
+plan=$(run)
+{ ! grep -qE '^z[^ ]* .* denied-copy ' <<<"$plan" \
+  && grep -qxF "#   $leak  first in zpoison5, listed from zgonesrc" <<<"$plan"; } \
+  && ok "a listed file a repo held before its source counts against no repo, and is named" \
+  || no "a file held before its source still made copies, or went unnamed"
+# A second source seen before zpoison5 shows the clip was here first in that one.
+printf '%s\t6291456\trad:zoldsrc\t2026-10-02\n' "$leak" >> "$AUDIT_DIR/deny-files.tsv"
+printf 'zoldsrc\t%s\n' "$(date -u -d "30 days ago" +%s)" >> "$AUDIT_DIR/first-seen.tsv"
+plan=$(run)
+sed -i '$d' "$AUDIT_DIR/deny-files.tsv"
+{ grep -qE '^zcode4 .* denied-copy ' <<<"$plan" && ! grep -q 'first in zpoison5' <<<"$plan"; } \
+  && ok "a repo seen after any of a file's sources does not set the file aside" \
+  || no "a repo older than only some of a file's sources set the file aside"
+# Seen the same day proves nothing, like every repo already here when the ledger started.
+seen_days_ago 5 5
+plan=$(run)
+{ grep -qE '^zcode4 .* denied-copy ' <<<"$plan" && ! grep -q 'first in zpoison5' <<<"$plan"; } \
+  && ok "a repo seen the same day as the source does not set its file aside" \
+  || no "a tie in the ledger set a listed file aside"
+# A repo whose delegate deny.txt names is no original, however early this seed saw it.
+seen_days_ago 5 20
+printf 'did:key:%s\n' "$(dlg zpoison5)" > "$AUDIT_DIR/deny.txt"
+plan=$(run)
+rm -f "$AUDIT_DIR/deny.txt"
+{ grep -qE '^zcode4 .* denied-copy ' <<<"$plan" && ! grep -q 'first in zpoison5' <<<"$plan"; } \
+  && ok "a repo whose delegate is denied does not set a listed file aside" \
+  || no "a denied identity's older repo set a listed file aside"
+# The deny list spares a kept repo, so that repo can still be the original.
+printf 'did:key:%s\n' "$(dlg zpoison5)" > "$AUDIT_DIR/deny.txt"
+echo zpoison5 > "$AUDIT_DIR/keep.txt"
+plan=$(run)
+rm -f "$AUDIT_DIR/deny.txt" "$AUDIT_DIR/keep.txt"
+{ ! grep -qE '^z[^ ]* .* denied-copy ' <<<"$plan" && grep -q 'first in zpoison5' <<<"$plan"; } \
+  && ok "a kept repo whose delegate is denied still sets its file aside" \
+  || no "a kept repo lost its file to the copies of it once its delegate was denied"
 
 # A row naming a restored repo stops condemning. A row missing its size column must not read
 # its date as the source and slip past that. The cache is warm here, so the list changing is
