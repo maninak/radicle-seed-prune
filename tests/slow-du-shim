@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Test double for `du`: forwards to the real one, but makes the size walk's calls finish on a
+# schedule, so the progress lines printed while it runs are predictable. The Nth call of the
+# walk first sleeps for the Nth number in $RSP_DU_SLEEPS (0 once they run out), counting calls
+# in the file $RSP_DU_CALLS. Every other du call goes straight through.
+set -uo pipefail
+real=$(PATH="$(getconf PATH)" command -v du)
+if [ "${1:-}" = -sb ] && [ "${2:-}" = --apparent-size ]; then
+  echo x >> "$RSP_DU_CALLS"
+  n=$(wc -l < "$RSP_DU_CALLS")
+  read -ra sleeps <<<"$RSP_DU_SLEEPS"
+  sleep "${sleeps[n - 1]:-0}"
+fi
+exec "$real" "$@"

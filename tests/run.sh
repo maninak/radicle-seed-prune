@@ -678,8 +678,8 @@ undo_log(){
 undo_row(){ printf '%s\t%s\t1\t400\t%s\tpast\t0\t\n' "$1" "$2" "$3"; }
 # Blocks standing on the node before the run, as `rad seed` lists them.
 undo_block(){ local r; for r in "$@"; do echo "block rad:$r" >> "$RSP_HOME/.stub_policy"; done; }
-# The state undo.tsv gives repo $1, or nothing when it has no row.
-undo_state(){ awk -F'\t' -v r="$1" '$1 == r { print $2 }' "$AUDIT_DIR/last-run/undo.tsv"; }
+# The state unprune-plan.tsv gives repo $1, or nothing when it has no row.
+undo_state(){ awk -F'\t' -v r="$1" '$1 == r { print $2 }' "$AUDIT_DIR/last-run/unprune-plan.tsv"; }
 
 summary(){
   [ -n "${ROOT:-}" ] && rm -rf "$ROOT" 2>/dev/null
@@ -847,6 +847,34 @@ has "$plan_hi" "zfews5" \
 ! has "$plan_hi" "zfresh4" \
   && ok "pressure still keeps a fresh repo"          \
   || no "pressure keeps fresh repo"
+# A pusher who dates every ref 1970 leaves the repo no usable date. Its age then comes from
+# the day this seed first saw it, so it is still judged, and not counted as unreadable.
+for ref in $(GIT_DIR="$STORAGE/zspam1" git for-each-ref --format='%(refname)'); do
+  GIT_DIR="$STORAGE/zspam1" git cat-file -e "$ref^{commit}" 2>/dev/null || continue
+  c=$(GIT_DIR="$STORAGE/zspam1" GIT_AUTHOR_NAME=a GIT_AUTHOR_EMAIL=a@b \
+      GIT_COMMITTER_NAME=a GIT_COMMITTER_EMAIL=a@b \
+      GIT_AUTHOR_DATE="@0 +0000" GIT_COMMITTER_DATE="@0 +0000" \
+      git commit-tree -m m "$ref^{tree}")
+  GIT_DIR="$STORAGE/zspam1" git update-ref "$ref" "$c"
+done
+touch -d "10 days ago" "$STORAGE/zspam1"
+mkdir -p "$AUDIT_DIR"
+printf 'zspam1\t%s\n' "$(date -d '30 days ago' +%s)" >> "$AUDIT_DIR/first-seen.tsv"
+# A ref dated in the year 3000 would keep ztwoyr3 looking active for good.
+c=$(GIT_DIR="$STORAGE/ztwoyr3" GIT_AUTHOR_NAME=a GIT_AUTHOR_EMAIL=a@b \
+    GIT_COMMITTER_NAME=a GIT_COMMITTER_EMAIL=a@b \
+    GIT_AUTHOR_DATE="@32503680000 +0000" GIT_COMMITTER_DATE="@32503680000 +0000" \
+    git commit-tree -m m "$(GIT_DIR="$STORAGE/ztwoyr3" git rev-parse 'HEAD^{tree}')")
+GIT_DIR="$STORAGE/ztwoyr3" git update-ref refs/heads/future "$c"
+touch -d "10 days ago" "$STORAGE/ztwoyr3"
+plan_e=$(run)
+{ grep -qE '^zspam1 .* spam-batch ' <<<"$plan_e" \
+    && ! grep -qE '[1-9][0-9]* with no readable refs' <<<"$plan_e"; } \
+  && ok "a repo whose refs are all dated 1970 is aged from when the seed first saw it" \
+  || no "refs dated 1970 left a spam repo ageless"
+grep -qE '^ztwoyr3 .* stale ' <<<"$plan_e" \
+  && ok "a ref dated far ahead does not keep a repo looking active" \
+  || no "a ref dated in the year 3000 shielded a stale repo"
 
 
 build_fixture; assert_isolated
@@ -1777,6 +1805,31 @@ rm -rf "$STORAGE/zinflightfetch"
   && ok "a repo with no refs yet counts as freshly written, not as ageless" \
   || no "an in-flight fetch counted against the blind-scan limit (got exit $rc)"
 
+# --- the progress line shows a share done and a time left only once it can stand by them ---
+# One repo can cost a thousand times another, so a projection from a few repos is wrong by
+# minutes. The size walk is held to calls of 64 repos finishing at 2s, 4s and 24s: the reading
+# after 64 repos is too few to project from, the one after 128 is enough, and the 20 seconds of
+# the last call is a stall the line has to own up to. That needs a fixture of 129 to 192 repos.
+[ "$NREPOS" -gt 128 ] && [ "$NREPOS" -le 192 ] || no "the progress test needs 129-192 repos"
+slowdu="$ROOT/slowdu"; mkdir -p "$slowdu"
+cp "$HERE/slow-du-shim" "$slowdu/du"; chmod +x "$slowdu/du"
+PATH="$slowdu:$PATH" RSP_DU_CALLS="$ROOT/du-calls" RSP_DU_SLEEPS="2 2 20" JOBS=1 \
+  PROGRESS_SECS=1 RULES=A DISK_AWARE=0 "${NOTTY[@]}" "$SCRIPT" </dev/null >"$ROOT/slow.out" 2>&1
+sizes=$(grep '^#   \[1/[0-9]*\] sizes: ' "$ROOT/slow.out")
+{ grep -qx "#   \[1/[0-9]*\] sizes: 64 of $NREPOS repos, [0-9]*s elapsed" <<<"$sizes" \
+  && ! grep -E ' sizes: [0-9]{1,2} of ' <<<"$sizes" | grep -qE '%|left'; } \
+  && ok "a phase too few repos into its walk shows neither a share done nor a time left" \
+  || no "a phase too few repos into its walk projected a time left"
+share=$(( 128 * 100 / NREPOS ))
+grep -qx "#   \[1/[0-9]*\] sizes: 128 of $NREPOS repos ($share%), [0-9]*s elapsed, <10s left" \
+     <<<"$sizes" \
+  && ok "a phase far enough into its walk shows its share done and a time left" \
+  || no "a phase far enough into its walk shows no time left"
+grep -qx "#   \[1/[0-9]*\] sizes: 128 of $NREPOS repos, [0-9]*s elapsed, last done 1[5-9]s ago" \
+     <<<"$sizes" \
+  && ok "a phase stuck on one repo says how long instead of a time left" \
+  || no "a phase stuck on one repo kept showing a time left"
+
 # --- fail-safe: node down aborts --apply before touching anything ---
 out=$(RSP_NODE_DOWN=1 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" --apply 2>&1); rc=$?
 { [ "$rc" = 5 ] && ! grep -q '# PLAN:' <<<"$out"; } \
@@ -2048,6 +2101,33 @@ pout=$(PARASITE_MIN_REPOS=3 PARASITE_MIN_BYTES=65536 PARASITE_TEXT_MAX_BYTES=409
   && ok "an audit dir that cannot be written stops --apply and --block-peers before any block" \
   || no "an unwritable audit dir let a run block or prune (rc=$rc, --block-peers rc=$prc)"
 
+# --- one changing run at a time --- A second run that blocks, moves or deletes while another
+# holds the lock could delete the copy that run just put in the quarantine. Without flock the
+# run goes ahead, and says it is not kept apart.
+build_fixture; assert_isolated
+mkdir -p "$AUDIT_DIR/quarantine/zlockq"; touch -d '30 days ago' "$AUDIT_DIR/quarantine/zlockq"
+: > "$RSP_HOME/.stub_block"
+if command -v flock >/dev/null 2>&1; then
+  exec 8>> "$AUDIT_DIR/run.lock"; flock -n 8
+  out=$(DISK_AWARE=0 "${NOTTY[@]}" "$SCRIPT" --apply --yes </dev/null 2>&1); rc=$?
+  qout=$("$SCRIPT" quarantine purge 2>&1); qrc=$?
+  exec 8>&-
+  { [ "$rc" = 5 ] && [ "$qrc" = 5 ] && grep -qF "holds $AUDIT_DIR/run.lock" <<<"$out" \
+      && grep -qF "holds $AUDIT_DIR/run.lock" <<<"$qout" \
+      && [ -d "$STORAGE/zjunk1" ] && [ -d "$AUDIT_DIR/quarantine/zlockq" ] \
+      && [ ! -s "$RSP_HOME/.stub_block" ]; } \
+    && ok "a run that would change storage or the quarantine stops while another holds the lock" \
+    || no "a second run went ahead under another's lock (--apply rc=$rc, purge rc=$qrc)"
+else
+  skip "the run lock (flock is not installed)"
+fi
+path_without "$ROOT/noflock" flock
+qout=$(PATH="$ROOT/noflock" "$SCRIPT" quarantine purge 2>&1); qrc=$?
+{ [ "$qrc" = 0 ] && grep -q 'WARN: flock is not installed' <<<"$qout" \
+    && [ ! -e "$AUDIT_DIR/quarantine/zlockq" ]; } \
+  && ok "without flock a run says it is not kept apart from another, and goes ahead" \
+  || no "a missing flock stopped the run, or went unsaid (rc=$qrc)"
+
 # --- a block a failed removal left is lifted once the repo is spared --- The repo never left
 # storage, and keep.txt spares a repo without unblocking it, so nothing else lifts it.
 build_fixture; assert_isolated
@@ -2063,7 +2143,20 @@ $(undo_row zpriv7 1048576 junk-name)
 # prune-failed: rad:zpin6
 # prune-failed: rad:zpriv7
 EOF
-undo_block zjunk1 zbar8 zbig2 zpin6 zpriv7
+# zcode4's verdict is one this release withdrew.
+undo_log 19990101T000000Z '1999-01-01T00:00:00Z  pressure=0%' <<EOF
+$(undo_row zcode4 1048576 link-farm)
+# prune-failed: rad:zcode4
+EOF
+# UNDO_LIFT names LIFTONE as wrongly pruned for its junk name, which it no longer has.
+LIFTONE=z26kA476mDX7H1GWiUfCqTWPKLa6i
+cp -a "$STORAGE/zcode7" "$STORAGE/$LIFTONE"
+printf '%s\thonestapp\t5\tpublic\t0\t90\t2000\ta real project\n' "$LIFTONE" >> "$RSP_MANIFEST"
+undo_log 19980101T000000Z '1998-01-01T00:00:00Z  pressure=0%' <<EOF
+$(undo_row "$LIFTONE" 1048576 junk-name)
+# prune-failed: rad:$LIFTONE
+EOF
+undo_block zjunk1 zbar8 zbig2 zpin6 zpriv7 zcode4 "$LIFTONE"
 echo zjunk1 > "$AUDIT_DIR/keep.txt"
 # The log names no delegates for zpriv7, so the repo's own identity document has to.
 echo "did:key:$(dlg zpriv7)" > "$AUDIT_DIR/deny.txt"
@@ -2075,6 +2168,12 @@ log=$(ls "$AUDIT_DIR"/prune-2*Z.log | tail -1)
     && grep -qx 'unseed rad:zjunk1' "$RSP_HOME/.stub_policy"; } \
   && ok "a kept repo a failed removal left blocked has the block lifted" \
   || no "a failed removal's block outlived the verdict (rc=$rc)"
+grep -q '^# unblocked: rad:zcode4 why=prune-failed reason=link-farm ' "$log" \
+  && ok "a failed removal under a withdrawn verdict has the block lifted" \
+  || no "a failed removal's block outlived its withdrawn verdict"
+grep -q "^# unblocked: rad:$LIFTONE why=prune-failed reason=junk-name " "$log" \
+  && ok "a failed removal of a repo UNDO_LIFT names has the block lifted" \
+  || no "a failed removal's block outlived its UNDO_LIFT entry"
 # A repo this run plans again keeps the block, and the removal is retried under it.
 { [ ! -e "$STORAGE/zbar8" ] && ! grep -q 'unblocked: rad:zbar8' "$log"; } \
   && ok "a failed removal planned again keeps its block" \
@@ -2085,6 +2184,28 @@ log=$(ls "$AUDIT_DIR"/prune-2*Z.log | tail -1)
     && ! grep -q 'unblocked: rad:zpin6' "$log" && ! grep -q 'unblocked: rad:zpriv7' "$log"; } \
   && ok "a failed removal nothing spares, or that the deny list made, keeps its block" \
   || no "a block was lifted on a repo merely missing from the plan, or denied"
+
+# --- keep.txt is read whole or not at all --- Every id on a line keeps its repo, and a list
+# that exists but cannot be read stops the run: read as empty, it would let every repo on it
+# be pruned again.
+build_fixture; assert_isolated
+mkdir -p "$AUDIT_DIR"
+printf 'zjunk1 rad:zbar8  # both\n- zbig2\n' > "$AUDIT_DIR/keep.txt"
+out=$(run)
+{ ! has "$out" zjunk1 && ! has "$out" zbar8 && ! has "$out" zbig2 \
+    && grep -q 'neither a repo id nor an identity' <<<"$out"; } \
+  && ok "every id on a keep.txt line keeps its repo, and a stray token is named" \
+  || no "keep.txt kept only the first id on a line, or dropped a token silently"
+if [ "$(id -u)" != 0 ]; then
+  chmod 000 "$AUDIT_DIR/keep.txt"
+  out=$(DISK_AWARE=0 "${NOTTY[@]}" "$SCRIPT" --apply --yes </dev/null 2>&1); rc=$?
+  chmod 644 "$AUDIT_DIR/keep.txt"
+  { [ "$rc" = 5 ] && [ -d "$STORAGE/zjunk1" ] && grep -q 'cannot read .*keep.txt' <<<"$out"; } \
+    && ok "an unreadable keep.txt stops the run before anything is pruned" \
+    || no "an unreadable keep.txt was read as empty (rc=$rc)"
+else
+  skip "running as root, which reads a mode-000 file anyway"
+fi
 
 # --- a quarantine the run cannot write stops it before the scan --- Every repo is unseeded and
 # blocked before it moves, so carrying on would leave the whole plan blocked and still in
@@ -2221,11 +2342,18 @@ Q="$RSP_HOME/prune-audit/quarantine"
 mkdir -p "$Q/zexpq1" "$Q/zedgeq1" "$Q/zfreshq1"; touch -d "40 days ago" "$Q/zexpq1"
 week=$(( $(date +%s) - 7*86400 ))
 touch -d "@$(( week + 7200 ))" "$Q/zedgeq1"; touch -d "@$(( week + 14400 ))" "$Q/zfreshq1"
+# A repo in keep.txt is a person's word to keep it, so its window never runs out.
+mkdir -p "$Q/zkeptq1"; touch -d "40 days ago" "$Q/zkeptq1"
+printf 'rad:zkeptq1  # a person keeps it\n' > "$RSP_HOME/prune-audit/keep.txt"
+listed=$("$SCRIPT" quarantine list 2>&1)
 out=$("$SCRIPT" quarantine purge 2>&1)
 { [ ! -e "$Q/zexpq1" ] && [ ! -e "$Q/zedgeq1" ] && [ -d "$Q/zfreshq1" ] \
   && grep -q 'purged 2 repo' <<<"$out"; } \
   && ok "quarantine purge deletes what is past its window, less 3 hours, and nothing else" \
   || no "quarantine purge deleted the wrong repos"
+{ [ -d "$Q/zkeptq1" ] && grep -qE '^zkeptq1 .* kept$' <<<"$listed"; } \
+  && ok "quarantine purge keeps a repo in keep.txt past its window, and list says so" \
+  || no "quarantine purge deleted a repo in keep.txt, or list called it due"
 
 # --- the run cache --- Rules F and G read every repo's contents, and almost nothing changes
 # between weekly runs, so their per-repo output is kept and reused. The danger is not a slow
@@ -2391,12 +2519,16 @@ out=$(DISK_AWARE=0 RULES='' "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1)
 # At the critical free-space threshold a recovery copy is a luxury the disk cannot buy.
 build_fixture; assert_isolated
 Q="$RSP_HOME/prune-audit/quarantine"
-mkdir -p "$Q/zfreshquar"
+mkdir -p "$Q/zfreshquar" "$Q/zkeptquar"
+echo zkeptquar > "$RSP_HOME/prune-audit/keep.txt"
 out=$(DISK_AWARE=1 PRESSURE_CRIT_PCT=100 PRESSURE_CRIT_GB=999999 ABS_SIZE_FLOOR_MB=1 \
         PRESSURE_RELAX_PCT=1 PRESSURE_RELAX_GB=0 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1)
 { [ ! -e "$Q/zfreshquar" ] && grep -q 'emptied the whole quarantine' <<<"$out"; } \
   && ok "a critical disk empties the whole quarantine, window or not" \
   || no "quarantine held disk hostage at the critical free-space threshold"
+[ -d "$Q/zkeptquar" ] \
+  && ok "a critical disk leaves a repo in keep.txt in the quarantine" \
+  || no "a critical disk deleted a quarantined repo keep.txt keeps"
 # The critical free-space threshold here sits above the relaxed one, and the run must still
 # act, and say it acts, at full pressure.
 { grep -q ' pressure=100% ' <<<"$out" && grep -q 'WARN: the relaxed free-space threshold' <<<"$out"; } \
@@ -2572,7 +2704,7 @@ sed -i "${edits[@]}" "$RSP_MANIFEST"
 out=$("$SCRIPT" 2>&1); rc=$?
 { [ "$rc" = 0 ] \
   && grep -q 'REVIEW, MALWARE OPERATIONS: 1 identity(s), from the malware rule (H)' <<<"$out" \
-  && grep -q "#   $OPS, 2 of the 3 repos it signed as a delegate (matching ones only where it was a founder):" <<<"$out" \
+  && grep -q "#   $OPS: 2 of its 3 repos match:" <<<"$out" \
   && grep -q "#       rad:zcode4  # c2-panel (c2,panel,loader)" <<<"$out" \
   && grep -qx "#     did:key:$OPS" <<<"$out"; } \
   && ok "an identity whose repos read like a malware operation is named for review" \
@@ -2620,7 +2752,7 @@ for r in zcode4 zcode6; do
 done
 out=$("$SCRIPT" 2>&1); rc=$?
 { [ "$rc" = 0 ] && ! grep -q "$FRAMED" <<<"$out" \
-  && grep -q "#   $OPS, 2 of the 3 repos it signed as a delegate (matching ones only where it was a founder):" <<<"$out"; } \
+  && grep -q "#   $OPS: 2 of its 3 repos match:" <<<"$out"; } \
   && ok "an identity added as a co-delegate after a repo was created is not named for it" \
   || no "rule H named an identity only added as a co-delegate later"
 for r in zcode4 zcode6; do
@@ -2657,7 +2789,7 @@ set_delegate zpriv7 "$OPS"
 sed -i 's/^\(zrot3\t[^\t]*\t[^\t]*\t\)public/\1private/' "$RSP_MANIFEST"
 out=$("$SCRIPT" 2>&1); rc=$?
 { [ "$rc" = 0 ] \
-  && grep -q "#   $OPS, 2 of the 4 repos it signed as a delegate (matching ones only where it was a founder):" <<<"$out"; } \
+  && grep -q "#   $OPS: 2 of its 4 repos match:" <<<"$out"; } \
   && ok "an identity delegating a private repo is still named" \
   || no "a private repo kept its delegate from rule H"
 ! grep -q '^#     rad:zrot3 ' <<<"$out" \
@@ -2840,6 +2972,15 @@ grep -qE "^zcode6 .* denied-copy " <<<"$plan" \
   && grep -qF "#   $notes  not a known media format (in zrot2)" <<<"$plan"; } \
   && ok "a listed file that is not media counts for nothing, and its row is named" \
   || no "a listed text file made a copy, or went unnamed"
+# A file listed from a repo is that repo's own: the source back in storage, its block lifted,
+# is no copy of itself, while another repo holding the file still is.
+cp "$AUDIT_DIR/deny-files.tsv" "$ROOT/deny-files.saved"
+printf '%s\t6291456\trad:zcode4\t2026-10-02\n' "$leak" > "$AUDIT_DIR/deny-files.tsv"
+plan=$(run)
+{ ! grep -qE "^zcode4 .* denied-copy " <<<"$plan" && grep -qE "^zcode6 .* denied-copy " <<<"$plan"; } \
+  && ok "a repo is no copy of the files listed from it" \
+  || no "a repo was pruned as a copy of its own listed files, or the other copy was missed"
+mv "$ROOT/deny-files.saved" "$AUDIT_DIR/deny-files.tsv"
 # The caps and the ratchet count copies: they are the tool's inference, and a wrong row has no
 # limit otherwise.
 out=$(RULES='' MAX_PRUNE_COUNT=1 "${NOTTY[@]}" "$SCRIPT" --apply \
@@ -3073,12 +3214,18 @@ out=$(RATCHET_FLOOR=0 "$SCRIPT" 2>&1)
 grep -q 'cannot read 2 of the 4 most recent audit logs' <<<"$out" \
   && ok "the ratchet says when the audit logs it measures against are gone" \
   || no "missing audit logs thinned the ratchet's baseline without a word"
-out=$(RATCHET_FLOOR=twenty "$SCRIPT" 2>&1); rc=$?
-out2=$(MAX_PRUNE_GB=80G "$SCRIPT" 2>&1); rc2=$?
-{ [ "$rc" = 2 ] && grep -q 'RATCHET_FLOOR must be a whole number' <<<"$out" \
-    && [ "$rc2" = 2 ] && grep -q 'MAX_PRUNE_GB must be a whole number' <<<"$out2"; } \
-  && ok "a brake set to something other than a whole number stops the run" \
-  || no "a mistyped brake was read as a number (rc=$rc, MAX_PRUNE_GB rc=$rc2)"
+# A value bash cannot read as a number abandons the guard it sits in, awk reads a word as 0,
+# and 010 is octal 8. The quarantine verb shows the check runs before them too.
+bad=""
+for setting in RATCHET_FLOOR=twenty MAX_PRUNE_GB=80G MAX_SCAN_FAIL_PCT=2.5 NEAR_PCT=08 \
+               STALE_YEARS_DAYS=2y QUARANTINE_DAYS=010 JUNK_STALE_DAYS=9999999999999 \
+               SPAM_REQUIRE_ID=yes RULES=abc MEDIA_EXTS="mp4|'x" UNDO_MAX_GB=9999999999; do
+  out=$(env "$setting" "$SCRIPT" quarantine purge 2>&1); rc=$?
+  { [ "$rc" = 2 ] && grep -q "^# ${setting%%=*} " <<<"$out"; } || bad="$bad $setting:$rc"
+done
+[ -z "$bad" ] \
+  && ok "a setting with a value it cannot mean stops the run, quarantine verbs included" \
+  || no "these settings were read anyway:$bad"
 
 # --- a run that stops leaves the quarantine as it found it --- The stop is what makes a human
 # look, and what they look at includes the last runs' verdicts, which only the quarantine has.
@@ -3159,25 +3306,30 @@ out=$(cd "$ROOT" && env RAD_HOME="./rad-home" STORAGE="./rad-home/storage" \
 # Undo: which blocks a run lifts. A lifted block lets a repo back onto this seed, so every
 # block that is a person's verdict, or that no audit log explains, must stay. zundohand was
 # blocked by hand; deny.txt names zundodeny, and the delegate recorded beside zundonid;
-# zundokept is on the keep list; zundospam's verdict did not change;
+# zundospam's verdict did not change;
 # zundonew was pruned by a version that already had the change; zundogone's block is gone;
 # zundoprior was blocked before rad-prune pruned it; zjunk1 is logged and blocked, yet in
 # storage.
 # zundotiny and zundobig were pruned for media by an older version, zundobig above the size
-# that may come back, and zundofarm by the link-farm rule (E), which is gone. The pardoned repo
-# is lifted whatever its size and the budget.
+# that may come back, and zundofarm by the link-farm rule (E), which is gone. zundoquiet and
+# zundoheavy were pruned by the stale rule (C), and zundohuge by the size rule (B), before
+# those rules waited for disk pressure. The pardoned repo is lifted whatever its size and the
+# budget; LIFTONE, listed in UNDO_LIFT, within the budget.
 build_fixture; assert_isolated
 DENYNID=z6MkgkW6TV5nSgbAraLxWj45jrnw7yRhK3bEgtaEpCVPKYkR
 PARDONED=z3przuV9nGYpx5hmgPG65miGhS68Q
+LIFTONE=z26kA476mDX7H1GWiUfCqTWPKLa6i
 mkdir -p "$AUDIT_DIR"
 printf 'zundodeny\ndid:key:%s\n' "$DENYNID" > "$AUDIT_DIR/deny.txt"
-printf 'zundokept\n' > "$AUDIT_DIR/keep.txt"
 undo_log 20000101T000000Z '2026-01-01T00:00:00Z  pressure=0%' <<EOF
 $(undo_row zundotiny 1048576 media-dump)
 $(undo_row zundobig 104857600 media-dump)
 $(undo_row zundofarm 1048576 link-farm)
+$(undo_row zundoquiet 1048576 stale)
+$(undo_row zundohuge 1048576 size-outlier)
+$(undo_row zundoheavy 2000000000 stale)
+$(undo_row "$LIFTONE" 1048576 junk-name)
 $(undo_row zundodeny 1048576 media-dump)
-$(undo_row zundokept 1048576 media-dump)
 $(undo_row zundonid 1048576 media-dump)
 # delegates: rad:zundonid $DENYNID:-
 $(undo_row zundospam 1048576 spam-batch)
@@ -3190,11 +3342,11 @@ undo_log 20000301T000000Z '2026-03-01T00:00:00Z  version=0.8.0  pressure=0%' <<E
 $(undo_row zundonew 1048576 media-dump)
 $(undo_row "$PARDONED" 104857600 media-dump)
 EOF
-undo_block zundotiny zundobig zundofarm zundodeny zundokept zundonid zundospam zundonew \
+undo_block zundotiny zundobig zundofarm zundoquiet zundohuge zundoheavy "$LIFTONE" zundodeny zundonid zundospam zundonew \
            zundohand zundoprior "$PARDONED" zjunk1
 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 run >/dev/null
 for pair in "zundohand:a block no audit log explains" "zundodeny:a repo deny.txt names" \
-            "zundonid:a repo whose recorded delegate deny.txt names" "zundokept:a kept repo" \
+            "zundonid:a repo whose recorded delegate deny.txt names" \
             "zundospam:a verdict this version did not change" \
             "zundonew:a verdict this version reached" "zundogone:a repo no longer blocked" \
             "zundoprior:a block that stood before the prune" \
@@ -3208,10 +3360,36 @@ done
   && [ "$(undo_state "$PARDONED")" = unblock ] && [ ! -s "$RSP_HOME/.stub_unseed" ]; } \
   && ok "a dry run says which blocks would be lifted, and lifts none" \
   || no "a dry run misjudged the media or link-farm verdicts or the pardon, or lifted a block"
+# The stale rule (C) prunes at any free space under DISK_AWARE=0, and under pressure, so its
+# old block is lifted only on a disk with room, where the rule waits.
+roomy=$(undo_state zundoquiet)
+DISK_AWARE=1 PRESSURE_RELAX_PCT=0 PRESSURE_RELAX_GB=0 PRESSURE_CRIT_PCT=0 PRESSURE_CRIT_GB=0 \
+  ABS_SIZE_FLOOR_MB=1 run >/dev/null
+calm="$(undo_state zundoquiet) $(undo_state zundohuge) $(undo_state zundoheavy)"
+DISK_AWARE=1 PRESSURE_RELAX_PCT=100 PRESSURE_RELAX_GB=0 PRESSURE_CRIT_PCT=0 PRESSURE_CRIT_GB=0 \
+  ABS_SIZE_FLOOR_MB=1 run >/dev/null
+tight=$(undo_state zundoquiet)
+{ [ -z "$roomy" ] && [ "$calm" = "unblock unblock unblock" ] && [ -z "$tight" ]; } \
+  && ok "an old size (B) or stale (C) block is lifted only while the disk has room" \
+  || no "an old B or C block was lifted while the rules prune (DISK_AWARE=0: '$roomy'," \
+        "pressure: '$tight') or kept on a disk with room ('$calm')"
+# Lifted repos must not use that room up, or the rules prune them again under pressure. The
+# relaxed threshold is set 1 to 2 GB under free space, which the 2 GB repo would cross.
+avail_gb=$(df -P -B1000000000 "$STORAGE" | awk 'NR == 2 { print $4 }')
+if [ "$avail_gb" -ge 3 ]; then
+  DISK_AWARE=1 PRESSURE_RELAX_PCT=0 PRESSURE_RELAX_GB=$(( avail_gb - 1 )) PRESSURE_CRIT_PCT=0 \
+    PRESSURE_CRIT_GB=0 ABS_SIZE_FLOOR_MB=1 run >/dev/null
+  { [ "$(undo_state zundoheavy)" = unblock-later ] && [ "$(undo_state zundoquiet)" = unblock ]; } \
+    && ok "a B or C lift that would bring the disk under pressure waits for a later run" \
+    || no "a B or C lift used up the room that keeps those rules waiting"
+else
+  skip "the B or C lift headroom (under 3 GB free here)"
+fi
 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 UNDO_MAX_COUNT=0 run >/dev/null
-{ [ "$(undo_state zundotiny)" = unblock-later ] && [ "$(undo_state "$PARDONED")" = unblock ]; } \
-  && ok "UNDO_MAX_COUNT holds back a deleted repo, and not a pardoned one" \
-  || no "UNDO_MAX_COUNT did not hold back the deleted repo, or held back the pardon"
+{ [ "$(undo_state zundotiny)" = unblock-later ] && [ "$(undo_state "$PARDONED")" = unblock ] \
+  && [ "$(undo_state "$LIFTONE")" = unblock-later ]; } \
+  && ok "UNDO_MAX_COUNT holds back a deleted repo and an UNDO_LIFT one, and not a pardoned one" \
+  || no "UNDO_MAX_COUNT did not hold back a deleted or UNDO_LIFT repo, or held back the pardon"
 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 UNDO=0 run >/dev/null
 [ -z "$(undo_state zundotiny)" ] \
   && ok "UNDO=0 plans no lift" || no "UNDO=0 still planned a lift"
@@ -3320,7 +3498,7 @@ DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 MAX_PRUNE_COUNT=1 "${NOTTY[@]}" "$SCRIPT" --app
   || no "a stopped run lifted a block or moved a repo out of the quarantine (rc=$rc)"
 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null >/dev/null 2>&1
 { [ -d "$STORAGE/zjunk1" ] && [ -d "$STORAGE/zbwid9" ] && [ ! -e "$Q/zjunk1" ] \
-  && grep -q '^# unblocked: rad:zjunk1 .*copy=quarantined' "$AUDIT_DIR"/prune-20[1-9]*.log; } \
+  && grep -q '^# unblocked: rad:zjunk1 .* local_copy=quarantined' "$AUDIT_DIR"/prune-20[1-9]*.log; } \
   && ok "--apply moves a repo due back out of the quarantine and lifts its block" \
   || no "a repo due back stayed in the quarantine, or its lift was not logged"
 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null >/dev/null 2>&1
@@ -3380,7 +3558,7 @@ EOF
     ann "$N2" zrvhearsay "$K1" "$NEW" "$earlier"
     ann "$N2" zrvstranger "$K2" "$NEW" "$after"; } | sqlite3 "$RSP_HOME/node/node.db"
   DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 run >/dev/null
-  revived=$(awk -F'\t' '$3 == "active-since-prune" { print $1 }' "$AUDIT_DIR/last-run/undo.tsv" \
+  revived=$(awk -F'\t' '$3 == "active-since-prune" { print $1 }' "$AUDIT_DIR/last-run/unprune-plan.tsv" \
               | sort | tr '\n' ' ')
   [ "$revived" = "zrvaged zrvnew " ] \
     && ok "only a delegate's own new refs after the prune revive a repo pruned as left alone" \
@@ -3392,6 +3570,137 @@ EOF
     || no "a denied identity's own announcement revived a repo"
 else
   skip "revival (sqlite3 is not installed)"
+fi
+
+# A repo a person writes into keep.txt after rad-prune quarantined it comes back, its block
+# lifted and its seeding restored, as quarantine restore would bring it, whatever its verdict.
+build_fixture; assert_isolated
+Q="$AUDIT_DIR/quarantine"; mkdir -p "$Q"
+mv "$STORAGE/zjunk1" "$Q/"; touch -d '30 days ago' "$Q/zjunk1"
+undo_log 20000101T000000Z '2026-01-01T00:00:00Z  pressure=0%' <<EOF
+$(undo_row zjunk1 2000 junk-name)
+EOF
+undo_block zjunk1
+# zbar8 has no block this tool made, so it waits there for a person.
+mv "$STORAGE/zbar8" "$Q/"
+printf 'zjunk1  # a person keeps it\nzbar8\n' > "$AUDIT_DIR/keep.txt"
+out=$(RULES=H DISK_AWARE=0 "${NOTTY[@]}" "$SCRIPT" --apply --yes </dev/null 2>&1); rc=$?
+{ [ "$rc" = 0 ] && [ -d "$STORAGE/zjunk1" ] && [ ! -e "$Q/zjunk1" ] \
+    && [ "$(grep 'rad:zjunk1$' "$RSP_HOME/.stub_policy" | tail -2 | tr '\n' ' ')" \
+         = "unseed rad:zjunk1 seed rad:zjunk1 " ] \
+    && grep -q '^# unblocked: rad:zjunk1 why=kept ' "$AUDIT_DIR"/prune-20[1-9]*.log; } \
+  && ok "a quarantined repo put in keep.txt is moved back, unblocked and seeded" \
+  || no "a quarantined repo in keep.txt stayed blocked in the quarantine (rc=$rc)"
+{ [ -d "$Q/zbar8" ] && grep -qx '#   zbar8' <<<"$out" && ! grep -qx '#   zjunk1' <<<"$out"; } \
+  && ok "a kept repo the run cannot bring back from the quarantine is named" \
+  || no "a kept repo stuck in the quarantine went unnamed, or one brought back was named"
+
+# A repo that leaves storage between its block and its move has nothing to take the place of
+# its older quarantined copy, so that copy stays.
+build_fixture; assert_isolated
+Q="$AUDIT_DIR/quarantine"; mkdir -p "$Q/zjunk1"
+echo older > "$Q/zjunk1/marker"
+RSP_BLOCK_VANISH=1 RULES=A DISK_AWARE=0 "${NOTTY[@]}" "$SCRIPT" --apply --yes </dev/null \
+  >/dev/null 2>&1
+[ "$(cat "$Q/zjunk1/marker" 2>/dev/null)" = older ] \
+  && ok "the older quarantined copy of a repo gone from storage before its move stays" \
+  || no "the only copy left of a repo was removed from the quarantine"
+
+# The ratchet sets aside a repo its rule prunes again after the undo let it back. A repo a
+# person brought back by hand, or one lifted from another rule's verdict, is a new verdict.
+build_fixture; assert_isolated
+for i in 1 2 3; do past_run "$i" $REST; done
+run >/dev/null
+stale=$(awk -F'\t' '!/^#/ && $5 == "stale" { print $1 }' "$AUDIT_DIR/last-run/plan.tsv")
+for r in $stale; do undo_row "$r" 2000 stale; done \
+  | undo_log 20260104T000000Z '2026-01-04T00:00:00Z  pressure=0%'
+RATCHET_FLOOR=1 run >/dev/null
+byhand=$(grep -c $'^C\t' "$AUDIT_DIR/last-run/held.tsv")
+for r in $stale; do printf '# unblocked: rad:%s why=verdict-withdrawn reason=size-outlier\n' "$r"
+done | undo_log 20260105T000000Z '2026-01-05T00:00:00Z  pressure=0%'
+RATCHET_FLOOR=1 run >/dev/null
+otherrule=$(grep -c $'^C\t' "$AUDIT_DIR/last-run/held.tsv")
+for r in $stale; do printf '# unblocked: rad:%s why=verdict-withdrawn reason=stale\n' "$r"; done \
+  | undo_log 20260106T000000Z '2026-01-06T00:00:00Z  pressure=0%'
+RATCHET_FLOOR=1 run >/dev/null
+lifted=$(grep -c $'^C\t' "$AUDIT_DIR/last-run/held.tsv")
+{ [ -n "$stale" ] && [ "$byhand" = 1 ] && [ "$otherrule" = 1 ] && [ "$lifted" = 0 ]; } \
+  && ok "the ratchet counts a repo restored by hand or lifted from another rule, not a repeat" \
+  || no "the ratchet's exemption for repeats is wrong (by hand: $byhand, other: $otherrule, lifted: $lifted)"
+
+# UNDO_LIFT names repos wrongly pruned as junk-name, so it lifts nothing else: LIFTONE's newest
+# verdict here is stale, which waits for the disk to have room like any other. A pardon spares
+# its repo the media rule (F) alone, and the stale rule (C) still prunes it.
+build_fixture; assert_isolated
+LIFTONE=z26kA476mDX7H1GWiUfCqTWPKLa6i
+PARDONED=z3przuV9nGYpx5hmgPG65miGhS68Q
+undo_log 20000101T000000Z '2026-01-01T00:00:00Z  pressure=80%' <<EOF
+$(undo_row "$LIFTONE" 1500000000 stale)
+EOF
+undo_block "$LIFTONE"
+DISK_AWARE=1 PRESSURE_RELAX_PCT=100 PRESSURE_RELAX_GB=0 PRESSURE_CRIT_PCT=0 PRESSURE_CRIT_GB=0 \
+  ABS_SIZE_FLOOR_MB=1 run >/dev/null
+[ -z "$(undo_state "$LIFTONE")" ] \
+  && ok "an UNDO_LIFT entry does not lift a block made under another verdict" \
+  || no "UNDO_LIFT lifted a stale block under pressure ($(undo_state "$LIFTONE"))"
+cp -a "$STORAGE/zmediaone" "$STORAGE/$PARDONED"
+printf '%s\tshots\t2\tpublic\t0\t60\t100\tscreenshots\n' "$PARDONED" >> "$RSP_MANIFEST"
+asmedia=$(run)
+rm -rf "${STORAGE:?}/$PARDONED"; cp -a "$STORAGE/ztwoyr3" "$STORAGE/$PARDONED"
+sed -i "/^$PARDONED\t/d" "$RSP_MANIFEST"
+printf '%s\tshots\t4\tpublic\t0\t800\t2000\tscreenshots\n' "$PARDONED" >> "$RSP_MANIFEST"
+asstale=$(run)
+{ has "$asmedia" zmediaone && ! has "$asmedia" "$PARDONED" \
+    && grep -qE "^$PARDONED .* stale " <<<"$asstale"; } \
+  && ok "a pardon spares its repo the media rule (F) and no other" \
+  || no "a pardoned repo was pruned as media, or spared the stale rule (C)"
+
+# Every repo coming back takes room, so the size (B) and stale (C) lifts are weighed after all
+# the others, and against repos earlier runs lifted that the node has not fetched yet. The
+# relaxed threshold sits 2 to 3 GB under free space.
+build_fixture; assert_isolated
+avail_gb=$(df -P -B1000000000 "$STORAGE" | awk 'NR == 2 { print $4 }')
+if [ "$avail_gb" -ge 4 ]; then
+  undo_log 20000101T000000Z '2026-01-01T00:00:00Z  pressure=0%' <<EOF
+$(undo_row zroomfarm1 500000000 link-farm)
+$(undo_row zroomfarm2 500000000 link-farm)
+$(undo_row zroomfarm3 500000000 link-farm)
+$(undo_row zroomfarm4 500000000 link-farm)
+$(undo_row zroomquiet 1500000000 stale)
+EOF
+  undo_block zroomfarm1 zroomfarm2 zroomfarm3 zroomfarm4 zroomquiet
+  # Free space is read again for each run, since other work on this disk moves it. df rounds
+  # it up to the next GB.
+  room(){
+    local gb; gb=$(df -P -B1000000000 "$STORAGE" | awk 'NR == 2 { print $4 }')
+    DISK_AWARE=1 PRESSURE_RELAX_PCT=0 PRESSURE_RELAX_GB=$(( gb - 3 )) \
+      PRESSURE_CRIT_PCT=0 PRESSURE_CRIT_GB=0 RULES=H "$@"
+  }
+  room run >/dev/null
+  { [ "$(undo_state zroomfarm4)" = unblock ] && [ "$(undo_state zroomquiet)" = unblock-later ]; } \
+    && ok "a B or C lift is weighed against the room every other lift takes" \
+    || no "a B or C lift used room other lifts take ($(undo_state zroomquiet))"
+  # Replaces the log above, so only these two are lifted.
+  undo_log 20000101T000000Z '2026-01-01T00:00:00Z  pressure=0%' <<EOF
+$(undo_row zroomquietA 1500000000 stale)
+$(undo_row zroomquietB 1900000000 stale)
+EOF
+  undo_block zroomquietA zroomquietB
+  # Only a node that seeds what it is offered fetches a lifted repo by itself.
+  cp "$CONFIG" "$ROOT/config.saved"
+  jq '.node.seedingPolicy.default = "allow"' "$ROOT/config.saved" > "$CONFIG"
+  room "${NOTTY[@]}" "$SCRIPT" --apply --yes </dev/null >/dev/null 2>&1
+  room run >/dev/null
+  allow=$(undo_state zroomquietB)
+  cp "$ROOT/config.saved" "$CONFIG"
+  room run >/dev/null
+  block=$(undo_state zroomquietB)
+  { grep -q '^# unblocked: rad:zroomquietA ' "$AUDIT_DIR"/prune-20[1-9]*.log \
+      && [ "$allow" = unblock-later ] && [ "$block" = unblock ]; } \
+    && ok "a B or C lift is weighed against earlier lifts the node will fetch, and no other" \
+    || no "earlier lifts were weighed wrongly (allow: $allow, block: $block)"
+else
+  skip "the B or C lift headroom (under 4 GB free here)"
 fi
 
 # --- lint --- shellcheck's warnings, over the script and the suite's own shell. An rm -rf

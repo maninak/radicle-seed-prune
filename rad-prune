@@ -41,8 +41,9 @@
 #     - kept                (one rid per line in AUDIT_DIR/keep.txt; a verdict a human has
 #                            already overruled, written there by "quarantine restore". A
 #                            did:key: line there clears an identity of rule H only)
-#     - pardoned            (UNDO_PARDON: a repo rad-prune is known to have pruned by
-#                            mistake, until the release named beside it)
+#     - pardoned            (UNDO_PARDON: a repo rad-prune is known to have pruned as media by
+#                            mistake, until the release named beside it. Spared the media
+#                            rule (F) alone)
 #
 #   Denied (pruned and blocked on sight, before any rule; pinned, private, own and kept
 #   still win, the other exclusions do not):
@@ -86,7 +87,7 @@
 #       AND other-seeds >= MIN_OTHER_SEEDS
 #
 #   Rules B and C prune only under disk pressure, while free space is under the relaxed
-#   threshold (see DISK_AWARE below). DISK_AWARE=0 lets them prune at any free space.
+#   threshold (see DISK_AWARE below).
 #
 #   A SPAM BATCH is a set of repos one script stamped out from a single template: the same name
 #   shape with a slot filled in, the same description with a number swapped.
@@ -534,6 +535,10 @@ RULES="${RULES-ABCDFGH}"
 # is dropped, and every run but a quarantine verb warns about it, once the arguments are read.
 rules_named_e=0
 case "$RULES" in (*E*) rules_named_e=1; RULES=${RULES//E/} ;; esac
+# Any other character would match no rule, so RULES=abc would run none of them without a word.
+case "$RULES" in
+  *[!ABCDFGH]*) echo "# RULES takes the letters ABCDFGH, not '$RULES'." >&2; exit 2 ;;
+esac
 rule_on(){ case "$RULES" in (*"$1"*) return 0 ;; (*) return 1 ;; esac; }
 # How the output names a rule: by what it does, and by the letter RULES takes.
 rule_label() {
@@ -648,23 +653,104 @@ UNDO_MAX_GB="${UNDO_MAX_GB:-10}"                 # GiB those repos held when pru
 #   all of them at most 23 MiB; 27 of the 39 right ones were 2.5 MiB to 409 MiB.
 #   link-farm: none of the 36 link-farm verdicts on radicle.at was a link farm, and all 36
 #   together held 0.40 GiB.
+#   size-outlier, stale: before 0.8.0 these pruned at any free space, and now wait for disk
+#   pressure. All 900 such verdicts on radicle.at (31.4 GiB, none over 1.93 GiB) came with the
+#   disk under no pressure, where 0.8.0 prunes none of them.
 UNDO_CHANGED="0.8.0:media-dump:32M 0.8.0:media-batch:32M 0.8.0:link-farm:512M"
-# Repos known to be wrongly pruned that the current rules still flag, as rid:version. Lifted
-# whatever the budget, and spared by the rules, until the release named, which is the one that
-# has to change the rule that flags it or drop the entry. A dev build of that release already
+UNDO_CHANGED+=" 0.8.0:size-outlier:2G 0.8.0:stale:2G"
+# Repos known to be wrongly pruned as media that the media rule (F) still flags, as
+# rid:version. A media verdict on one is lifted whatever the budget, and the media rule spares
+# it, until the release named, which is the one that has to change the rule or drop the entry.
+# Every other rule judges it like any other repo. A dev build of that release already
 # counts as past it, so the warning that the entry ended comes while that release is being
 # made. More than a handful here is a rule to fix, not a list to grow.
 #   z3przuV9nGYpx5hmgPG65miGhS68Q: a docs repo of screenshots, media-dump.
 UNDO_PARDON="z3przuV9nGYpx5hmgPG65miGhS68Q:0.9.0"
+# Repos known to be wrongly pruned as junk-name that the current rules already spare, as
+# rid:version. A junk-name block on one is lifted within the same budget as a withdrawn
+# verdict's, and every rule judges it like any other repo, so one that turns into a dump is
+# still pruned. An entry goes at the
+# release named, two minor releases after it went in, by which time seeds have upgraded.
+#   Projects brought to Radicle years after their first commit, pruned as junk-name before the
+#   junk-name rule (A) spared them. Found by dating every junk-name prune on radicle.at; left
+#   out are those whose history starts under 35 days before `rad init`, which read as
+#   throwaways, and a clone of GitHub's Hello-World sample.
+UNDO_LIFT="
+  z26kA476mDX7H1GWiUfCqTWPKLa6i:0.10.0
+  z275G2CiRm983t6jHqG9Z8zax4613:0.10.0
+  z27V9QiqhP8G51sVyeZWft6WmaqNA:0.10.0
+  z28rnrHBJn9duZt83AtXYeWvPW1bp:0.10.0
+  z2BeGZUdNCY3FzYarKMV7XXXuc5os:0.10.0
+  z2CrLSDkVHksXcFkjAz3PRtwvNaM:0.10.0
+  z2faKgwHTUJxbX3r8owopcRt7nnGR:0.10.0
+  z2FC5Rzq3ubmxZiVkodoUbhb8BQTC:0.10.0
+  z2G5N2uVpvnqLRc7xAFxyC8Q6ubJ8:0.10.0
+  z2jgix6oADqRk46tz49ZHkJP2W2A8:0.10.0
+  z2ji5W2PUhcPFBzZ9gR6MT2r65tbo:0.10.0
+  z2mKawc1rmAxMpGGJ6mZsaq5UvRx6:0.10.0
+  z2oVAUPYfoBKN7R4huWZ6j2MKv2u:0.10.0
+  z2PkxeUggHFQHKAMjLMwNnZMmEm9f:0.10.0
+  z2PULEkmR3tEyEYB8hARDZfX6JSvU:0.10.0
+  z2pUmfEqEf6GtHuZLk4KohZp7yaEP:0.10.0
+  z2QCzcjxYtXXYGpwZByd9qwJEKsZF:0.10.0
+  z2TrfjSZm1u3J2Uhpq5jqKRxa8qAo:0.10.0
+  z2UwunK6caMv2KpEnmUFGVPaSm2H1:0.10.0
+  z2x4AHXSje6ELEU2avoc684MB3upg:0.10.0
+  z33UC1yu6E8Z9gjiEbTrUyZHVr6g8:0.10.0
+  z3B18y6EYuWugtR4aGotHKKa1WTDf:0.10.0
+  z3CtNyaR3F3mCigpmiM8iZBNEmcoo:0.10.0
+  z3decxQsVpn7Wsbrm3tdNqqVjM9Lh:0.10.0
+  z3i3giBbjFH1n2nrPn4uh5657ndy7:0.10.0
+  z3JgGHoWSky9hN4Phij12MJdeDCqU:0.10.0
+  z3k323Eik5edg3hLK7KQjscKBwrPo:0.10.0
+  z3QyhdjuTD9TRWrByzumiGJ7uBnT2:0.10.0
+  z3rXHDdFFZQn6GTU8vRxpV5Zgddej:0.10.0
+  z3rXYzjX3cvXz2XQenBhEvPMU94Pz:0.10.0
+  z3Sw2Gd1H2ooVh7q6mTXbrK6VRQRc:0.10.0
+  z3t1wfNpTjLkS4kknNYKc5BqJEXHz:0.10.0
+  z3TY2F7gUY4mvRbqiNWNfyLwa9R4o:0.10.0
+  z3uP49YxVQxMGg1nZs7KkHhTaxJ6Z:0.10.0
+  z3v1ajKKLmiSHtV9ceAZ4htVHnmSK:0.10.0
+  z3vvCL9NHB1akyzxES749hwC4vU8d:0.10.0
+  z3vZH1CJZSK2DBqnvVGcQpC9JwPRb:0.10.0
+  z3wJJdnUTqbWYCK7GfvW7eJip3asw:0.10.0
+  z3ZPKRHnaKgYmfBjN5AjowJ9ey9yd:0.10.0
+  z425gDaxvK4Qs5f5nR2TVkhS2vV33:0.10.0
+  z47JuyroeVw5r6h7MPaGaaH7tXW7W:0.10.0
+  z48PBLdSU2HfPWobHFgNDTKeqdCTc:0.10.0
+  z4PfvPokrcMSMyL3N2H2vLQAjUzzm:0.10.0
+  z4TNAyC4Haq8Kx7C7KCwmSTWoq7pG:0.10.0
+  z4VAVv7gMfPWJChb2S6QGis7LkSEr:0.10.0
+  z7R46VW8wE2y8YETPpE15ukaWqPs:0.10.0
+  z9DV738hJpCa6aQXqvQC4SjaZvsi:0.10.0
+  zAw2vrghEgFtnnVq51W9eGerBTf3:0.10.0
+  zdZNBJWRL5RLDU881STCgXLXuukd:0.10.0
+  zesVs9VKr7thYiCdRbcZxM5VKrYy:0.10.0
+  zFLwqsVYTcs5XRiYXYfhZoRWawqM:0.10.0
+  zgcrGj1TTf364yHzRDdiQjYRfgzc:0.10.0
+  ziF3hUBLYewiT5DSrJaj6YfBDPRK:0.10.0
+  zKdhtHwAVFwPyK21bda4Ad7oD8wj:0.10.0
+  zL9e6wiy3PVxq36Zau5VscoTXDYq:0.10.0
+  zMZeqNVuwztkkfWuzSj76KJBGNkr:0.10.0
+  zqqFyA2Z5smfuAjuvqRt3jPdUaKX:0.10.0
+  zrfSRoNBuN4cCSCyPcogquZMGcjU:0.10.0
+  zsBynCYySfMWrZC92iGg9qEwF8MA:0.10.0
+  zvsyreP44yy5e8PyaFBeP2iy3uvP:0.10.0
+  zvyS9319jBRjJ7kQfW1xvmyTJ4ku:0.10.0
+  zWDPVLZ5yGsEVENMcNEjQwxtJkQR:0.10.0
+  zYAmsMmh5ekVD96wSmZYN7tViHyi:0.10.0
+  zYVkLECXPdKa2cv6UcugM4QpV9FH:0.10.0
+  zztqkKhgaBAHj1Yk8jM9vuFsCvgD:0.10.0
+"
 # Verdicts that rest on a repo being left alone: no new commit for some number of days. A push
 # after the prune is the evidence those verdicts lacked, so it lifts the block: one by a
 # delegate, or by any node where the audit log names no delegates. A push says nothing against
 # the other verdicts: spam campaigns keep pushing to repos that are already blocked.
 UNDO_REVIVE_REASONS="junk-name junk-id size-outlier stale"
 
-# What rules F and G and the check for copies read out of each repo, kept between runs and
-# reused for the repos that have not changed. See "the run cache" below for what a repo is
-# keyed on.
+# What rules F and G and the search for copies of denied files read out of each repo, kept
+# between runs and reused for the repos that have not changed. See "the run cache" below for
+# what a repo is keyed on.
 CACHE="${CACHE:-1}"                              # 0 reads every repo on every run
 CACHE_DIR="${CACHE_DIR:-$AUDIT_DIR/cache}"
 # A verdict that rests on a corpus (the same template or file across many repos) is
@@ -673,13 +759,14 @@ CACHE_DIR="${CACHE_DIR:-$AUDIT_DIR/cache}"
 # listed in full, however many there are: those are the ones that want human eyes.
 PLAN_COLLAPSE_ROWS="${PLAN_COLLAPSE_ROWS:-20}"   # group size at which a corpus verdict folds
 PLAN_FULL="${PLAN_FULL:-0}"                      # 1 lists every row whatever the verdict
+NEAR_PCT="${NEAR_PCT:-20}"     # % of a threshold that still counts as near it; 0 marks none
 # Read once here, because the shell below compares it to 1 while awk would take PLAN_FULL=true
 # as on: that would unfold the rows and still tell the reader to set PLAN_FULL=1.
 case "$PLAN_FULL" in 1) ;; *) PLAN_FULL=0 ;; esac
 # The tables the header prints are the evidence a corpus verdict rests on, so a reviewer who
 # only ever sees the top five cannot check the other templates that condemned a batch.
 # PLAN_FULL already means "list everything", so it lifts these caps too rather than earning a
-# knob of its own. Every truncated list below names it, so the way to the rest is on screen.
+# knob of its own. A truncated list names it, so the way to the rest is on screen.
 top_evidence=5; top_scanerr=3
 if [ "$PLAN_FULL" = 1 ]; then top_evidence=1000000; top_scanerr=1000000; fi
 
@@ -810,11 +897,11 @@ did_key_hex() {
 }
 
 # Prints the tree of every issue and patch op the given COB refs reach that one of the repo's
-# delegates signed, one per line, and "torn" if the refs could not be walked whole or reach
-# more than MEDIA_MAX_OPS ops. A patch op's parents include the patch's own commits, which
-# reach the code's history, so commits the delegates' branches and tags reach are not walked:
-# they are code, not ops. A stranger's branch is no such limit, since one pointed at an op
-# would hide that op and everything before it.
+# delegates signed, once per distinct tree, and "torn" if the refs could not be walked whole or
+# reach more than MEDIA_MAX_OPS ops. A patch op's parents include the patch's own commits,
+# which reach the code's history, so commits the delegates' branches and tags reach are not
+# walked: they are code, not ops. A stranger's branch is no such limit, since one pointed at an
+# op would hide that op and everything before it.
 # Nothing is verified until the walk is known to be under the cap, so a repo over it costs one
 # walk and no signature checks.
 # Reads $dids as read_delegates sets it, and writes scratch files under $2.
@@ -830,7 +917,7 @@ delegate_ops() {
   # Globs, since git skips a tag on a tree or a blob when it expands one, and fails the whole
   # walk on such a tag named outright.
   local code=(--branches --tags)
-  local -A der=()
+  local -A der=() signed=()
   for nid in $dids; do
     code+=(--glob="refs/namespaces/$nid/refs/heads/*")
     code+=(--glob="refs/namespaces/$nid/refs/tags/*")
@@ -859,12 +946,19 @@ delegate_ops() {
               for (i = 1; i <= k; i++) print ops[i] }' \
     | while read -r tree nid sig; do
         [ -n "${der[$nid]:-}" ] || continue
+        # Reactions, labels and status changes repeat the same few files, so a busy issue
+        # tracker has ten ops for every distinct tree, and each check costs a few milliseconds.
+        # Only the tree is counted, so once one delegate's signature ties it to the repo, the
+        # other ops carrying it add nothing.
+        [ -z "${signed[$tree]:-}" ] || continue
         printf '%s' "$sig" | base64 -d 2>/dev/null | tail -c 64 > "$w/sig"
         unhex "$tree" > "$w/msg"
         # A signature that does not check out leaves the op uncounted, malformed or not.
         # Were it to leave the repo unjudged, one bad op would shield a dump from this rule.
         openssl pkeyutl -verify -pubin -keyform DER -inkey "${der[$nid]}" -rawin \
-          -in "$w/msg" -sigfile "$w/sig" >/dev/null 2>&1 && echo "$tree"
+          -in "$w/msg" -sigfile "$w/sig" >/dev/null 2>&1 || continue
+        signed[$tree]=1
+        echo "$tree"
       done
   case "${PIPESTATUS[1]} ${PIPESTATUS[2]}" in "0 0") ;; *) echo torn ;; esac
 }
@@ -944,7 +1038,7 @@ USAGE
 
 OPTIONS
   --apply          carry out the plan: unseed, block and quarantine every repo in it, and
-                   lift the blocks last-run/undo.tsv marks unblock
+                   lift the blocks on repos earlier runs may have pruned by mistake
   --block-peers    act on the parasite-peer rule (G) as well, asking before each peer is blocked
   --yes, -y        answer y to every prompt this run asks, so it needs nobody present
   --force          carry on past the runaway caps, and past the hold on a rule that plans far
@@ -1099,6 +1193,79 @@ if [ "$CMD" != quarantine ] && [ "$APPLY" = 1 ] && [ "$QUARANTINE" = 1 ]; then
          [ -z "$quar_err" ] || echo "$quar_err" >&2
          exit 1; }
 fi
+# Every numeric setting that is not a whole number stops the run, before anything reads one.
+# A value bash cannot read as a number (2.5, 08, which is bad octal) abandons the test it sits
+# in and carries on, so a guard such as the blind-scan abort never fires; awk reads a word as
+# 0, so a threshold silently goes to nothing; and a leading zero that is valid octal (010) is
+# a different number. 12 digits keeps every product below inside 64 bits, and still fits the
+# 999999999999 the README gives for turning the ratio path off.
+for knob in ABS_SIZE_FLOOR_MB REL_PCTL OUTLIER_STALE_DAYS JUNK_STALE_DAYS STALE_YEARS_DAYS \
+            MIN_OTHER_SEEDS JUNK_MIN_SEEDS JUNK_ID_MIN_SEEDS JUNK_ID_MIN_LEN FRESH_GUARD_DAYS \
+            SPAM_MIN_BATCH SPAM_DESC_AGREE_PCT SPAM_MIN_SEEDS SPAM_STALE_DAYS \
+            MEDIA_MIN_BYTES MEDIA_TEXT_MAX_BYTES MEDIA_TEXT_CEIL_BYTES MEDIA_MIN_BATCH \
+            MEDIA_STALE_DAYS MEDIA_MIN_SEEDS MEDIA_MAX_REFS MEDIA_MAX_OPS MEDIA_RATIO_MIN_BYTES \
+            PARASITE_MIN_REPOS PARASITE_MIN_BYTES PARASITE_TEXT_MAX_BYTES \
+            MAX_PRUNE_COUNT MAX_PRUNE_GB RATCHET_FACTOR RATCHET_RUNS RATCHET_FLOOR \
+            MAX_SCAN_FAIL_PCT PRESSURE_RELAX_PCT PRESSURE_RELAX_GB PRESSURE_CRIT_PCT \
+            PRESSURE_CRIT_GB ABS_SIZE_FLOOR_MB_AGG REL_PCTL_AGG OUTLIER_STALE_DAYS_AGG \
+            JUNK_STALE_DAYS_AGG SPAM_STALE_DAYS_AGG STALE_YEARS_DAYS_AGG MIN_OTHER_SEEDS_AGG \
+            QUARANTINE_DAYS UNDO_MAX_COUNT UNDO_MAX_GB PLAN_COLLAPSE_ROWS NEAR_PCT JOBS; do
+  case "${!knob}" in
+    0) ;;
+    ''|0*|*[!0-9]*|?????????????*)
+      echo "# $knob must be a whole number of at most 12 digits, not '${!knob}'." >&2
+      exit 2 ;;
+  esac
+done
+# Counted in bytes, so 10 digits of GiB would wrap negative and hold every lift for good.
+[ "${#UNDO_MAX_GB}" -le 9 ] \
+  || { echo "# UNDO_MAX_GB must be at most 9 digits, not '$UNDO_MAX_GB'." >&2; exit 2; }
+# 1 is the only value that demands the random-id slot, so a "yes" or "true" meant as on would
+# quietly loosen the spam-batch rule (D).
+case $SPAM_REQUIRE_ID in
+  0|1) ;;
+  *) echo "# SPAM_REQUIRE_ID must be 0 or 1, not '$SPAM_REQUIRE_ID'." >&2; exit 2 ;;
+esac
+# An extension is matched after it is lower-cased, so an upper-case entry never matches, and a
+# quote would break the worker script the list is written into.
+[[ $MEDIA_EXTS =~ ^[a-z0-9]+(\|[a-z0-9]+)*$ ]] || {
+  echo "# MEDIA_EXTS must be lower-case letters and digits, |-separated, not '$MEDIA_EXTS'." >&2
+  exit 2
+}
+# Two runs that change storage or the quarantine at once undo each other's work: a repo the
+# first moves into the quarantine can be deleted by the second as an older copy of the same
+# repo. So a second such run stops before it changes anything, with the code a run gets for
+# refusing to guess. The lock is held by the open file on $lock_fd, which the workers and git
+# inherit, so it ends once this process and all of them have. The shell picks that fd, so a
+# later exec of a fixed number cannot close it. flock exits 75 only when another process holds
+# the lock; any other failure (a filesystem that cannot lock, say) is said as itself.
+lock_needed=0
+if [ "$CMD" = quarantine ]; then
+  case $QVERB in restore|delete|purge) lock_needed=1 ;; esac
+elif [ "$APPLY" = 1 ] || [ "$BLOCK_PEERS" = 1 ]; then
+  lock_needed=1
+fi
+lock_file="$AUDIT_DIR/run.lock"
+if [ "$lock_needed" = 1 ] && [ -d "$AUDIT_DIR" ]; then
+  if ! command -v flock >/dev/null 2>&1; then
+    echo "# WARN: flock is not installed, so nothing stops a second rad prune run changing" \
+         "storage or the quarantine while this one does." >&2
+  elif ! { exec {lock_fd}>> "$lock_file"; } 2>/dev/null; then
+    echo "# WARN: cannot open $lock_file, so nothing stops a second rad prune run changing" \
+         "storage or the quarantine while this one does." >&2
+  else
+    lock_rc=0
+    lock_err=$(flock -n -E 75 "$lock_fd" 2>&1) || lock_rc=$?
+    if [ "$lock_rc" = 75 ]; then
+      echo "# ABORT: another rad prune run is changing storage or the quarantine (it holds" \
+           "$lock_file). Nothing was touched." >&2
+      exit 5
+    elif [ "$lock_rc" != 0 ]; then
+      echo "# WARN: cannot lock $lock_file ($lock_err), so nothing stops a second rad prune" \
+           "run changing storage or the quarantine while this one does." >&2
+    fi
+  fi
+fi
 [ -n "$OUR_NID" ] \
   || echo "# WARN: could not determine our NID; seed counts will include us" >&2
 
@@ -1182,15 +1349,46 @@ pruned_as() {
 # Everything below builds a path from an argument, so a name that is not a repo id never gets
 # to name one: "quarantine delete ../.." would otherwise be a working command.
 is_rid() { [[ $1 =~ ^z[1-9A-HJ-NP-Za-km-z]+$ ]]; }
+# The repo ids in the keep file, read the way a run reads them, for the steps that delete from
+# the quarantine. Fails when the file is there but cannot be read: read as empty, it would
+# keep nothing.
+keep_ids() {
+  local line tok toks id
+  [ -e "$KEEP_FILE" ] || [ -L "$KEEP_FILE" ] || return 0
+  { [ -f "$KEEP_FILE" ] && [ -r "$KEEP_FILE" ]; } || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%$'\r'}; line=${line#$'\xef\xbb\xbf'}
+    read -ra toks <<<"${line%%#*}"
+    for tok in "${toks[@]}"; do
+      # 40 characters or more is an identity, which keeps no repo.
+      id=${tok#rad:}
+      if is_rid "$id" && [ "${#id}" -lt 40 ]; then printf '%s\n' "$id"; fi
+    done
+  done < "$KEEP_FILE"
+}
+# True when the quarantined copy $1 is one the keep list $2 keeps. Once the repo is back in
+# storage, the copy left behind (as quarantine restore leaves it then) is no longer the
+# kept repo, and its window runs as for any other.
+quar_kept() {
+  local rid=${1##*/}
+  grep -qxF -- "$rid" <<<"$2" && [ ! -e "$STORAGE/$rid" ]
+}
 
 # The instant a quarantined repo becomes deletable, compared in seconds: `find -mtime +N` means
 # "older than N+1 whole days", so a repo the countdown shows as due would survive the next
 # purge by a day.
 quar_cut=$(( now - QUARANTINE_DAYS*86400 + QUAR_SLACK_SECS ))
-quar_expired() {                  # prints every quarantined repo past its window
-  local d born
+# Prints every quarantined repo past its window. A repo in the keep file is a person's word to
+# keep it, so it never falls due, and with a keep file that cannot be read none does.
+quar_expired() {
+  local d born kept
+  if ! kept=$(keep_ids); then
+    echo "# WARN: cannot read $KEEP_FILE, so nothing is deleted from the quarantine." >&2
+    return 0
+  fi
   for d in "$quar"/z*; do
     [ -d "$d" ] || continue
+    quar_kept "$d" "$kept" && continue
     born=$(stat -c %Y "$d" 2>/dev/null) || continue    # it can vanish under a parallel purge
     [ -n "$born" ] || continue
     [ "$born" -le "$quar_cut" ] && printf '%s\n' "$d"
@@ -1209,36 +1407,54 @@ quar_purge_expired() {
   return 0
 }
 # The window is ignored outright once free space is at the critical threshold: a recovery copy
-# is a luxury a full disk cannot buy. Kept as a function because the two moments that can
+# is a luxury a full disk cannot buy. A repo in the keep file is not a recovery copy but a
+# person's word to keep it, so it stays. Kept as a function because the two moments that can
 # afford to do this sit far apart in the apply path below.
 quar_purge_all_if_critical() {
   [ "$QUARANTINE" = 1 ] && [ "$DISK_AWARE" = 1 ] \
     && awk -v a="$free_eff" -v c="$crit_free" 'BEGIN{exit !(a <= c)}' || return 0
-  local d purged=0
+  local d purged=0 spared=0 kept
+  if ! kept=$(keep_ids); then
+    echo "# WARN: cannot read $KEEP_FILE, so the quarantine is not emptied." >&2
+    return 0
+  fi
   for d in "$quar"/z*; do
     [ -e "$d" ] || continue
+    if quar_kept "$d" "$kept"; then spared=$((spared+1)); continue; fi
     rm -rf -- "$d" && purged=$((purged+1))
   done
   [ "$purged" = 0 ] \
     || echo "# disk is at the critical free-space threshold: emptied the whole quarantine" \
             "($purged)."
+  [ "$purged" = 0 ] || [ "$spared" = 0 ] \
+    || echo "#   $spared repo(s) in $KEEP_FILE stay in it."
   return 0
 }
+
 
 if [ "$CMD" = quarantine ]; then
   case "$QVERB" in
     list)
       found=0
+      # The purge deletes nothing in the keep file, and none at all while it cannot be read.
+      if ! kept=$(keep_ids); then
+        kept=unreadable
+        echo "# WARN: cannot read $KEEP_FILE, so nothing is deleted from the quarantine." >&2
+      fi
       for d in "$quar"/z*; do
         [ -d "$d" ] || continue
         born=$(stat -c %Y "$d" 2>/dev/null) || continue
         [ -n "$born" ] || continue
         [ "$found" = 0 ] && printf '%-34s %8s %8s %10s\n' RID SIZE 'HELD(d)' 'DELETED IN'
         held=$(( (now - born) / 86400 ))
-        # Rounded up, so "1d" means it goes some time today rather than a day from now.
-        if [ "$born" -le "$quar_cut" ]; then
+        if [ "$kept" = unreadable ]; then
+          left=unknown
+        elif quar_kept "$d" "$kept"; then
+          left=kept
+        elif [ "$born" -le "$quar_cut" ]; then
           left=due
         else
+          # Rounded up, so "1d" means it goes some time today rather than a day from now.
           left="$(( (born - quar_cut + 86399) / 86400 ))d"
         fi
         printf '%-34s %8s %8s %10s\n' "$(basename "$d")" \
@@ -1279,8 +1495,8 @@ if [ "$CMD" = quarantine ]; then
         keep_add "$rid" "# restored $(date -u +%Y-%m-%d)${was:+, was $was}" \
           || { echo "#   WARN could not write $KEEP_FILE; the next run may prune $rid" >&2
                continue; }
-        echo "# restored $rid; added to $KEEP_FILE so the next run leaves it alone, and so" \
-             "the malware rule (H) names none of the identities its document lists as delegates"
+        echo "# restored $rid; added to $KEEP_FILE, so no rule prunes it again and the" \
+             "malware rule (H) names none of its delegates"
       done
       echo "# restart the node to announce them again: sudo systemctl restart $SERVICE"
       ;;
@@ -1358,17 +1574,6 @@ if [ "$CMD" = quarantine ]; then
   exit 0
 fi
 
-# A brake, the ratio path's floor, or a cap on what rule F walks, that is not a whole number
-# stops the run. Read as a number, a typo turns every test against it false, which lets
-# everything through without a word, and a leading zero reads as octal. Checked here, after the
-# quarantine verbs, which use none of them.
-for knob in MAX_PRUNE_COUNT MAX_PRUNE_GB RATCHET_FACTOR RATCHET_RUNS RATCHET_FLOOR \
-            MEDIA_RATIO_MIN_BYTES MEDIA_MAX_REFS MEDIA_MAX_OPS UNDO_MAX_COUNT UNDO_MAX_GB; do
-  case "${!knob}" in
-    0) ;;
-    ''|0*|*[!0-9]*) echo "# $knob must be a whole number, not '${!knob}'." >&2; exit 2 ;;
-  esac
-done
 # A word list rule H cannot match stops the run: an upper-case letter or a hyphen in an entry
 # would never match, and an empty entry would match the bare "s" of "it's". Silence there
 # reads as "nobody here runs an operation".
@@ -1388,7 +1593,7 @@ case $QUARANTINE in
   0|1) ;;
   *) echo "# QUARANTINE must be 0 or 1, not '$QUARANTINE'." >&2; exit 2 ;;
 esac
-# Anything but 0 or 1 would read as on, so a typo meant as "off" would lift blocks.
+# Only 1 reads as on, so a typo meant as "on" would quietly leave every block in place.
 case $UNDO in
   0|1) ;;
   *) echo "# UNDO must be 0 or 1, not '$UNDO'." >&2; exit 2 ;;
@@ -1401,8 +1606,8 @@ read -r disk_total disk_avail < <(df -Pk "$STORAGE" \
 # A disk of no size, from a df that failed or printed no number, reads as full, and full
 # pressure empties the quarantine.
 if [ "$DISK_AWARE" = 1 ] && [ "$disk_total" = 0 ]; then
-  echo "# cannot read the size of the disk $STORAGE is on (df), so disk pressure is unknown." \
-       "DISK_AWARE=0 runs without it." >&2
+  echo "# ABORT: cannot read the size of the disk $STORAGE is on (df), so disk pressure is" \
+       "unknown. DISK_AWARE=0 runs without disk pressure." >&2
   exit 5
 fi
 # Pressure counts what this run's own purge frees as free already. A copy a run pruned a week
@@ -1554,6 +1759,18 @@ progress_redraw_secs=1
 # inside a field of the whole width, so the printf truncates it and pads the rest with spaces.
 progress_bar_full='===================='
 progress_bar_cells=${#progress_bar_full}
+# The time left is projected from the repos done so far, and one repo can cost a thousand
+# times another: a repo with 152k refs keeps a phase on it for minutes while the rest take
+# milliseconds. Projected from a handful of repos
+# the estimate climbs for as long as that one runs and then drops to nothing, so it is shown
+# only once the phase has read at least this many repos...
+progress_min_done=100
+# ...and at least 1 in this many of its repos. On the seed, the estimate of a phase past both
+# was within a third of the time the phase really took.
+progress_min_share=5
+# Seconds with no repo finishing after which the estimate is replaced by how long it has been.
+# A slow repo stops the count, and a projection made before it started is no longer true.
+progress_stall_secs=15
 # How many walks this run will do, so a line can say which one is being watched. The two scan
 # walks always run; the media (F) and parasite-peer (G) rules run only when RULES holds them.
 progress_phases=2
@@ -1570,6 +1787,17 @@ duration() {
   local s=$1
   if [ "$s" -lt 60 ]; then printf '%ds' "$s"
   else                     printf '%dm%02ds' "$((s / 60))" "$((s % 60))"
+  fi
+}
+
+# The time left, rounded to what the projection can actually tell apart: to 10 seconds under a
+# minute and to 30 seconds above it, so the number does not tick up and down by a second at
+# every redraw.
+time_left() {
+  local s=$1
+  if   [ "$s" -lt 10 ]; then printf '<10s left'
+  elif [ "$s" -lt 60 ]; then printf '~%s left' "$(duration $(( (s + 5) / 10 * 10 )))"
+  else                       printf '~%s left' "$(duration $(( (s + 15) / 30 * 30 )))"
   fi
 }
 
@@ -1609,7 +1837,8 @@ progress_start() {
     # name, and an unset variable under `set -u` would reach the error trap and print into a
     # run that is merely ending a phase.
     trap 'kill "${napper:-}" 2>/dev/null || true; exit 0' TERM
-    local done_n elapsed pct rest line head tail cells napper=""
+    local done_n elapsed pct rest line head tail cells napper="" sure
+    local last_n=0 last_change=$started stalled
     while :; do
       sleep "$every" & napper=$!
       wait "$napper" || exit 0
@@ -1625,33 +1854,57 @@ progress_start() {
       [ "$done_n" -le "$total" ] || done_n=$total
       elapsed=$(( SECONDS - started ))
       pct=$(( done_n * 100 / total ))
-      # Nothing has finished yet, so there is no rate to project from: a phase whose first
-      # chunk holds a repo with 152k refs waits here a while. Say it is starting rather than
-      # project from one repo and print an estimate of hours that halves a second later.
-      if [ "$done_n" -gt 0 ]; then
-        rest="~$(duration "$(( elapsed * (total - done_n) / done_n ))") left"
-      else
-        rest="starting"
+      if [ "$done_n" -gt "$last_n" ]; then
+        last_n=$done_n; last_change=$SECONDS
       fi
+      stalled=$(( SECONDS - last_change ))
+      # The bar and the percentage count repos, not time, so 4 of 10 repos reads as 40% done
+      # while the one slow repo still has most of the phase ahead of it. They are held back,
+      # with the estimate, until the count is large enough to stand for the time.
+      sure=0
+      if [ "$done_n" -ge "$progress_min_done" ] \
+         && [ $(( done_n * progress_min_share )) -ge "$total" ]; then
+        sure=1
+      fi
+      # A stall drops the share done with the estimate, since both were measured before the
+      # slow repo started. Before the first repo finishes, the elapsed time beside the count
+      # already says how long nothing has. Once all have finished there is nothing to wait on.
+      rest=""
+      if [ "$done_n" -gt 0 ] && [ "$done_n" -lt "$total" ] \
+         && [ "$stalled" -ge "$progress_stall_secs" ]; then
+        sure=0
+        rest="last done $(duration "$stalled") ago"
+      elif [ "$sure" = 1 ] && [ "$done_n" -lt "$total" ]; then
+        rest=$(time_left $(( elapsed * (total - done_n) / done_n )))
+      fi
+      [ -z "$rest" ] || rest=", $rest"
       if [ "$live" = 1 ]; then
-        # The bar gives up its width before anything else does, so the counts and the estimate
-        # still fit an 80-column terminal under the longest phase name. Under 5 cells it says
-        # nothing the percentage does not, and is left out.
         head=$(printf '  [%d/%d] %s' "$n" "$progress_phases" "$phase")
-        tail=$(printf '%3d%% %d/%d repos %s %s' "$pct" "$done_n" "$total" \
-                 "$(duration "$elapsed")" "$rest")
+        if [ "$sure" = 1 ]; then
+          tail=$(printf '%3d%% %d/%d repos %s%s' "$pct" "$done_n" "$total" \
+                   "$(duration "$elapsed")" "$rest")
+        else
+          tail=$(printf '%d/%d repos %s%s' "$done_n" "$total" "$(duration "$elapsed")" "$rest")
+        fi
+        # The bar gives up its width before anything else does, so the counts and what follows
+        # them fit an 80-column terminal under the longest phase name. Under 5 cells it says
+        # nothing the percentage does not, and is left out.
         cells=$(( cols - ${#head} - ${#tail} - 4 ))
         [ "$cells" -le "$progress_bar_cells" ] || cells=$progress_bar_cells
-        if [ "$cells" -ge 5 ]; then
+        if [ "$sure" = 1 ] && [ "$cells" -ge 5 ]; then
           line=$(printf '%s [%-*.*s] %s' "$head" "$cells" "$(( pct * cells / 100 ))" \
                    "$progress_bar_full" "$tail")
         else
           line="$head $tail"
         fi
         printf '\r\033[K%.*s' "$cols" "$line" >&2
-      else
-        printf '#   [%d/%d] %s: %d of %d repos (%d%%), %s elapsed, %s\n' \
+      elif [ "$sure" = 1 ]; then
+        printf '#   [%d/%d] %s: %d of %d repos (%d%%), %s elapsed%s\n' \
                "$n" "$progress_phases" "$phase" "$done_n" "$total" "$pct" \
+               "$(duration "$elapsed")" "$rest" >&2
+      else
+        printf '#   [%d/%d] %s: %d of %d repos, %s elapsed%s\n' \
+               "$n" "$progress_phases" "$phase" "$done_n" "$total" \
                "$(duration "$elapsed")" "$rest" >&2
       fi
     done
@@ -1736,18 +1989,32 @@ grep -oE 'rad:z[1-9A-HJ-NP-Za-km-z]+' "$tmp/ls-private" \
   | sed 's/^rad://' | sort -u > "$tmp/private" || true
 grep -oE 'rad:z[1-9A-HJ-NP-Za-km-z]+' "$tmp/ls-own" 2>/dev/null \
   | sed 's/^rad://' | sort -u > "$tmp/own" || true
-# The keep list is the operator's own verdict on a repo, so it is read the same way as a pin:
-# comments and blank lines out, ids in. Both spellings are taken, because a person writes this
-# list by hand, copying ids from output that prints them both ways. A byte-order mark goes
-# too: a file saved by a Windows editor would otherwise lose its first id.
-# An identity is 48 characters and a repo id under 40, as in the deny list below.
-sed $'1s/^\xef\xbb\xbf//; s/#.*//; s/rad://' "$KEEP_FILE" 2>/dev/null \
-  | grep -oE '^\s*z[1-9A-HJ-NP-Za-km-z]+' \
-  | tr -d ' \t' | awk 'length($0) < 40' | sort -u > "$tmp/kept" || true
+# The keep list is the operator's own verdict on a repo, read token by token like the deny
+# list below. Both spellings are taken, because a person writes this list by hand, copying ids
+# from output that prints them both ways. An identity is 48 characters and a repo id under 40.
 # An identity in the keep list is a person clearing it of rule H; its repos are not kept.
-sed $'1s/^\xef\xbb\xbf//; s/#.*//; s/did:key://' "$KEEP_FILE" 2>/dev/null \
-  | grep -oE '^\s*z[1-9A-HJ-NP-Za-km-z]{40,}' \
-  | tr -d ' \t' | sort -u > "$tmp/kept-nids" || true
+# A list that exists but cannot be read stops the run before preflight passes: read as empty,
+# it would let every repo on it be pruned again.
+: > "$tmp/kept"; : > "$tmp/kept-nids"
+keep_unreadable=0
+if { [ -e "$KEEP_FILE" ] || [ -L "$KEEP_FILE" ]; } \
+   && { [ ! -f "$KEEP_FILE" ] || [ ! -r "$KEEP_FILE" ]; }; then
+  keep_unreadable=1
+elif [ -e "$KEEP_FILE" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%$'\r'}; line=${line#$'\xef\xbb\xbf'}
+    read -ra toks <<<"${line%%#*}"
+    for tok in "${toks[@]}"; do
+      id=${tok#rad:}; id=${id#did:key:}
+      if   [[ $id =~ ^z[1-9A-HJ-NP-Za-km-z]{40,}$ ]]; then printf '%s\n' "$id" >> "$tmp/kept-nids"
+      elif [[ $id =~ ^z[1-9A-HJ-NP-Za-km-z]+$ ]];     then printf '%s\n' "$id" >> "$tmp/kept"
+      else printf '# WARN: %s: %q is neither a repo id nor an identity; it keeps nothing.\n' \
+             "$KEEP_FILE" "$tok" >&2
+      fi
+    done
+  done < "$KEEP_FILE"
+fi
+sort -u -o "$tmp/kept" "$tmp/kept"; sort -u -o "$tmp/kept-nids" "$tmp/kept-nids"
 cat "$tmp/pinned" "$tmp/private" "$tmp/own" "$tmp/kept" 2>/dev/null | sort -u > "$tmp/excluded"
 # A check judges the public repos this node's identity is a delegate of, and nothing else in
 # storage. `rad ls` alone is not enough: it lists the repos this node forked as well, which the
@@ -1879,6 +2146,11 @@ mode=${run_mode,,}
               "Move any such directory out of storage." >&2
          exit 5; }
 
+[ "$keep_unreadable" = 0 ] \
+  || { echo "# ABORT($mode): cannot read $KEEP_FILE, the repos you chose to keep." >&2; exit 5; }
+[ -f "$CONFIG" ] && [ -r "$CONFIG" ] \
+  || { echo "# ABORT($mode): cannot read $CONFIG, which names the pinned repos." >&2; exit 5; }
+
 if [ "$APPLY" = 1 ]; then
   npin_cfg=$(jq -r '.web.pinned.repositories[]?' "$CONFIG" 2>/dev/null | wc -l)
   [ "$npin_cfg" -gt 0 ] && [ "$(wc -l < "$tmp/pinned")" = 0 ] \
@@ -1970,29 +2242,60 @@ undo_fold() {
                    r, reason[r], size[r], at[r], ver[r], dl[r], nolift[r] + 0 }' "${logs[@]}"
 }
 undo_fold | sort > "$tmp/undo-fold"
-cut -f1 "$tmp/undo-fold" > "$tmp/undo-pruned-before"
+# A log the run cannot read takes its verdicts and its "# unblocked:" lines with it, so a block
+# could be lifted twice, or one rad-prune made be taken for somebody else's.
+nlogunread=0
+for f in "$AUDIT_DIR"/prune-*.log; do
+  [ ! -e "$f" ] || [ -r "$f" ] || nlogunread=$((nlogunread + 1))
+done
+[ "$nlogunread" = 0 ] \
+  || echo "# WARN: cannot read $nlogunread audit log(s) in $AUDIT_DIR; the blocks they" \
+          "record are lifted, or kept, as if those runs never happened." >&2
+# rid \t the verdict it was pruned for, for every repo an earlier run's undo let back, from its
+# "# unblocked:" lines.
+undo_lifted_before() {
+  local f logs=()
+  for f in "$AUDIT_DIR"/prune-*.log; do [ -r "$f" ] && logs+=("$f"); done
+  [ ${#logs[@]} -gt 0 ] || return 0
+  awk '/^# unblocked: rad:z/ {
+         split($0, w, " "); print substr(w[3], 5) "\t" substr(w[5], 8) }' "${logs[@]}"
+}
+undo_lifted_before | sort -u > "$tmp/undo-lifted-before"
 
-# Repos known to be wrongly pruned are kept from every rule while their entry stands, whether
-# or not this node ever pruned them. deny.txt still prunes them: it is this operator's verdict.
-# An entry past its release is said out loud, since it then keeps nothing.
+# Repos known to be wrongly pruned as media are kept from the media rule (F) while their entry
+# stands, whether or not this node ever pruned them. deny.txt still prunes them: it is this
+# operator's verdict. An entry past its release is said out loud, since it then keeps nothing.
 : > "$tmp/undo-pardoned"
 for entry in $UNDO_PARDON; do
   prid=${entry%%:*}; until=${entry#*:}
   if version_older "$VERSION" "$until"; then
     printf '%s\n' "$prid" >> "$tmp/undo-pardoned"
   else
-    echo "# WARN: the built-in pardon for rad:$prid ended at version $until; it keeps nothing" \
-         "now. Drop it from UNDO_PARDON, or fix the rule that still flags the repo." >&2
+    echo "# WARN: the UNDO_PARDON entry for rad:$prid, a known mistake, ended at version $until;" \
+         "it keeps nothing now. Drop the entry, or fix the rule that still flags the repo." >&2
   fi
 done
+# Lifted, and not spared: see UNDO_LIFT. Entries end together, so their end is one line.
+: > "$tmp/undo-liftonly"
+nlift_ended=0
+for entry in $UNDO_LIFT; do
+  if version_older "$VERSION" "${entry#*:}"; then
+    printf '%s\n' "${entry%%:*}" >> "$tmp/undo-liftonly"
+  else
+    nlift_ended=$((nlift_ended + 1))
+  fi
+done
+[ "$nlift_ended" = 0 ] \
+  || echo "# WARN: $nlift_ended UNDO_LIFT entries ended at their version and lift nothing now." \
+          "Drop them." >&2
 npardon_here=0
 while IFS= read -r prid; do
   [ -d "$STORAGE/$prid" ] && npardon_here=$((npardon_here + 1))
 done < "$tmp/undo-pardoned"
 # Said on a dry run only: once a pardoned repo is back, a cron run would repeat it weekly.
 [ "$npardon_here" = 0 ] || [ "$APPLY" = 1 ] \
-  || echo "# pardoned: $npardon_here repo(s) in storage that rad-prune is known to have pruned by" \
-          "mistake are spared by every rule, unless deny.txt names them."
+  || echo "# known mistakes: $npardon_here repo(s) in storage that rad-prune once pruned by" \
+          "mistake. The media rule (F) does not prune them."
 
 # Which repos this node blocks right now, from `rad seed`: a row whose policy is "block". rc.12
 # prints the scope after the policy, so the policy is the column before last; heartwood master
@@ -2136,24 +2439,58 @@ if [ "$UNDO" = 1 ] && [ -s "$tmp/undo-blocked" ]; then
   undo_revival > "$tmp/undo-revived"
 fi
 
-# Every block that has a reason to be lifted, as rid, why, reason, size, when, version, and
-# where the repo's copy is: still in the quarantine, or deleted. Pardoned and quarantined repos
-# cost no fetch and come first; the rest come smallest first, since every wrong verdict found
-# so far was a small repo, and a repo bigger than its entry allows stays blocked.
+# The size cap (K, M or G) of the UNDO_CHANGED entry that withdraws verdict $1 reached by
+# version $2. Fails when no entry does. The size (B) and stale (C) rules now wait for disk
+# pressure, so lifting one of their blocks while they are pruning only brings the repo back to
+# prune it again. A delegate's announcement can still lift it, as for any inactivity verdict.
+withdrawn_cap() {
+  local entry cver creason cmax
+  for entry in $UNDO_CHANGED; do
+    IFS=: read -r cver creason cmax <<<"$entry"
+    [ "$creason" = "$1" ] && version_older "$2" "$cver" || continue
+    case $1 in
+      size-outlier|stale) [ "$space_rules" = 0 ] || return 1 ;;
+    esac
+    printf '%s\n' "$cmax"
+    return 0
+  done
+  return 1
+}
+
+# Every block that has a reason to be lifted, as the pass of the headroom test below, order,
+# rid, why, reason, size, when, version, and where the repo's copy is: still in the quarantine,
+# or deleted. Pardoned, kept and quarantined repos cost no budget and come first; the rest come
+# smallest first, since every wrong verdict found so far was a small repo, and a repo bigger
+# than its entry allows stays blocked.
 : > "$tmp/undo-cand"
 if [ "$UNDO" = 1 ] && [ -s "$tmp/undo-blocked" ]; then
   declare -A UNDO_BLOCKED=() UNDO_SKIP=() UNDO_DENYNID=() UNDO_REVIVED=() UNDO_PARDONED=()
+  declare -A UNDO_LIFTONLY=() UNDO_KEPT=()
   while IFS= read -r r; do UNDO_BLOCKED[$r]=1; done < "$tmp/undo-blocked"
   while IFS= read -r r; do [ -n "$r" ] && UNDO_SKIP[$r]=1; done \
     < <(cat "$tmp/excluded" "$tmp/deny-rids")
   while IFS= read -r r; do [ -n "$r" ] && UNDO_DENYNID[$r]=1; done < "$tmp/deny-nids"
   while IFS= read -r r; do UNDO_REVIVED[$r]=1; done < "$tmp/undo-revived"
   while IFS= read -r r; do UNDO_PARDONED[$r]=1; done < "$tmp/undo-pardoned"
+  while IFS= read -r r; do UNDO_LIFTONLY[$r]=1; done < "$tmp/undo-liftonly"
+  while IFS= read -r r; do UNDO_KEPT[$r]=1; done < "$tmp/kept"
   while IFS=$'\t' read -r rid reason size at ver dl nolift; do
     [ -n "${UNDO_BLOCKED[$rid]:-}" ] || continue    # lifted already, or the block never held
     [ "$nolift" = 0 ] || continue                   # lifted once, or not this tool's block
     [ ! -e "$STORAGE/$rid" ] || continue            # never left storage, so never pruned
-    [ -z "${UNDO_SKIP[$rid]:-}" ] || continue       # pinned, private, own, kept or denied
+    copy=deleted
+    [ "$QUARANTINE" = 1 ] && [ -d "$quar/$rid" ] && copy=quarantined
+    # A repo in the keep file is a person's word to keep it, which outweighs the verdict and
+    # the deny list, as it does for a repo in storage. It comes back as a restore would bring
+    # it, and like a pardon whatever the budget. Only from the quarantine: a deleted kept repo
+    # may be one a person restored and then blocked and removed by hand, and a restore leaves
+    # no line in the audit log that would say so.
+    if [ -n "${UNDO_KEPT[$rid]:-}" ] && [ "$copy" = quarantined ]; then
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+             1 0 "$rid" kept "$reason" "$size" "$at" "$ver" "$copy" >> "$tmp/undo-cand"
+      continue
+    fi
+    [ -z "${UNDO_SKIP[$rid]:-}" ] || continue       # pinned, private, own or denied
     case $reason in denied|denied-copy) continue ;; esac
     # A delegate added to the deny list since the prune makes the repo a person's verdict too.
     denied_delegate=0
@@ -2169,23 +2506,22 @@ if [ "$UNDO" = 1 ] && [ -s "$tmp/undo-blocked" ]; then
       done
     fi
     [ "$denied_delegate" = 0 ] || continue
-    copy=deleted
-    [ "$QUARANTINE" = 1 ] && [ -d "$quar/$rid" ] && copy=quarantined
     why=""
-    if [ -n "${UNDO_PARDONED[$rid]:-}" ]; then
+    # UNDO_PARDON names repos wrongly pruned as media, and UNDO_LIFT repos wrongly pruned as
+    # junk-name. A later prune for another reason is a verdict of its own, which the entry says
+    # nothing about.
+    pardoned=0
+    if [ -n "${UNDO_PARDONED[$rid]:-}" ] && [[ $reason == media-* ]]; then
+      why=known-mistake; pardoned=1
+    elif [ -n "${UNDO_LIFTONLY[$rid]:-}" ] && [ "$reason" = junk-name ]; then
       why=known-mistake
     fi
-    if [ -z "$why" ]; then
-      for entry in $UNDO_CHANGED; do
-        IFS=: read -r cver creason cmax <<<"$entry"
-        [ "$creason" = "$reason" ] && version_older "$ver" "$cver" || continue
-        if [ "$copy" = deleted ] && [ "$size" -gt "$(size_bytes "$cmax")" ]; then
-          why=too-big-to-fetch
-        else
-          why=verdict-withdrawn
-        fi
-        break
-      done
+    if [ -z "$why" ] && cmax=$(withdrawn_cap "$reason" "$ver"); then
+      if [ "$copy" = deleted ] && [ "$size" -gt "$(size_bytes "$cmax")" ]; then
+        why=too-big-to-fetch
+      else
+        why=verdict-withdrawn
+      fi
     fi
     if [ -z "$why" ] && [ -n "${UNDO_REVIVED[$rid]:-}" ]; then
       why=active-since-prune
@@ -2193,40 +2529,105 @@ if [ "$UNDO" = 1 ] && [ -s "$tmp/undo-blocked" ]; then
     [ -n "$why" ] || continue
     order=2
     [ "$copy" = quarantined ] && order=1
-    [ "$why" = known-mistake ] && order=0
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-           "$order" "$rid" "$why" "$reason" "$size" "$at" "$ver" "$copy" >> "$tmp/undo-cand"
+    [ "$pardoned" = 0 ] || order=0
+    # The headroom below tests a size (B) or stale (C) lift against the room every other lift
+    # leaves, so those come after the rest.
+    pass=1
+    case "$why:$reason" in verdict-withdrawn:size-outlier|verdict-withdrawn:stale) pass=2 ;; esac
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+           "$pass" "$order" "$rid" "$why" "$reason" "$size" "$at" "$ver" "$copy" \
+           >> "$tmp/undo-cand"
   done < "$tmp/undo-fold"
 fi
+# A kept repo the undo cannot bring back stays in the quarantine, which no longer purges it:
+# its block is somebody else's or was lifted once, UNDO=0, or the block listing failed. It
+# waits there for a person, so it is named on every run until one acts.
+: > "$tmp/kept-stuck"
+if [ "$QUARANTINE" = 1 ]; then
+  awk -F'\t' 'FILENAME == ARGV[1] { back[$3] = 1; next } !($1 in back)' \
+      "$tmp/undo-cand" "$tmp/kept" \
+    | while IFS= read -r r; do
+        if [ -d "$quar/$r" ] && [ ! -e "$STORAGE/$r" ]; then printf '%s\n' "$r"; fi
+      done > "$tmp/kept-stuck"
+fi
+nstuck=$(wc -l < "$tmp/kept-stuck")
+if [ "$nstuck" -gt 0 ]; then
+  echo "# WARN: $nstuck repo(s) in $KEEP_FILE are still in the quarantine, and this run" \
+       "cannot bring them back. Run rad prune quarantine restore with each:" >&2
+  head -n "$top_evidence" "$tmp/kept-stuck" | sed 's/^/#   /' >&2
+  [ "$nstuck" -le "$top_evidence" ] \
+    || echo "#   ...and $((nstuck - top_evidence)) more (PLAN_FULL=1 lists them)" >&2
+fi
 
-# What each one gets: "unblock", "unblock-later" (over this run's count or GiB, or the disk is
-# at the critical free-space threshold), or "stays-blocked" (too big to fetch again). Pardoned
-# and quarantined repos cost no fetch, so the budget is spent on the deleted ones alone.
+# What each one gets: "unblock", "unblock-later" (over this run's count or GiB, the disk is at
+# the critical free-space threshold, or a size (B) or stale (C) lift would leave it under
+# pressure), or "stays-blocked" (too big to fetch again). The budget is spent on the repos that
+# cost a fetch: deleted ones other than those UNDO_PARDON lists or the keep file keeps.
 : > "$tmp/undo-states"
 undo_crit=0
 [ "$DISK_AWARE" = 1 ] && awk -v a="$free_eff" -v c="$crit_free" 'BEGIN{exit !(a <= c)}' \
   && undo_crit=1
 undo_n=0; undo_bytes=0; undo_max_bytes=$(( UNDO_MAX_GB * 1073741824 ))
-while IFS=$'\t' read -r order rid why reason size at ver copy; do
+# A size (B) or stale (C) block is lifted only because those rules wait while the disk has
+# room, so the repos lifted must not use that room up: once back, under pressure, they would be
+# pruned again. Every repo coming back takes room, whatever its reason, so each lift is charged
+# its size, and the B and C lifts, read last, are held once the room is spent. A repo moved
+# back from the quarantine is charged too: free space here already counts the expired copies
+# as freed. One still in its window on the same disk takes no new room, so charging it holds a
+# B or C lift back early, never late.
+bc_room=$(awk -v a="$free_eff" -v r="$relax_free" 'BEGIN { printf "%.0f", a - r }')
+# A repo an earlier run lifted takes no room until the node fetches it, so it is charged until
+# it is in storage, for LIFT_FETCH_DAYS after the lift: one no peer offers in that time is not
+# coming back by itself, and charged for ever it would hold every later B or C lift. The node
+# fetches one by itself only under an "allow" default policy, or a kept one, which the lift
+# seeds. One blocked again is not coming back either.
+LIFT_FETCH_DAYS=14      # days; node.db keeps a peer's announcements for two weeks
+undo_default=$(jq -r '.node.seedingPolicy.default // "block"' "$CONFIG" 2>/dev/null) \
+  || undo_default=block
+lift_cut=$(date -u -d "@$(( now - LIFT_FETCH_DAYS * 86400 ))" +%Y%m%dT%H%M%SZ)
+undo_lifts_pending() {
+  local f stamp logs=()
+  for f in "$AUDIT_DIR"/prune-*.log; do
+    [ -r "$f" ] || continue
+    # A log is named by the time its run started, which no lift in it precedes.
+    stamp=${f##*/prune-}; stamp=${stamp%.log}
+    if [[ $stamp > "$lift_cut" ]]; then logs+=("$f"); fi
+  done
+  [ ${#logs[@]} -gt 0 ] || return 0
+  awk -v policy="$undo_default" '
+    /^# unblocked: rad:z/ { split($0, w, " ")
+                            if (policy == "allow" || w[4] == "why=kept") print substr(w[3], 5) }' \
+    "${logs[@]}" | sort -u
+}
+undo_lifts_pending > "$tmp/undo-lifts-pending"
+room_used=0
+while IFS=$'\t' read -r rid size; do
+  [ ! -e "$STORAGE/$rid" ] || continue
+  ! grep -qxF -- "$rid" "$tmp/undo-blocked" || continue
+  room_used=$((room_used + size))
+done < <(awk -F'\t' 'FILENAME == ARGV[1] { lifted[$1] = 1; next }
+                     $1 in lifted { print $1 "\t" $3 }' \
+           "$tmp/undo-lifts-pending" "$tmp/undo-fold")
+bc_held=0
+while IFS=$'\t' read -r pass order rid why reason size at ver copy; do
   state=unblock
   if [ "$why" = too-big-to-fetch ]; then
     state=stays-blocked
   elif [ "$undo_crit" = 1 ]; then
     state=unblock-later
-  elif [ "$order" = 2 ]; then
-    if [ "$undo_n" -ge "$UNDO_MAX_COUNT" ] \
-       || [ $(( undo_bytes + size )) -gt "$undo_max_bytes" ]; then
-      state=unblock-later
-    else
-      undo_n=$((undo_n + 1)); undo_bytes=$((undo_bytes + size))
-    fi
+  elif [ "$order" = 2 ] && { [ "$undo_n" -ge "$UNDO_MAX_COUNT" ] \
+                             || [ $(( undo_bytes + size )) -gt "$undo_max_bytes" ]; }; then
+    state=unblock-later
+  elif [ "$pass" = 2 ] && [ $(( room_used + size )) -gt "$bc_room" ]; then
+    state=unblock-later; bc_held=$((bc_held + 1))
+  else
+    if [ "$order" = 2 ]; then undo_n=$((undo_n + 1)); undo_bytes=$((undo_bytes + size)); fi
+    room_used=$((room_used + size))
   fi
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
          "$rid" "$state" "$why" "$reason" "$size" "$at" "$ver" "$copy" >> "$tmp/undo-states"
-done < <(sort -t$'\t' -k1,1n -k5,5n "$tmp/undo-cand")
+done < <(sort -t$'\t' -k1,1n -k2,2n -k6,6n "$tmp/undo-cand")
 
-undo_default=$(jq -r '.node.seedingPolicy.default // "block"' "$CONFIG" 2>/dev/null) \
-  || undo_default=block
 nunblock=$(awk -F'\t' '$2 == "unblock"' "$tmp/undo-states" | wc -l)
 nlater=$(awk -F'\t' '$2 == "unblock-later"' "$tmp/undo-states" | wc -l)
 nstays=$(awk -F'\t' '$2 == "stays-blocked"' "$tmp/undo-states" | wc -l)
@@ -2248,10 +2649,17 @@ if [ "$nunblock" -gt 0 ] || [ "$nlater" -gt 0 ]; then
     [ "$n" = 0 ] || echo "#   $n pruned for inactivity, and announced by a node since"
     n=$(count_why known-mistake)
     [ "$n" = 0 ] || echo "#   $n known mistake(s) this rad-prune release lists"
-    [ "$nlater" = 0 ] || echo "#   $nlater more held for a later run: $later_why"
+    n=$(count_why kept)
+    [ "$n" = 0 ] || echo "#   $n in $KEEP_FILE, seeded again as quarantine restore would"
+    [ "$nlater" = "$bc_held" ] \
+      || echo "#   $(( nlater - bc_held )) more held for a later run: $later_why"
   else
-    echo "# undo: $nlater block(s) held for a later run: $later_why"
+    [ "$nlater" = "$bc_held" ] \
+      || echo "# undo: $(( nlater - bc_held )) block(s) held for a later run: $later_why"
   fi
+  [ "$bc_held" = 0 ] \
+    || echo "#   $bc_held more held for a later run: bringing them back would put the disk under" \
+            "pressure, where the size (B) and stale (C) rules prune them again."
   if [ "$undo_crit" = 1 ]; then
     n=$(awk -F'\t' '$2 == "unblock-later" && $8 == "quarantined"' "$tmp/undo-states" | wc -l)
     [ "$n" = 0 ] || echo "#   $n of those are in the quarantine, which --apply empties at this" \
@@ -2264,10 +2672,12 @@ fi
 # runaway caps, so a run somebody turns down or the caps stop lifts nothing. A quarantined repo
 # goes back into storage, and a later run judges it. A deleted one has its block dropped, so
 # the node fetches it again when a peer next offers it. Neither is re-seeded: under a default
-# policy other than "allow" that is the operator's call. Each lift is a "# unblocked:" line in
-# the audit log, which is also what stops a second lift of the same repo on a later run.
+# policy other than "allow" that is the operator's call. A repo in the keep file is the
+# operator's call already made, so it is seeded, as quarantine restore seeds what it puts back.
+# Each lift is a "# unblocked:" line in the audit log, which is also what stops a second lift
+# of the same repo on a later run.
 undo_apply() {
-  local rid state why reason size at ver copy lifted=0 failed=0
+  local rid state why reason size at ver copy lifted=0 failed=0 seeded=0
   [ "$nunblock" -gt 0 ] || return 0
   open_audit
   while IFS=$'\t' read -r rid state why reason size at ver copy; do
@@ -2289,18 +2699,26 @@ undo_apply() {
       failed=$((failed + 1)); continue
     fi
     [ "$ver" = "-" ] && ver=0.7.0-or-older
-    printf '# unblocked: rad:%s why=%s reason=%s pruned_at=%s pruned_by=%s copy=%s\n' \
-           "$rid" "$why" "$reason" "$at" "$ver" "$copy" 2>/dev/null >> "$audit" \
+    printf '# unblocked: rad:%s why=%s reason=%s pruned_at=%s pruned_by_version=%s %s\n' \
+           "$rid" "$why" "$reason" "$at" "$ver" "local_copy=$copy" 2>/dev/null >> "$audit" \
       || echo "# WARN: lifted the block on rad:$rid but could not record it in $audit, so a" \
               "block put back on it later could be lifted again." >&2
     lifted=$((lifted + 1))
+    if [ "$why" = kept ]; then
+      if "$RAD" seed "rad:$rid" >/dev/null 2>&1; then
+        seeded=$((seeded + 1))
+      else
+        echo "# WARN: lifted the block on rad:$rid, which $KEEP_FILE keeps, but" \
+             "'$RAD seed rad:$rid' failed; run it yourself." >&2
+      fi
+    fi
   done < "$tmp/undo-states"
   if [ "$failed" = 0 ]; then
     echo "# undo: unblocked $lifted repo(s)."
   else
     echo "# undo: unblocked $lifted repo(s); $failed failed, see the warnings above."
   fi
-  if [ "$undo_default" != allow ] && [ "$lifted" -gt 0 ]; then
+  if [ "$undo_default" != allow ] && [ "$lifted" -gt "$seeded" ]; then
     echo "#   This node's default seeding policy is '$undo_default', so it seeds none of them" \
          "by itself. To seed one, run rad seed with an id from the '# unblocked:' lines of" \
          "$audit"
@@ -2529,7 +2947,8 @@ fi
 #
 # Feeding the workers biggest-repo-first in smaller chunks was tried and reverted: on the real
 # seed it cost 56s of a 538s run, since the giants then contend for IO all at once and the
-# smaller chunks buy more process spawns than they save in tail latency.
+# smaller chunks buy more process spawns than they save in tail latency. batch_size shrinks the
+# chunks only for a phase too small to give every worker several.
 repos_to_read() {                 # $1 = file listing rids the cache already answers for
   # The storage prefix is glued on by a shell loop rather than a sed expression, because
   # $STORAGE is an operator-supplied path: a '#' in it would end sed's own delimiter and a '&'
@@ -2542,7 +2961,7 @@ repos_to_read() {                 # $1 = file listing rids the cache already ans
     | grep -zvxFf "$tmp/cached-paths"
 }
 { printf '#!/usr/bin/env bash\n'; declare -f read_delegates
-  printf 'our_nid=%q\n' "$OUR_NID"; cat <<'LIFE'
+  printf 'our_nid=%q\n' "$OUR_NID"; printf 'now=%s\n' "$now"; cat <<'LIFE'
 # The ref listing is written to a file rather than a shell variable because one repo on a real
 # seed has 152k refs. It is read once for the dates and the signed refs, and once for the
 # fingerprint the run cache keys on.
@@ -2559,17 +2978,26 @@ for d; do
   # A ref without a date carries no age information, so skipping it loses nothing. --sort
   # keeps what is left in date order, so the first is still the oldest and the last the newest.
   # The length bound is what makes the digit test enough: an all-decimal object id would pass
-  # /^[0-9]+$/ and become a date 30 digits long. Eleven digits reach the year 5138.
+  # /^[0-9]+$/ and become a date 30 digits long. A date of 0 is left out too, since 0 below
+  # means a repo whose refs would not list at all, and so is one more than a week ahead of this
+  # seed's clock: a pusher who dates a ref in the year 3000 would keep the repo looking active
+  # for good, and the size (B) and stale (C) rules from ever judging it. A week covers a clock
+  # that runs fast.
+  # Refs that list but carry no usable date print "u", which the run replaces with the day it
+  # first saw the repo: a pusher who dates every commit 1970 would otherwise make the repo
+  # ageless, outside the spam-batch (D) and media (F) rules and counted against the scan guard.
   #
   # The same pass lists every node that signed refs of its own here, which only that node
   # can do. The ref name is the last field and holds no space, whatever the date field holds.
   # One awk for both, because this walk reads every repo on every run, warm cache or not, and
   # each process per repo costs about a millisecond of CPU.
-  read -r birth last signed < <(awk '
-      $1 ~ /^[0-9]+$/ && length($1) <= 11 { if (b == "") b = $1; l = $1 }
+  read -r birth last signed < <(awk -v ahead=$(( now + 7 * 86400 )) '
+      $1 ~ /^[1-9][0-9]*$/ && length($1) <= 11 && $1 + 0 <= ahead { if (b == "") b = $1; l = $1 }
       $NF ~ /^refs\/namespaces\/[^\/]+\/refs\/rad\/sigrefs$/ {
         split($NF, p, "/"); signed = signed " " p[3] }
-      END { if (b == "") printf "0 0%s\n", signed; else printf "%s %s%s\n", b, l, signed }' \
+      END { if (b != "")     printf "%s %s%s\n", b, l, signed
+            else if (NR > 0) printf "u u%s\n", signed
+            else             printf "0 0%s\n", signed }' \
     "$t")
   refhash=$(sha1sum < "$t"); refhash=${refhash%% *}
   # The repo's delegates, comma-separated, for the deny list.
@@ -2608,10 +3036,10 @@ find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -print0 2>>"$scanerr" \
 progress_stop
 
 # ------------------------------------------------------------------------------- the run cache
-# Rules F and G and the check for copies walk the contents of every repo, which is most of a
-# run. On a seed that has caught up almost nothing changes from one week to the next, so their
-# per-repo output is kept and reused for any repo whose refs and size are both untouched since
-# the run that wrote it.
+# Rules F and G and the search for copies of denied files walk the contents of every repo,
+# which is most of a run. On a seed that has caught up almost nothing changes from one week to
+# the next, so their per-repo output is kept and reused for any repo whose refs and size are
+# both untouched since the run that wrote it.
 # A repo whose key differs is walked again, so a rule never judges a repo on stale evidence.
 #
 # The key is the ref listing's hash plus the repo's size on disk. Refs alone would miss objects
@@ -2669,6 +3097,15 @@ fi
 # while the unfinished rules still carry keys measured under the previous settings.
 if [ "$CACHE" = 1 ] && [ "$cache_ok" = 0 ] && mkdir -p "$CACHE_DIR" 2>/dev/null; then
   rm -f "$CACHE_DIR"/keys-* 2>/dev/null || true
+  # Left by the link-farm rule (E), which 0.8.0 removed. A new script version always leaves
+  # the cache cold, so the first run after the upgrade gets here. Only beside hosts-code, a
+  # name nothing but that rule wrote, because CACHE_DIR can be any directory and "hosts" a file
+  # of its own. Revisit (drop it) once no supported seed can still run a release older than
+  # 0.8.0.
+  if [ -e "$CACHE_DIR/hosts-code" ]; then
+    rm -f "$CACHE_DIR/hosts" "$CACHE_DIR/hosts-code" "$CACHE_DIR/hosts-fail" \
+          "$CACHE_DIR/hosts-unwalked" 2>/dev/null || true
+  fi
   printf '%s\n' "$fingerprint" > "$CACHE_DIR/fingerprint" 2>/dev/null \
     || echo "# WARN: could not write $CACHE_DIR/fingerprint; the cache stays cold" >&2
 fi
@@ -2694,6 +3131,29 @@ cache_hits() {                      # $1 = rule's cache name; writes the rids it
 repos_left() {                      # $1 = rule's cache name, after cache_hits has run for it
   echo $(( $(wc -l < "$tmp/keys") - $(wc -l < "$tmp/cached-$1") ))
 }
+# Workers that die (a crash, a killed xargs) answer for fewer repos than their phase was given,
+# and the rule then judges only the rest while the plan looks normal. Said out loud instead.
+# $1 = what the phase is, $2 = repos it had to read, then the files it writes one line per repo
+phase_shortfall() {
+  local what=$1 want=$2 got
+  shift 2
+  got=$(cut -f1 "$@" 2>/dev/null | sort -u | wc -l)
+  [ "$got" -ge "$want" ] \
+    || echo "# WARN: the $what read $got of the $want repos it had to; it judged only those." >&2
+}
+# Repos per worker call for a phase that reads $1 repos. 32 per call keeps the cost of starting
+# bash and the worker's own setup small against a long phase, but 10 repos then make a single
+# call that reads them one after another on one core while the rest sit idle. Small enough
+# that every worker gets about four calls, so one slow repo does not hold up a whole batch.
+batch_size() {
+  # JOBS=0 is xargs' "as many at once as it likes", which still needs a share per call here.
+  local workers=$JOBS
+  [ "$workers" -ge 1 ] || workers=1
+  local per=$(( ($1 + workers * 4 - 1) / (workers * 4) ))
+  [ "$per" -le 32 ] || per=32
+  [ "$per" -ge 1 ] || per=1
+  echo "$per"
+}
 cache_reuse() {   # $1 = stream name, $2 = field holding the rid, $3 = rule whose hits to use
   [ "$cache_ok" = 1 ] && [ -s "$CACHE_DIR/$1" ] || return 0
   awk -F'\t' -v f="$2" -v hits="$tmp/cached-$3" \
@@ -2704,14 +3164,15 @@ cache_reuse() {   # $1 = stream name, $2 = field holding the rid, $3 = rule whos
 # file certifies rows the data file never received, and the next run skips the repo and reuses
 # a measurement that has stopped being true. The trigger is ordinary: AUDIT_DIR defaults to
 # the same filesystem as storage, and this tool runs when that filesystem is filling, so the
-# big data write hits ENOSPC while the small key write still fits.
+# big data write hits ENOSPC while the small key write still fits. The temporary files carry
+# this run's pid, because a dry run takes no lock and may write the cache while --apply does.
 cache_failed=""
 cache_save() {                      # $1 = stream name, $2 = file holding this run's version
   [ "$CACHE" = 1 ] || return 0
   mkdir -p "$CACHE_DIR" 2>/dev/null || { cache_failed="$cache_failed $1"; return 0; }
-  cat "$2" > "$CACHE_DIR/$1.new" 2>/dev/null && mv "$CACHE_DIR/$1.new" "$CACHE_DIR/$1" \
+  cat "$2" > "$CACHE_DIR/$1.new.$$" 2>/dev/null && mv "$CACHE_DIR/$1.new.$$" "$CACHE_DIR/$1" \
     || { cache_failed="$cache_failed $1"
-         rm -f "$CACHE_DIR/$1.new" 2>/dev/null      # the trigger for this is a filling disk
+         rm -f "$CACHE_DIR/$1.new.$$" 2>/dev/null      # the trigger for this is a filling disk
          echo "# WARN: could not write the run cache at $CACHE_DIR" >&2; }
 }
 cache_save_keys() {                 # $1 = rule's cache name, $2 = rids it answered for
@@ -2727,9 +3188,9 @@ cache_save_keys() {                 # $1 = rule's cache name, $2 = rids it answe
   mkdir -p "$CACHE_DIR" 2>/dev/null || return 0
   awk -F'\t' -v ans="$2" 'FILENAME == ans { a[$0] = 1; next } ($1 in a)' \
       "$2" "$tmp/keys" \
-    > "$CACHE_DIR/keys-$1.new" 2>/dev/null \
-    && mv "$CACHE_DIR/keys-$1.new" "$CACHE_DIR/keys-$1" \
-    || { rm -f "$CACHE_DIR/keys-$1.new" 2>/dev/null
+    > "$CACHE_DIR/keys-$1.new.$$" 2>/dev/null \
+    && mv "$CACHE_DIR/keys-$1.new.$$" "$CACHE_DIR/keys-$1" \
+    || { rm -f "$CACHE_DIR/keys-$1.new.$$" 2>/dev/null
          echo "# WARN: could not write the run cache at $CACHE_DIR" >&2; return 0; }
 }
 
@@ -2860,8 +3321,11 @@ for d; do
   [ "${#refs[@]}" -le "$max_refs" ] || { echo "$rid" >&4; continue; }
   # A dump hides as well in an issue attachment as in a commit, so the repo's OWN COBs count
   # too. "Own" is decided by refs/rad/id, the identity document, which the local node writes
-  # only after verifying its signatures; a stranger's push can never move it.
+  # only after verifying its signatures; a stranger's push can never move it. A repo whose
+  # delegates cannot be read goes unjudged: without them its issues, patches and the
+  # delegates' own branches go uncounted, and less text is what makes a repo read as a dump.
   read_delegates "$d"
+  [ -n "$dids" ] || { echo "$rid" >&4; continue; }
   # Collect the refs this repo's own delegates control, and only those. That is the canonical
   # branches and tags, which only a delegate can move, plus the delegates' own namespaces and
   # COBs. Any other peer's namespace is left out of the walk entirely: what a stranger pushed
@@ -3027,11 +3491,13 @@ MEDIA
   cache_hits media
   # Both files, because a repo the worker could not read writes only to the failure one, and a
   # phase full of unreadable repos would otherwise look stalled.
-  progress_start "media rule (F)" "$(repos_left media)" "$tmp/media" "$tmp/media-fail"
+  to_read=$(repos_left media)
+  progress_start "media rule (F)" "$to_read" "$tmp/media" "$tmp/media-fail"
   repos_to_read "$tmp/cached-media" \
-    | xargs -0r -P "$JOBS" -n 32 "$BASH_BIN" "$tmp/media.sh" \
+    | xargs -0r -P "$JOBS" -n "$(batch_size "$to_read")" "$BASH_BIN" "$tmp/media.sh" \
         > "$tmp/media" 4> "$tmp/media-fail" || true
   progress_stop
+  phase_shortfall "media rule (F)" "$to_read" "$tmp/media" "$tmp/media-fail"
   # The reused rows go back beside the ones just measured, so everything downstream (the
   # media-batch corpus above all) sees every repo, not only the ones this run read. A check
   # reads its own repos and no others. A repo that has since left storage is absent from this
@@ -3043,9 +3509,16 @@ MEDIA
   cache_save  "media-fail" "$tmp/media-fail"
   # Through a real file, not a process substitution: cache_save checks cat's status, and cat
   # succeeds even when the sort feeding it died, which would save a truncated blob corpus as
-  # though it were complete.
-  sort -u "$tmp/blobs"/* 2>/dev/null > "$tmp/blobs-all" || : > "$tmp/blobs-all"
-  cache_save  "blobs" "$tmp/blobs-all"
+  # though it were complete. A sort that fails (a full disk, say) leaves the media-batch
+  # verdict nothing to count, and marks the cache failed, so the next run reads every repo
+  # again instead of reusing them against an empty list.
+  if sort -u "$tmp/blobs"/* 2>/dev/null > "$tmp/blobs-all"; then
+    cache_save "blobs" "$tmp/blobs-all"
+  else
+    : > "$tmp/blobs-all"; cache_failed="$cache_failed blobs"
+    echo "# WARN: could not sort the media files repos share; no repo is pruned as" \
+         "media-batch this run." >&2
+  fi
   # Every repo the worker reads yields either a measurement or a failure line, so these two
   # files list every repo rule F answered for.
   cut -f1 "$tmp/media" "$tmp/media-fail" | sort -u > "$tmp/answered-media"
@@ -3066,14 +3539,12 @@ MEDIA
   # Naming it here would name a path that a run aborting in between never creates.
   if [ "$nmedianew" -gt 0 ]; then
     echo "# WARN: the media rule (F) left $nmediafail repo(s) unjudged, $nmedianew of them" \
-         "new since the last run: unreadable, over MEDIA_MAX_REFS ($MEDIA_MAX_REFS) refs" \
-         "or MEDIA_MAX_OPS ($MEDIA_MAX_OPS) issue and patch ops," \
-         "listing over MEDIA_TIP_BYTES ($MEDIA_TIP_BYTES) bytes at their tips, or with more" \
-         "files of unknown type than MEDIA_SNIFF_MAX_FILES ($MEDIA_SNIFF_MAX_FILES) and too" \
-         "many unread bytes to judge. The new ones:" >&2
+         "new since the last run. It did not prune them. Each was unreadable or over one of" \
+         "the rule's limits, such as MEDIA_MAX_REFS ($MEDIA_MAX_REFS) refs or MEDIA_MAX_OPS" \
+         "($MEDIA_MAX_OPS) issue and patch ops. The new ones:" >&2
     head -n "$top_evidence" "$tmp/media-fail-new" | sed 's/^/#   /' >&2
     [ "$nmedianew" -le "$top_evidence" ] \
-      || echo "#   ...and $((nmedianew - top_evidence)) more" >&2
+      || echo "#   ...and $((nmedianew - top_evidence)) more (PLAN_FULL=1 lists them)" >&2
   elif [ "$nmediafail" -gt 0 ]; then
     echo "# the media rule (F) left $nmediafail repo(s) unjudged, all of them listed by the" \
          "last run too." >&2
@@ -3193,11 +3664,14 @@ COPY
       copy_set_saved=1
     fi
   fi
-  progress_start "copies" "$(repos_left copy)" "$tmp/copy-done" "$tmp/copy-fail"
+  to_read=$(repos_left copy)
+  progress_start "copies" "$to_read" "$tmp/copy-done" "$tmp/copy-fail"
   repos_to_read "$tmp/cached-copy" \
-    | xargs -0r -P "$JOBS" -n 32 "$BASH_BIN" "$tmp/copy.sh" \
+    | xargs -0r -P "$JOBS" -n "$(batch_size "$to_read")" "$BASH_BIN" "$tmp/copy.sh" \
         > "$tmp/copy" 3> "$tmp/copy-done" 4> "$tmp/copy-fail" || true
   progress_stop
+  phase_shortfall "search for copies of denied files" "$to_read" \
+    "$tmp/copy-done" "$tmp/copy-fail"
   cache_reuse "copy" 2 copy >> "$tmp/copy"
   cache_save  "copy" "$tmp/copy"
   # Only a repo with its closing row was checked to the end. One that failed is not cached, so
@@ -3261,9 +3735,14 @@ COPY
   # cache already checks every repo again when the list changes, and this holds should a cached
   # row from a longer list ever get through. The source named is the one most of its
   # files came from, ties broken by name so the same storage always prints the same plan.
+  # A file listed from a repo is that repo's own, so it never counts against it: a source back
+  # in storage, its block lifted, holds every file listed from it.
   awk -F'\t' -v src="$tmp/deny-oids-owned" '
-      FILENAME == src            { if (!($1 in from)) from[$1] = $2; next }
+      FILENAME == src            { if (!($1 in from)) from[$1] = $2
+                                   source = $2; sub(/^rad:/, "", source); own[$1, source] = 1
+                                   next }
       $1 == "=" && $3 > 0        { total[$2] = $3 }
+      $1 == "h" && (($3, $2) in own) { next }
       $1 == "h" && ($3 in from)  { held[$2] += $4; files[$2]++; per[$2 SUBSEP from[$3]]++ }
       END {
         for (key in per) {
@@ -3466,11 +3945,13 @@ for d; do
 done
 PEER
   cache_hits peer
-  progress_start "parasite-peer rule (G)" "$(repos_left peer)" "$tmp/peer-done"
+  to_read=$(repos_left peer)
+  progress_start "parasite-peer rule (G)" "$to_read" "$tmp/peer-done"
   repos_to_read "$tmp/cached-peer" \
-    | xargs -0r -P "$JOBS" -n 32 "$BASH_BIN" "$tmp/peer.sh" \
+    | xargs -0r -P "$JOBS" -n "$(batch_size "$to_read")" "$BASH_BIN" "$tmp/peer.sh" \
         > "$tmp/peer" 3> "$tmp/peer-done" || true
   progress_stop
+  phase_shortfall "parasite-peer rule (G)" "$to_read" "$tmp/peer-done"
   # The reused rows go back beside the ones just walked, because the verdict is corpus-wide:
   # a peer's spread is counted across all of storage, and a delegate row from any repo is what
   # keeps that peer from ever being accused.
@@ -3510,7 +3991,9 @@ while IFS=$'\t' read -r rid mt;   do MTIME[$rid]=${mt%.*}; done < "$tmp/mtimes"
 # check: a non-number reaching an arithmetic comparison would leave a repo either
 # unjudgeable or judged on nonsense.
 ncoerced=0
+declare -A UNDATED=()
 while IFS=$'\t' read -r rid bt lf _ _ sg dl; do
+  [ "$bt" = u ] && { UNDATED[$rid]=1; bt=0; lf=0; }
   case $bt in ''|*[!0-9]*) bt=0; ncoerced=$((ncoerced + 1)) ;; esac
   case $lf in ''|*[!0-9]*) lf=0; ncoerced=$((ncoerced + 1)) ;; esac
   BIRTH[$rid]=$bt; LIFE[$rid]=$lf; DELEGATES[$rid]=$dl; SIGNERS[$rid]=$sg
@@ -3563,10 +4046,10 @@ done < "$FIRST_SEEN"
 if mkdir -p "$AUDIT_DIR" 2>/dev/null && { : >> "$FIRST_SEEN"; } 2>/dev/null; then
   add_header "$FIRST_SEEN" \
     "The day this seed first saw each repo: repo id, then Unix time. It tells the spam-batch" \
-    "(D) and media (F) rules how old a repo really is, and the check for copies which repo" \
-    "held a listed file first. Deleting it leaves the rules only the commit dates, which" \
-    "whoever pushed the repo can set to anything, and counts every listed file against its" \
-    "copies again." \
+    "(D) and media (F) rules how old a repo really is, and the search for copies of denied" \
+    "files which repo held a listed file first. Deleting it leaves the rules only the commit" \
+    "dates, which whoever pushed the repo can set to anything, and makes the listed files" \
+    "set aside count against their copies again." \
     || echo "# WARN: could not add a header to $FIRST_SEEN; its rows are unaffected." >&2
   for rid in "${!SIZE[@]}"; do
     [ -n "${FIRSTSEEN[$rid]:-}" ] && continue
@@ -3575,6 +4058,11 @@ if mkdir -p "$AUDIT_DIR" 2>/dev/null && { : >> "$FIRST_SEEN"; } 2>/dev/null; the
 else
   echo "# WARN: cannot write $FIRST_SEEN; ages come from ref dates, which a pusher sets." >&2
 fi
+# A repo whose refs list but carry no usable date is as old, and was last active, as the day
+# this seed first saw it. A repo first seen this run reads as new, which no rule prunes.
+for rid in "${!UNDATED[@]}"; do
+  BIRTH[$rid]=${FIRSTSEEN[$rid]:-$now}; LIFE[$rid]=${FIRSTSEEN[$rid]:-$now}
+done
 
 # The same file published again and again is evidence no single repo can manufacture. Blobs
 # MEDIA_MIN_BATCH or more repos hold are a campaign, and per repo this adds up the bytes it
@@ -3584,9 +4072,8 @@ fi
 # into five repos of your own would put THEIR repo in the plan. Earliest is by first-seen, the
 # one date a pusher cannot backdate, so on a seed whose ledger starts today the exemption falls
 # to whichever repo sorts first until the ledger has some history.
-# `|| true` because with rule F off no worker ran, so the glob below matches no file and
-# sort exits non-zero on it, which under `pipefail` would end the run.
-{ sort -u "$tmp/blobs"/* 2>/dev/null || true; } \
+# The list was sorted once, after the media rule (F) ran; with rule F off it does not exist.
+{ [ ! -e "$tmp/blobs-all" ] || cat "$tmp/blobs-all"; } \
   | awk -F'\t' -v k="$MEDIA_MIN_BATCH" -v now="$now" -v seenfile="$FIRST_SEEN" '
       BEGIN { while ((getline line < seenfile) > 0) {
                 split(line, f, "\t")
@@ -3794,7 +4281,7 @@ read -r p50 p90 p95 p99 < <(cut -f2 "$tmp/repos" | sort -n | awk '
   {a[NR]=$1} END{
     i50=int(0.50*NR); if(i50<1)i50=1; i90=int(0.90*NR); if(i90<1)i90=1
     i95=int(0.95*NR); if(i95<1)i95=1; i99=int(0.99*NR); if(i99<1)i99=1
-    printf "%d %d %d %d\n", a[i50], a[i90], a[i95], a[i99] }')
+    printf "%.0f %.0f %.0f %.0f\n", a[i50], a[i90], a[i95], a[i99] }')   # %d caps at 2 GiB
 relcut=$(cut -f2 "$tmp/repos" | sort -n \
   | awk -v p="$eff_pctl" '{a[NR]=$1} END{ i=int(p/100*NR); if(i<1)i=1; print a[i] }')
 abscut=$(( eff_abs_mb * 1024 * 1024 ))
@@ -3807,8 +4294,7 @@ echo "# repos=$total_repos  sizes P50=$((p50/1048576))M P90=$((p90/1048576))M" \
 # nothing else in the plan distinguishes it from one that cleared by a mile. Each branch below
 # reports what it measured through these helpers, which append a word to $near and always
 # succeed, so no branch can end on a failed test and trip `set -e`. They are pure bash
-# arithmetic, so a marker costs nothing per repo.
-NEAR_PCT="${NEAR_PCT:-20}"        # % of the threshold that still counts as near; 0 marks none
+# arithmetic, so a marker costs nothing per repo. NEAR_PCT is set with the other knobs.
 near_age() {   # $1 = the date the rule measured, $2 = the instant it had to be older than
   [ "$NEAR_PCT" -gt 0 ] && [ "$2" -lt "$now" ] \
     && [ $(( (now - $1) * 100 )) -lt $(( (now - $2) * (100 + NEAR_PCT) )) ] \
@@ -3846,10 +4332,14 @@ plan_header(){
 # log.showSignature from the caller's config and would print a line before the date.
 import_gap() {   # $1 = rid
   local d="$STORAGE/$1" init oldest
+  # A git log that dies part-way would list only some roots, and a later oldest root shrinks
+  # the gap until an imported project reads as new, so a failed listing gives no gap at all.
   init=$(GIT_DIR="$d" git log --no-show-signature --format=%ct --max-parents=0 refs/rad/id \
-           2>/dev/null | sort -n | head -1) || true
+           2>/dev/null) || return 0
   oldest=$(GIT_DIR="$d" git log --no-show-signature --branches --format=%at --max-parents=0 \
-             2>/dev/null | sort -n | head -1) || true
+             2>/dev/null) || return 0
+  init=$(awk 'NR == 1 || $1 < m { m = $1 } END { print m }' <<<"$init")
+  oldest=$(awk 'NR == 1 || $1 < m { m = $1 } END { print m }' <<<"$oldest")
   # Anything but digits would end the classify loop part-way through inside $(( )).
   [[ $init =~ ^[0-9]+$ && $oldest =~ ^[0-9]+$ ]] || return 0
   echo $(( init - oldest ))
@@ -3987,10 +4477,6 @@ while IFS=$'\t' read -r rid sz mt life birth; do
     fi
     continue
   fi
-  if [ -n "${PARDON[$rid]:-}" ]; then                 # wrongly pruned before (UNDO_PARDON)
-    [ "$CMD" != check ] || printf '%s\n' "$rid" >> "$tmp/check-judged"
-    continue
-  fi
   # A copy of files a denied repo carried. It asks for no age and no settled fetch either:
   # what condemns it is files on its own delegates' branches, and a copy of a leak is worth
   # catching in the week it lands. It is the tool's inference, not a person's verdict, so it
@@ -4075,7 +4561,11 @@ while IFS=$'\t' read -r rid sz mt life birth; do
        && [ "$origin" -lt "$spam_cut" ] && [ "$seeds" -ge "$SPAM_MIN_SEEDS" ]; then
     reason="spam-batch"; age_from=$origin
     near_age "$origin" "$spam_cut"; near_min "$seeds" "$SPAM_MIN_SEEDS" seeds
-  elif rule_on F && [ -n "${MEDIA[$rid]:-}" ] && [ "$origin" != 0 ] \
+  # A pardon (UNDO_PARDON) is for a media verdict known to be wrong, so it spares the repo the
+  # media rule alone. Under pressure the size (B) and stale (C) rules weigh it like any other.
+  # Revisit when an entry is for another rule's verdict.
+  elif rule_on F && [ -n "${MEDIA[$rid]:-}" ] && [ -z "${PARDON[$rid]:-}" ] \
+       && [ "$origin" != 0 ] \
        && [ "$origin" -lt "$media_cut" ] && [ "$seeds" -ge "$MEDIA_MIN_SEEDS" ]; then
     reason=${MEDIA[$rid]}; age_from=$origin
     near_age "$origin" "$media_cut"; near_min "$seeds" "$MEDIA_MIN_SEEDS" seeds
@@ -4210,7 +4700,7 @@ check_report() {
     return 0
   fi
   echo "# $nrepos public repo(s) of yours, judged by the media (F) and spam-batch (D) rules" \
-       "as a seed running rad-prune would judge them once they are old enough"
+       "as a seed would judge them once old enough"
   while IFS= read -r rid; do
     name=${NAME[$rid]:-(?)}
     reason=${VERDICT[$rid]:-}
@@ -4252,9 +4742,9 @@ check_report() {
         echo "  Fix: give it a name and a description of its own." ;;
     esac
     case $reason in media-*)
-      echo "  The media rule (F) also counts the delegates' issue and patch attachments and" \
-           "the other delegates' branches. The list below leaves those out."
-      echo "  Biggest files on its branches and tags:"
+      echo "  Biggest files on its branches and tags. The media rule (F) also counts the" \
+           "delegates' issue and patch attachments and the other delegates' branches," \
+           "not listed here:"
       check_biggest "$rid" > "$tmp/check-biggest"
       [ -s "$tmp/check-biggest" ] || echo "    none"
       # Names are read as input, never passed with -v, which would turn a quoted "\033" back
@@ -4267,10 +4757,9 @@ check_report() {
     esac
   done < <(while IFS= read -r rid; do printf '%s\t%s\n' "${NAME[$rid]:-}" "$rid"; done \
              < "$tmp/check-repos" | sort | cut -f2)
-  echo "# Not checked: the junk-name (A), size (B) and stale (C) rules, which wait for a repo" \
-       "to go quiet or a seed's disk to fill; the parasite-peer (G) and malware (H) rules; and" \
-       "the deny lists seed operators keep. A media batch is looked for among your own repos" \
-       "only, so a seed holding copies elsewhere can find one the check does not."
+  echo "# Not checked: the junk-name (A), size (B), stale (C), parasite-peer (G) and" \
+       "malware (H) rules, and the deny lists seed operators keep. A seed also looks for" \
+       "media batches across every repo it holds, so it can find one this check misses."
 }
 if [ "$CMD" = check ]; then
   check_report >&3
@@ -4292,13 +4781,26 @@ prune_failed_before() {
 }
 prune_failed_before > "$tmp/prune-failed-before"
 # A run that plans such a repo again retries the removal under the block it has. Once the
-# repo is kept, pinned, private, your own or pardoned, the block is lifted, or nothing would
-# ever lift it: the undo's other reasons are for repos that left storage. Missing from the plan
-# alone is no reason, since a rule left out of RULES or a repo this run could not read is
-# missing too. The deny list keeps it blocked, as on the other lifts, and so does a lift made
-# once already. No fetch, so no budget and no disk check.
+# repo is kept, pinned, private or your own, or its verdict is one a later release withdrew
+# or UNDO_PARDON or UNDO_LIFT names, the block is lifted, or nothing would ever lift it: the
+# undo's other lifts are for repos that left storage. Missing from the plan alone is no
+# reason, since a rule left out of RULES or a repo this run could not read is missing too. The
+# deny list keeps it blocked, as on the other lifts, and so does a lift made once already. No
+# fetch, so no budget and no disk check.
 : > "$tmp/undo-failed"
 if [ "$UNDO" = 1 ] && [ -s "$tmp/prune-failed-before" ]; then
+  # The verdicts the undo would lift a block of were the repo out of storage, judged the same
+  # way: a size (B) or stale (C) one only while those rules wait.
+  while IFS=$'\t' read -r rid reason _ _ ver _; do
+    grep -qxF -- "$rid" "$tmp/prune-failed-before" || continue
+    if withdrawn_cap "$reason" "$ver" >/dev/null; then
+      printf '%s\n' "$rid"
+    elif [[ $reason == media-* ]] && grep -qxF -- "$rid" "$tmp/undo-pardoned"; then
+      printf '%s\n' "$rid"
+    elif [ "$reason" = junk-name ] && grep -qxF -- "$rid" "$tmp/undo-liftonly"; then
+      printf '%s\n' "$rid"
+    fi
+  done < "$tmp/undo-fold" > "$tmp/undo-failed-spared"
   awk -F'\t' '
       FILENAME == ARGV[1] { failed[$1] = 1; next }
       FILENAME == ARGV[2] { blocked[$1] = 1; next }
@@ -4313,7 +4815,7 @@ if [ "$UNDO" = 1 ] && [ -s "$tmp/prune-failed-before" ]; then
         for (i = 1; i <= n; i++) { split(pairs[i], kv, ":"); if (kv[1] in deniednid) next }
         print $1 "\tunblock\tprune-failed\t" $2 "\t" $3 "\t" $4 "\t" $5 "\t" $6 \
               "\tin-storage" }' \
-    "$tmp/prune-failed-before" "$tmp/undo-blocked" "$tmp/excluded" "$tmp/undo-pardoned" \
+    "$tmp/prune-failed-before" "$tmp/undo-blocked" "$tmp/excluded" "$tmp/undo-failed-spared" \
     "$tmp/plan.sorted" "$tmp/deny-rids" "$tmp/deny-nids" "$tmp/undo-fold" \
     | while IFS=$'\t' read -r rid state why reason size at ver dl copy; do
         [ -d "$STORAGE/$rid" ] || continue
@@ -4334,7 +4836,8 @@ if [ "$nfailedlift" -gt 0 ]; then
   cat "$tmp/undo-failed" >> "$tmp/undo-states"
   nunblock=$((nunblock + nfailedlift))
   echo "# undo: unblock $nfailedlift repo(s) still in storage, blocked by a run that could" \
-       "not remove them, and now kept, pinned, private, your own or pardoned"
+       "not remove them, and now kept, pinned, private, your own, a known mistake or under a" \
+       "verdict a later rad-prune release no longer trusts"
 fi
 
 # ------------------------------------------------------------------------- the history ratchet
@@ -4392,13 +4895,23 @@ done < "$tmp/ratchet-recent"
 # because it was not allowed to, and counting that as 0 would pull the usual down every week
 # the rule waits, until the ratchet held even an ordinary week. Audit logs older than 0.8.0 do
 # not say which rules were on, and are read as all of them.
-# A repo this tool pruned before and pruned again, after an undo let it back, is no sign that a
-# rule went wrong, so it does not count towards a hold. The runaway caps still count it.
-awk -F'\t' 'FILENAME == ARGV[1] { before[$1] = 1; next } !($1 in before)' \
-  "$tmp/undo-pruned-before" "$tmp/plan.sorted" > "$tmp/plan.new-verdicts"
+# A repo the rule that pruned it prunes again after this tool's undo let it back, or any repo
+# pruned again after a removal that failed, is no sign that a rule went wrong, so it does not
+# count towards a hold. The runaway caps still count it. Any other repo an audit log names
+# counts: one a person brought back by hand, or a lifted one another rule now prunes, is a
+# verdict like any other, since a rule going wrong would first show on repos like these.
+awk -F'\t' -v map="$RULE_OF_REASON" '
+  BEGIN { n = split(map, pairs, " ")
+          for (i = 1; i <= n; i++) { split(pairs[i], kv, ":"); rule[kv[1]] = kv[2] } }
+  function rule_of(reason) { return (reason in rule) ? rule[reason] : reason }
+  FILENAME == ARGV[1] { lifted[$1, rule_of($2)] = 1; next }
+  FILENAME == ARGV[2] { failed[$1] = 1; next }
+  !($1 in failed) && !(($1, rule_of($5)) in lifted)' \
+  "$tmp/undo-lifted-before" "$tmp/prune-failed-before" "$tmp/plan.sorted" \
+  > "$tmp/plan.new-verdicts"
 count_by_rule "$tmp/plan.new-verdicts" > "$tmp/ratchet-planned"
-# The past is measured the same way, or one undo wave pruned again weekly would set a usual
-# that lets the next real wave through. Each row is kept only in the oldest log that names its
+# The past leaves out every repeat, or one undo wave pruned again weekly would set a usual that
+# lets the next real wave through. Each row is kept only in the oldest log that names its
 # repo: log name \t the row. The glob sorts the logs oldest first, by the time in their names.
 first_prunes() {
   local f logs=()
@@ -4541,8 +5054,8 @@ nnear=$(awk -F'\t' '$8 != ""' "$tmp/plan.sorted" | wc -l)
 if [ -s "$tmp/held" ]; then
   echo "#   HELD BACK unless --force or a yes at the prompt, as each rule is far over its usual:"
   while IFS=$'\t' read -r letter planned usual limit; do
-    echo "#     $(rule_label "$letter"): $planned repos, where its median over the last" \
-         "runs it could prune in is $usual a run (limit $limit)"
+    echo "#     $(rule_label "$letter"): $planned repos planned, usually $usual a run" \
+         "(limit $limit)"
   done < "$tmp/held"
 fi
 
@@ -4592,7 +5105,7 @@ if [ "$nmalware" -gt 0 ]; then
   for nid in $(cut -f1 "$tmp/malware" | sort -u); do
     grep "^$nid"$'\t' "$tmp/malware" > "$tmp/malware-one"
     IFS=$'\t' read -r _ nhit nall _ < "$tmp/malware-one"
-    printf '#   %s, %d of the %d repos it signed as a delegate (matching ones only where it was a founder):\n' \
+    printf '#   %s: %d of its %d repos match:\n' \
            "$nid" "$nhit" "$nall"
     head -n "$top_evidence" "$tmp/malware-one" \
       | while IFS=$'\t' read -r _ _ _ rid found rname; do
@@ -4713,9 +5226,10 @@ if [ "$lr_ok" = 1 ]; then
   { lr_head "Blocks rad-prune made that this run plans to lift, holds for a later run, or" \
             "leaves blocked, and why. An --apply run lifts the rows marked unblock once it goes" \
             "ahead."
-    printf '# rid\tstate\twhy\treason\tbytes_when_pruned\tpruned_at\tpruned_by\tcopy\n'
+    printf '# rid\tstate\twhy\treason\tbytes_when_pruned\tpruned_at\t%s\t%s\n' \
+           pruned_by_version local_copy
     awk -F'\t' -v OFS='\t' '$7 == "-" { $7 = "0.7.0-or-older" } { print }' \
-      "$tmp/undo-states"; } > "$staging/undo.tsv" 2>/dev/null || lr_ok=0
+      "$tmp/undo-states"; } > "$staging/unprune-plan.tsv" 2>/dev/null || lr_ok=0
   # Which deny-list entry each denied repo was pruned for, so a dry run can trace a row to its
   # line.
   { lr_head "Repos in the plan because of deny.txt, with the line that names each."
@@ -4725,12 +5239,16 @@ if [ "$lr_ok" = 1 ]; then
             "how much of each repo they make up, and where they came from."
     printf '# rid\tdenied_bytes\tbranch_bytes\tpct\tfiles\tsource\tother_sources\n'
     cat "$tmp/copy-why"; } > "$staging/deny-copies.tsv" 2>/dev/null || lr_ok=0
-  # Every listed file each copy holds, so a wrong copy can be traced to the rows behind it.
+  # Every listed file each copy holds, so a wrong copy can be traced to the rows behind it. A
+  # file listed from the copy itself is its own, and counted nowhere in its verdict.
   { lr_head "Each listed file that each repo in deny-copies.tsv holds."
     printf '# rid\toid\tbytes\n'
     awk -F'\t' -v why="$tmp/copy-why" -v src="$tmp/deny-oids-owned" '
         FILENAME == why  { copy[$1] = 1; next }
-        FILENAME == src  { listed[$1] = 1; next }
+        FILENAME == src  { listed[$1] = 1
+                           source = $2; sub(/^rad:/, "", source); own[$1, source] = 1
+                           next }
+        $1 == "h" && (($3, $2) in own) { next }
         $1 == "h" && ($2 in copy) && ($3 in listed) { print $2 "\t" $3 "\t" $4 }' \
         "$tmp/copy-why" "$tmp/deny-oids-owned" "$tmp/copy" | sort; } \
     > "$staging/deny-copy-files.tsv" 2>/dev/null || lr_ok=0
@@ -4753,7 +5271,7 @@ if [ "$lr_ok" = 1 ]; then
     || echo "#   the $nmediafail repo(s) the media rule (F) left unjudged:" \
             "$lastrun/F-media-unjudged.tsv"
   [ "$nunblock" = 0 ] && [ "$nlater" = 0 ] \
-    || echo "#   the blocks to lift, and why: $lastrun/undo.tsv"
+    || echo "#   the blocks to lift, and why: $lastrun/unprune-plan.tsv"
 else
   rm -rf "$staging" 2>/dev/null
   # Losing this loses no verdict, but it does lose the only copy of the evidence for one, so it
@@ -4956,9 +5474,8 @@ fi
 nheld=0
 if [ "$CONFIRMED" = 0 ] && [ -s "$tmp/held" ]; then
   while IFS=$'\t' read -r letter planned usual limit; do
-    echo "# HELD BACK $(rule_label "$letter"): $planned repos, where its median over the last" \
-         "runs it could prune in is $usual a run (limit $limit). None of them is pruned this" \
-         "run." >&2
+    echo "# HELD BACK $(rule_label "$letter"): $planned repos planned, usually $usual a run" \
+         "(limit $limit). None of them is pruned this run." >&2
   done < "$tmp/held"
   echo "# Review them in the plan above, then re-run with --force (unattended), or confirm" \
        "interactively. The rest of the plan goes ahead." >&2
@@ -4988,8 +5505,9 @@ if [ "$FORCE" = 0 ] && [ "$CONFIRMED" = 0 ]; then
   over_gb=$(awk -v b="$ruled_bytes" -v m="$MAX_PRUNE_GB" \
               'BEGIN{print (b/1073741824 > m) ? 1 : 0}')
   if [ "$nruled" -gt "$MAX_PRUNE_COUNT" ] || [ "$over_gb" = 1 ]; then
-    echo "# ABORT: the rules' plan ($nruled repos, ${ruled_gib} GiB) trips runaway caps" \
-         "(count=$MAX_PRUNE_COUNT gb=$MAX_PRUNE_GB)." >&2
+    echo "# ABORT: the rules plan $nruled repos, ${ruled_gib} GiB, over the runaway caps" \
+         "(MAX_PRUNE_COUNT=$MAX_PRUNE_COUNT, MAX_PRUNE_GB=$MAX_PRUNE_GB)." \
+         "Nothing was pruned." >&2
     echo "# Review it, then re-run with --force (unattended), or confirm interactively." >&2
     exit 3
   fi
@@ -5110,8 +5628,9 @@ while IFS=$'\t' read -r rid _; do
     "$STORAGE"/z*)
       if [ "$QUARANTINE" = 1 ]; then
         # A repo pruned twice (re-fetched, pruned again) would otherwise fail to move onto
-        # its own older copy, so the older copy goes first.
-        rm -rf -- "${quar:?}/$rid" 2>/dev/null
+        # its own older copy, so the older copy goes first. Only while the repo is still in
+        # storage to take its place: otherwise that copy is the only one left.
+        if [ -d "$d" ]; then rm -rf -- "${quar:?}/$rid" 2>/dev/null; fi
         if mv -- "$d" "$quar/$rid" 2>"$tmp/prune-err"; then
           deleted=$((deleted+1))
           printf '%s\n' "$rid" >> "$tmp/pruned" || ticks_ok=0
