@@ -4936,11 +4936,27 @@ progress_stop
 [ "$ticks_ok" = 1 ] \
   || echo "# WARN: could not write $tmp/pruned; the pruning line above undercounts." >&2
 
-# The audit log and the GiB total were both written from the PLAN. If deletions failed, saying
-# nothing here would leave a record claiming disk was reclaimed that never was.
+# The GiB that really left storage, for the totals below and history.log: the plan's figure
+# counts repos whose removal failed. With no list of removed repos the plan's figure stands,
+# and the WARN above says that list was not written.
+gone_gib=$gib
+if [ "$ticks_ok" = 1 ]; then
+  gone_bytes=$(awk -F'\t' 'FILENAME == ARGV[1] { gone[$1] = 1; next }
+                           $1 in gone { s += $2 } END { printf "%.0f", s }' \
+                 "$tmp/pruned" "$tmp/plan.sorted")
+  gone_gib=$(awk -v b="$gone_bytes" 'BEGIN{printf "%.2f", b/1073741824}')
+fi
+
+# The audit log was written from the PLAN. If deletions failed, saying nothing here would
+# leave a record claiming disk was reclaimed that never was.
 [ "$deleted" = "$nplan" ] || {
-  echo "# WARN: $((nplan - deleted)) of $nplan deletions failed;" \
-       "less than ${gib} GiB was reclaimed." >&2
+  if [ "$ticks_ok" = 1 ]; then
+    echo "# WARN: $((nplan - deleted)) of $nplan deletions failed;" \
+         "${gone_gib} of the planned ${gib} GiB left storage." >&2
+  else
+    echo "# WARN: $((nplan - deleted)) of $nplan deletions failed;" \
+         "less than the planned ${gib} GiB left storage." >&2
+  fi
   echo "# The audit log lists the plan, not what got deleted." >&2
 }
 
@@ -4959,15 +4975,15 @@ add_header "$AUDIT_DIR/history.log" \
   "what each rule usually prunes." \
   || echo "# WARN: could not add a header to $AUDIT_DIR/history.log." >&2
 printf '%s\tdeleted=%s\treclaimed_gib=%s\tquarantine=%s\tpressure=%s%%\taudit=%s\n' \
-  "$run_ts" "$deleted" "$gib" "$([ "$QUARANTINE" = 1 ] && echo on || echo off)" \
+  "$run_ts" "$deleted" "$gone_gib" "$([ "$QUARANTINE" = 1 ] && echo on || echo off)" \
   "$press_pct" "$(basename "$audit")" \
   >> "$AUDIT_DIR/history.log"
 
 # The GiB figure is what LEAVES storage. With quarantine on it is not free space yet, and
 # saying "reclaimed" of disk still occupied is the kind of report that gets believed.
 if [ "$QUARANTINE" = 1 ]; then
-  echo "# DONE: quarantined $deleted repos, ~${gib} GiB out of storage but still on disk" \
-       "for ${QUARANTINE_DAYS}d."
+  echo "# DONE: quarantined $deleted repos, ~${gone_gib} GiB out of storage but still on" \
+       "disk for ${QUARANTINE_DAYS}d."
   # The line above is what an operator reads before deciding whether they still have an undo,
   # so the repos it is not true of are named right under it rather than 20 warnings back.
   [ "$undated" = 0 ] \
@@ -4986,7 +5002,7 @@ if [ "$QUARANTINE" = 1 ]; then
   fi
   echo "# Audit: $audit"
 else
-  echo "# DONE: deleted $deleted repos, reclaimed ~${gib} GiB. Audit: $audit"
+  echo "# DONE: deleted $deleted repos, reclaimed ~${gone_gib} GiB. Audit: $audit"
 fi
 [ "$RESTART" = 1 ] \
   || echo "# tip: run 'sudo systemctl restart $SERVICE' once to clear the stale" \
