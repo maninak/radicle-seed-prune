@@ -120,8 +120,8 @@ zparaown\tcontribown\t2\tpublic\t0\t60\t100\ta repo the contributor delegates'
 #   znodesc* random-id slot, but no descriptions at all, so only ONE signal      -> kept
 #   zdate*   agreeing descriptions and a 6+ digit slot, but no LETTER in it, so
 #            it is a date/sequence rather than a random id                        -> kept
-# 90 days old: too young for rules A and C, too small for B. None of the five carries a link,
-# so a hit on any of them names rule D as its cause.
+# 90 days old: too young for rules A and C, too small for B, so a hit on any of them names
+# rule D as its cause.
 build_batches(){
   local i rows=""
   local hex=(- 33ed7115 6cf239e8 28036e03 1d9ce82f e9a0b26f
@@ -144,37 +144,15 @@ build_batches(){
   rows+="\tFlatten a nested array. Variant 10.\n"
   rows+="zspamfresh\tflatten-11-7d3a9c22\t5\tpublic\t0\t90\t2000"
   rows+="\tFlatten a nested array. Variant 11.\n"
-  # a twelfth member, used by rule E: its own code links to a spam host, and rule D calling it
-  # generated is what stops that link from vouching for the host
-  rows+="zfamv12\tflatten-12-4c8d1e73\t5\tpublic\t0\t90\t2000"
-  rows+="\tFlatten a nested array. Variant 12.\n"
-  # a thirteenth member whose refs are one day old, used by the first-seen ledger: on ref dates
+  # a twelfth member whose refs are one day old, used by the first-seen ledger: on ref dates
   # alone it is too young for rule D, and only the ledger's older date reaches it
   rows+="zspamaged\tflatten-13-8f2a4d61\t5\tpublic\t0\t1\t2000"
   rows+="\tFlatten a nested array. Variant 13.\n"
   printf '%b' "$rows"
 }
 MANIFEST_ROWS="$MANIFEST_ROWS"$'\n'"$(build_batches)"
-NREPOS=131
+NREPOS=130
 
-# Rule E fixture helpers. Each writes one file holding the given lines, commits it 80 days
-# back, pushes it to $rid, and puts the directory mtime back where the manifest loop left it so
-# the freshness guard cannot step in. e_cob puts the links in an issue COB, e_code puts them on
-# master.
-e_push(){
-  local rid=$1 ref=$2 file=$3; shift 3
-  local w; w=$(mktemp -d -p "$ROOT")
-  git -C "$w" init -q -b master
-  git -C "$w" config user.email a@b; git -C "$w" config user.name a
-  printf '%s\n' "$@" > "$w/$file"
-  git -C "$w" add -A
-  local ts; ts=$(date -u -d "80 days ago" +%s)
-  GIT_AUTHOR_DATE="@$ts +0000" GIT_COMMITTER_DATE="@$ts +0000" git -C "$w" commit -q -m e
-  # never silence this push: a rejected one leaves a test passing on no evidence
-  git -C "$w" push -q --force "$STORAGE/$rid" "master:$ref"
-  rm -rf "$w"
-  touch -d "10 days ago" "$STORAGE/$rid"
-}
 # A peer that pushes into zmediapeer and zvictimten without being a delegate of either.
 STRANGER_NID=zSTRANGERxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 # Radicle signs each issue and patch op with its author's ed25519 key, over the op's tree id,
@@ -191,12 +169,6 @@ dlg(){
   local n="zDLG$1"
   printf '%s' "$n"
   local i=${#n}; while [ "$i" -lt 45 ]; do printf x; i=$((i+1)); done
-}
-# A COB lands in the namespace of whoever pushed it, which is how rule E tells a repo's own
-# links from a passing stranger's, so every COB here names the peer it came from.
-e_cob(){
-  local rid=$1 nid=$2; shift 2
-  e_push "$rid" "refs/namespaces/$nid/refs/cobs/xyz.radicle.issue/aaa" issue.json "$@"
 }
 # Rewrites commit $1 of the repo at $GIT_DIR as an op COB_KEY signed, the way Radicle signs
 # one: ed25519 over the 20 bytes of the tree id, in an SSH signature block under the "gpgsig"
@@ -303,7 +275,6 @@ e_tree(){
   rm -rf "$w"
   touch -d "10 days ago" "$STORAGE/$rid"
 }
-e_code(){ local rid=$1; shift; e_push "$rid" master README.md "$@"; }
 
 # Building the fixture below is about 700 git invocations, and the suite wants a clean one
 # once per section, which would be most of its runtime. It is built once and kept as a
@@ -384,7 +355,6 @@ _fixture_env(){
   export RSP_HOME="$ROOT/rad-home"
   export RSP_NID="z6MkourNodexxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
   export RSP_MANIFEST="$ROOT/manifest.tsv"
-  export RSP_DELEGATES="$ROOT/delegates.tsv"
 
   # ISOLATION: pin every input the script reads so a test can NEVER touch the real Radicle
   # home, even if the caller's shell exported RAD_HOME/RAD/STORAGE/etc. STORAGE in particular
@@ -414,12 +384,6 @@ _build_fixture(){
   badrid=$(cut -f1 "$RSP_MANIFEST" | grep -vE '^z[1-9A-HJ-NP-Za-km-z]+$' | tr '\n' ' ')
   [ -z "$badrid" ] || { echo "ABORT: manifest rids are not base58: $badrid"; exit 3; }
 
-  # one delegate per repo, so `rad inspect --delegates` answers for everything by default
-  : > "$RSP_DELEGATES"
-  local mrid
-  while IFS=$'\t' read -r mrid _; do
-    [ -z "$mrid" ] || printf '%s\t%s\n' "$mrid" "$(dlg "$mrid")" >> "$RSP_DELEGATES"
-  done < "$RSP_MANIFEST"
   mkdir -p "$STORAGE"
   printf '{ "web": { "pinned": { "repositories": ["rad:zpin6"] } } }\n' > "$CONFIG"
 
@@ -464,55 +428,6 @@ _build_fixture(){
     touch -d "10 days ago" "$d"        # keep every dir out of the freshness guard
   done < "$RSP_MANIFEST"
 
-  # Rule E fixture. Three spam hosts and two honest ones, over nine repos. The real thing has
-  # hundreds of repos per host, so the tests below lower LINK_MIN_REPOS to 3 to match this
-  # scale.
-  #
-  #   zfarm1-3    spam repos. Three spam hosts each, linked from an issue COB rather than
-  #               a branch, which is where the real spam lives.
-  #   zcode4/6/7  honest repos whose own code links to github.example and github2.example.
-  #               Three of those two hosts' four linkers are code, which keeps them off the
-  #               spam-host list and is why zcode4/6/7 are never flagged.
-  #   zpoison5    an ordinary repo whose code happens to link to spamhost-a. Nothing marks
-  #               it suspect, so its link counts and spamhost-a is disqualified at a low cap.
-  #   zpoison9    a spam repo trying that trick on spamhost-b. Pass 1 sees it link to three
-  #               loose spam hosts and marks it suspect, so its link does not count.
-  #   zfamv12     a rule D batch member trying it on spamhost-c. Rule D marks it, same outcome.
-  #   zvictimten  an innocent repo a stranger pushed the same spam links to. Its own refs carry
-  #               none of them, so the delegate check has to take it back out of the plan.
-  #   zrot1-3     one link each, to three subdomains of one domain. No hostname reaches
-  #               the linker bar; the registrable domain does.
-  local lrid extra
-  for lrid in zfarm1 zfarm2 zfarm3; do
-    # only zfarm1 cites the honest hosts. If all three did, github.example would sit at 25%
-    # code and land between the two caps, which is a borderline case these tests do not want to
-    # depend on
-    extra=""
-    [ "$lrid" = zfarm1 ] \
-      && extra='built with https://github.example/tooling and https://github2.example/other'
-    e_cob "$lrid" "$(dlg "$lrid")" '[View Full Gallery](https://spamhost-a.example/x)' \
-      '[![thumb](https://spamhost-b.example/1.jpg)](https://spamhost-a.example/1)' \
-      '[![thumb](https://spamhost-c.example/2.jpg)](https://spamhost-a.example/2)' \
-                  "$extra"
-  done
-  for lrid in zcode4 zcode6 zcode7; do
-    e_code "$lrid" \
-      'see https://github.example/tooling and https://github2.example/other for docs'
-  done
-  e_code zpoison5 'mirror at https://spamhost-a.example/x'
-  e_code zfamv12  'mirror at https://spamhost-c.example/x'
-  e_cob  zpoison9 "$(dlg zpoison9)" '[gallery](https://spamhost-a.example/y)' \
-                  '[![thumb](https://spamhost-b.example/9.jpg)](https://spamhost-c.example/9)'
-  e_code zpoison9 'mirror at https://spamhost-b.example/y'
-  # A stranger, not a delegate of zvictimten, files two spam links as an issue on it. Only
-  # spamhost-b and -c, so the linker counts the other assertions rest on do not move.
-  e_cob  zvictimten "$STRANGER_NID" \
-                  '[gallery](https://spamhost-b.example/v)' \
-                  '[![thumb](https://spamhost-c.example/v.jpg)](https://spamhost-c.example/v)'
-  e_cob  zrot1 "$(dlg zrot1)" '[gallery](https://a1.rotate.example/x)'
-  e_cob  zrot2 "$(dlg zrot2)" '[gallery](https://b2.rotate.example/x)'
-  e_cob  zrot3 "$(dlg zrot3)" '[gallery](https://c3.rotate.example/x)'
-
   # zspamfresh keeps its 90-day-old root commit but gains a COB authored yesterday, the shape
   # the real spam has: created long ago, touched constantly. A rule D that clocks LAST
   # ACTIVITY spares it forever; one that clocks CREATION prunes it.
@@ -527,9 +442,8 @@ _build_fixture(){
   rm -rf "$w"
   touch -d "10 days ago" "$d"
 
-  # zspamaged's refs are a day old, so on ref dates alone rules D and E cannot touch it. This
-  # seed says it has been here for over a year, which is the date those rules are supposed to
-  # use.
+  # zspamaged's refs are a day old, so on ref dates alone rule D cannot touch it. This seed
+  # says it has been here for over a year, which is the date that rule is supposed to use.
   mkdir -p "$AUDIT_DIR"
   printf 'zspamaged\t%s\n' "$(date -u -d "400 days ago" +%s)" > "$AUDIT_DIR/first-seen.tsv"
   # A ledger appended to for years will eventually carry a line torn by a crash mid-write.
@@ -538,18 +452,6 @@ _build_fixture(){
   printf 'zbatch3\t%s\n' "$(date -u -d "400 days ago" +%s)" >> "$AUDIT_DIR/first-seen.tsv"
 
   touch "$STORAGE/zinfetch"        # a fetch landing right now: inside the freshness guard
-
-  # zheavy gets enough loose objects that merely listing them fills a pipe buffer. Under a
-  # small LINK_REPO_BUDGET the harvest stops reading mid-list and the lister dies of SIGPIPE,
-  # which is the cap working and must not be read as a repo we could not open. Written straight
-  # into the object store, because the harvest lists objects rather than refs, so no commit is
-  # needed.
-  w=$(mktemp -d -p "$ROOT")
-  local i=0
-  while [ "$i" -lt 3000 ]; do printf 'x%s' "$i" > "$w/$i"; i=$((i+1)); done
-  ls -d "$w"/* | GIT_DIR="$STORAGE/zheavy" git hash-object -w --stdin-paths > /dev/null
-  rm -rf "$w"
-  touch -d "10 days ago" "$STORAGE/zheavy"
 
   # Rule F fixtures. Each replaces the manifest loop's tree, so what the repo tracks is exactly
   # what is listed here. The suite runs with MEDIA_MIN_BYTES=20000, small enough to keep its
@@ -731,7 +633,8 @@ past_run(){
   printf '2026-01-0%sT00:00:00Z\tdeleted=1\taudit=%s\n' "$i" "$log" >> "$AUDIT_DIR/history.log"
 }
 # A past where every rule but C pruned plenty and C pruned nothing, so only C is over its usual.
-# The fixture plans 4 of rule A, 1 of B, 4 of C, 13 of D and 14 of F.
+# The fixture plans 4 of rule A, 1 of B, 4 of C, 12 of D and 14 of F. The link-farm rows stand
+# for audit logs written while rule E existed.
 USUAL_BUT_C="junk-name:20 junk-id:20 size-outlier:20 spam-batch:50 link-farm:50 media-dump:50"
 # The same past for every rule but C, which each test then writes its own history for.
 REST="junk-name:20 junk-id:20 size-outlier:20 spam-batch:50 media-dump:50"
@@ -812,10 +715,9 @@ sections(){                      # $1 = regex, or "" for all   $2 = index, or 0 
 # Settings every section runs under, so a section run on its own is the same run it gets in
 # the whole suite. PLAN_FULL because nearly every assertion looks for one repo's row, and the
 # folding that hides those rows on a real 519-row plan gets its own test rather than silencing
-# the rest. Every rule, because the fixture has a case for each; the default leaves rule E out,
-# and that default gets its own test. DISK_AWARE=0 also lets rules B and C act at any free
-# space, which the host's disk would otherwise decide.
-export DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 MEDIA_MIN_BYTES=20000 PLAN_FULL=1 RULES=ABCDEFGH
+# the rest. Every rule, because the fixture has a case for each. DISK_AWARE=0 also lets rules B
+# and C act at any free space, which the host's disk would otherwise decide.
+export DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 MEDIA_MIN_BYTES=20000 PLAN_FULL=1 RULES=ABCDFGH
 
 # The three ways to run something other than the whole file in one process:
 #
@@ -1007,7 +909,7 @@ nodeschits=$(grep -cE "^znodesc[1-9] " <<<"$plan" || true)
 # The check must be able to say no: raise the batch threshold above the batch size and the
 # exact same repos have to survive, or the rule is passing on something other than the evidence
 # it claims.
-plan_k=$(SPAM_MIN_BATCH=14 run)   # the flatten batch is 13 members
+plan_k=$(SPAM_MIN_BATCH=13 run)   # the flatten batch is 12 members
 [ "$(grep -cE "^zspam[1-9] " <<<"$plan_k" || true)" = 0 ] \
   && ok "SPAM_MIN_BATCH above the batch size spares it" \
   || no "SPAM_MIN_BATCH check is vacuous"
@@ -1029,133 +931,6 @@ plan_b=$(SPAM_STALE_DAYS=99999 run)
 [ "$(grep -cE "^zspam" <<<"$plan_b" || true)" = 0 ] \
   && ok "SPAM_STALE_DAYS spares a batch younger than the window" \
   || no "rule D creation window is vacuous"
-
-
-build_fixture; assert_isolated
-
-# --- rule E: link farms ---
-# Thresholds are lowered so three fixture repos can stand in for the hundreds a real wave has.
-plan_e=$(LINK_MIN_REPOS=3 LINK_MIN_SCORE=2 run)
-[ "$(grep -cE "^zfarm[1-3] .*link-farm" <<<"$plan_e" || true)" = 3 ] \
-  && ok "repos linking to hosts almost no code links to are pruned as link-farm" \
-  || no "rule E does not fire"
-# The whole point of the second half of the rule: a host that appears in somebody's own code is
-# a dependency, not spam, so it must not count towards any repo's score. github.example clears
-# the LINK_MIN_REPOS bar just as the spam hosts do, and must still be ignored.
-! grep -qE "^zcode4 " <<<"$plan_e" \
-  && ok "a repo linking only to hosts its own code links to is spared" \
-  || no "rule E flags an honest repo"
-# One repo linking to a host from its code must NOT disqualify that host for the whole seed,
-# because publishing such a repo is free and would immunise anything a spammer is selling.
-# zpoison5's code link is one of spamhost-a's five linkers, 20%, so under a 30% cap the host
-# still counts.
-plan_ep=$(LINK_MIN_REPOS=3 LINK_MIN_SCORE=2 LINK_CODE_MAX_PCT=30 run)
-grep -q 'spamhost-a.example' <<<"$plan_ep" \
-  && ok "one code link does not disqualify a spam host" \
-  || no "a single repo can veto a spam host"
-# A code link only counts when the repo it comes from is not itself suspect, or a spammer
-# clears any host they like using repos they already have. The two ways a repo becomes suspect
-# are tested separately, each against its own host, and each against the knob that switches it
-# off.
-grep -q 'spamhost-b.example' <<<"$plan_e" \
-  && ok "a link farm cannot vouch for the host it is selling (pass 1)" \
-  || no "pass-1 suspects still vouch"
-grep -q 'spamhost-c.example' <<<"$plan_e" \
-  && ok "a rule D batch member cannot vouch either" || no "rule D members still vouch"
-# ...and suspicion must stay narrow: zpoison5 is an ordinary repo, so its code link does count
-# and spamhost-a is genuinely disqualified at the default cap.
-! grep -q 'spamhost-a.example' <<<"$plan_e" \
-  && ok "an ordinary repo's code link still disqualifies a host" \
-  || no "suspicion is applied too widely"
-# Non-vacuity for each of those, via the knob that decides who is suspect.
-plan_el=$(LINK_MIN_REPOS=3 LINK_MIN_SCORE=2 LINK_CODE_LOOSE_PCT=0 run)
-! grep -q 'spamhost-b.example' <<<"$plan_el" \
-  && ok "LINK_CODE_LOOSE_PCT=0 marks nobody, so the vouch counts again" \
-  || no "LINK_CODE_LOOSE_PCT is vacuous"
-plan_ed=$(LINK_MIN_REPOS=3 LINK_MIN_SCORE=2 SPAM_MIN_BATCH=99 run)
-! grep -q 'spamhost-c.example' <<<"$plan_ed" \
-  && ok "with no rule D batch, that member's vouch counts again" \
-  || no "the rule D leg is vacuous"
-# Non-vacuity: the same repos must survive when they are too few to look like a pattern.
-plan_e1=$(LINK_MIN_REPOS=99 LINK_MIN_SCORE=2 run)
-[ "$(grep -cE "^zfarm[1-3] " <<<"$plan_e1" || true)" = 0 ] \
-  && ok "a host too few repos link to is not a spam host" || no "LINK_MIN_REPOS is vacuous"
-# ...and when the score they reach is below the bar.
-plan_e2=$(LINK_MIN_REPOS=3 LINK_MIN_SCORE=99 run)
-[ "$(grep -cE "^zfarm[1-3] " <<<"$plan_e2" || true)" = 0 ] \
-  && ok "LINK_MIN_SCORE spares a repo below the bar" || no "LINK_MIN_SCORE is vacuous"
-# Rule E clocks creation like rule D, so its window must be able to spare a genuinely new repo.
-plan_e3=$(LINK_MIN_REPOS=3 LINK_MIN_SCORE=2 LINK_STALE_DAYS=99999 run)
-[ "$(grep -cE "^zfarm[1-3] " <<<"$plan_e3" || true)" = 0 ] \
-  && ok "LINK_STALE_DAYS spares a link farm younger than the window" \
-  || no "rule E creation window is vacuous"
-
-
-build_fixture; assert_isolated
-
-# --- rule E: a canonical ref that cannot be walked --- The branch points at an object the repo
-# does not have, so zcode4's own code links are unknown and it sits the rule out, while the
-# other rules still judge it. Other fixture repos miss objects on purpose, so the count is
-# compared with a run before the ref breaks. At a 60% cap, github.example's two remaining
-# vouchers out of three linkers keep it a dependency; counted as a linker that vouches for
-# nothing, zcode4 would make it two out of four, a spam domain.
-unwalked_e(){ sed -nE 's/.*could not walk the branches and tags of ([0-9]+) .*/\1/p' <<<"$1"; }
-run_ew(){ RULES=E LINK_MIN_REPOS=3 LINK_MIN_SCORE=2 LINK_CODE_MAX_PCT=60 run; }
-before_ew=$(unwalked_e "$(run_ew)")
-printf '%040d\n' 1 > "$STORAGE/zcode4/refs/heads/broken"
-out_ew=$(run_ew)
-[ "$(unwalked_e "$out_ew")" = "$((${before_ew:-0} + 1))" ] \
-  && grep -qx zcode4 "$AUDIT_DIR/last-run/E-link-unwalked.tsv" \
-  && ! grep -q "could not read .* repo(s)" <<<"$out_ew" \
-  && ! cut -f2 "$AUDIT_DIR/last-run/E-link-farm-domains.tsv" | grep -qx 'github.example' \
-  && ok "a canonical ref the link pass cannot walk keeps the repo out of rule E alone" \
-  || no "a failed canonical-ref walk is counted as fewer links, or excludes the repo outright"
-
-build_fixture; assert_isolated
-
-# --- rule E: whose links count, and what counts as one host --- The thresholds are lowered
-# again here, and the plan built rather than inherited, so this section can run on its own.
-plan_e=$(LINK_MIN_REPOS=3 LINK_MIN_SCORE=2 run)
-
-# --- rule E: only the repo's own peers' links count ---
-# Anybody may push an issue to any public repo and it lands in that repo's storage here. Left
-# alone, five spam links in five issues would put somebody else's repo in the plan.
-! has "$plan_e" "zvictimten" \
-  && ok "spam links a stranger pushed do not flag the repo they landed in" \
-  || no "rule E flags a repo over a stranger's links"
-plan_ex=$(LINK_MIN_REPOS=3 LINK_MIN_SCORE=2 LINK_DELEGATE_CHECK=0 run)
-grep -qE "^zvictimten .*link-farm" <<<"$plan_ex" \
-  && ok "LINK_DELEGATE_CHECK=0 does flag it, so the spare above is the check working" \
-  || no "LINK_DELEGATE_CHECK is vacuous"
-spared_msg='# the link-farm rule (E): 1 repo(s) spared, the spam links were pushed by peers'
-# Without a delegate list there is no way to tell a repo's own links from a stranger's, so the
-# repo leaves the plan rather than staying in it on evidence nobody can attribute.
-grep -v "^zfarm1"$'\t' "$RSP_DELEGATES" > "$ROOT/deleg.partial"
-plan_eu=$(RSP_DELEGATES="$ROOT/deleg.partial" LINK_MIN_REPOS=3 LINK_MIN_SCORE=2 run)
-{ ! has "$plan_eu" "zfarm1" \
-    && [ "$(grep -cE "^zfarm[23] .*link-farm" <<<"$plan_eu" || true)" = 2 ]; } \
-  && ok "a repo whose delegates cannot be read leaves the plan, its neighbours do not" \
-  || no "unreadable delegates leave the plan"
-# ...and the two outcomes are counted apart: zfarm1 could not be attributed at all, zvictimten
-# was attributed and cleared. Reporting both under one heading would misname one of them.
-{ grep -qF 'the link-farm rule (E): 1 repo(s) spared, their delegates could not be read' <<<"$plan_eu" \
-  && grep -qF "$spared_msg" <<<"$plan_eu"; } \
-  && ok "an unattributable repo is counted apart from a cleared one" \
-  || no "the two rule E outcomes are counted apart"
-
-# --- rule E: hostnames are folded to their registrable domain before counting ---
-# A wildcard DNS record and one subdomain per repo would otherwise keep every name below the
-# linker bar for free. zrot1-3 link to one domain via three subdomains, one linker each.
-{ grep -qE 'rotate\.example$' <<<"$plan_e" && ! grep -q 'a1\.rotate\.example' <<<"$plan_e"; } \
-  && ok "subdomains of one domain count as one spam host" \
-  || no "subdomains folded to their domain"
-
-# The linker bar is a share of storage with a floor under it, so "many repos link to it" means
-# something both on a 200-repo seed and on a 100k-repo one.
-plan_epc=$(LINK_MIN_REPOS=3 LINK_MIN_SCORE=2 LINK_MIN_REPOS_PCT=10 run)
-[ "$(grep -cE "^zfarm[1-3] " <<<"$plan_epc" || true)" = 0 ] \
-  && ok "LINK_MIN_REPOS_PCT raises the linker bar above the floor" \
-  || no "LINK_MIN_REPOS_PCT is vacuous"
 
 
 build_fixture; assert_isolated
@@ -1418,7 +1193,7 @@ plan_fx=$(MEDIA_EXTS='bin' run)
 { grep -qE "^zmediabin .*media-dump" <<<"$plan_fx" && ! has "$plan_fx" "zmediaone"; } \
   && ok "MEDIA_EXTS decides what counts as media, both ways" || no "MEDIA_EXTS is vacuous"
 
-# Rule F may prune the last copy we know of, like rules D and E. Its evidence is what the repo
+# Rule F may prune the last copy we know of, like rule D. Its evidence is what the repo
 # itself holds, and a dump nobody else seeds is still a dump.
 grep -qE "^zmediazero .*media-dump" <<<"$plan" \
   && ok "a media dump no other node seeds is pruned by default" \
@@ -1453,19 +1228,33 @@ grep -q "PLAN_FULL=1" <<<"$folded" \
   || no "the plan folded rows without saying how to expand them"
 
 # --- one spelling for turning a rule off --- Every rule answers to the same switch.
-noa=$(RULES=BCDEFG run)
+noa=$(RULES=BCDFG run)
 { ! has "$noa" "zjunk1" && has "$noa" "zbig2"; } \
   && ok "a rule left out of RULES puts nothing in the plan" \
-  || no "RULES=BCDEFG still pruned a rule A repo, or took rule B down with it"
-nof=$(RULES=ABCDE run)
+  || no "RULES=BCDFG still pruned a rule A repo, or took rule B down with it"
+nof=$(RULES=ABCD run)
 { ! has "$nof" "zmediamd" && ! grep -q 'measuring repo trees' <<<"$nof" \
   && has "$nof" "zjunk1"; } \
   && ok "a rule left out of RULES does not even run its scan" \
-  || no "RULES=ABCDE still ran or planned rule F"
+  || no "RULES=ABCD still ran or planned rule F"
+# The link-farm rule (E) is gone, and a cron line written for an older release still names it.
+# Refusing the letter would prune nothing until somebody read the error.
+withe=$(RULES=ABCDEFGH "$SCRIPT" 2>&1); rc=$?
+{ [ "$rc" = 0 ] && grep -qE '^zspam1 .* spam-batch ' <<<"$withe" \
+  && grep -qxF '# WARN: the link-farm rule (E) was removed in 0.8.0; E in RULES is ignored.' \
+       <<<"$withe"; } \
+  && ok "an E in RULES is ignored with a warning, and the other rules still plan" \
+  || no "an E in RULES stopped the run, planned nothing, or went unmentioned (rc=$rc)"
 dflt=$(env -u RULES "$SCRIPT" 2>&1)
-{ grep -q '^# rule E .*\[DISABLED: not in RULES' <<<"$dflt" && has "$dflt" "zjunk1"; } \
-  && ok "the default RULES leaves the link-farm rule (E) out and runs the rest" \
-  || no "the default RULES runs the link-farm rule (E), or nothing at all"
+{ ! grep -q 'DISABLED: not in RULES' <<<"$dflt" && ! grep -q 'link-farm' <<<"$dflt" \
+  && has "$dflt" "zjunk1"; } \
+  && ok "the default RULES runs every rule" \
+  || no "the default RULES leaves a rule out, names E, or runs nothing at all"
+onlye=$(RULES=E "$SCRIPT" 2>&1); rc=$?
+{ [ "$rc" = 0 ] && grep -qxF '# WARN: without the E, RULES is empty, so no rule runs.' <<<"$onlye" \
+  && ! grep -qE '^z' <<<"$onlye"; } \
+  && ok "RULES naming only E says no rule runs" \
+  || no "RULES naming only E ran a rule, failed, or ran none without saying so (rc=$rc)"
 
 # Rules B and C prune for space alone, so with free space above the relaxed threshold they
 # wait. The thresholds are set so this machine's disk cannot decide: a relaxed threshold of 0
@@ -1483,16 +1272,15 @@ tight=$(DISK_AWARE=1 PRESSURE_RELAX_PCT=100 PRESSURE_RELAX_GB=0 PRESSURE_CRIT_PC
   && ok "rules B and C wait for disk pressure, and act once there is some" \
   || no "rules B and C pruned with no disk pressure, or not under pressure either"
 
-# Turning a rule off must not SPARE a repo the remaining rules would have pruned. Rule D is the
-# case that matters: its corpus scan runs whatever RULES says, because rule E reads its suspect
-# list, so a dropped D verdict could shadow the rule C verdict underneath it.
-withd=$(STALE_YEARS_DAYS=30 RULES=ABCDEFG run)
-nod=$(STALE_YEARS_DAYS=30 RULES=ABCEFG run)
+# Turning a rule off must not SPARE a repo the remaining rules would have pruned: a dropped D
+# verdict could shadow the rule C verdict underneath it.
+withd=$(STALE_YEARS_DAYS=30 RULES=ABCDFG run)
+nod=$(STALE_YEARS_DAYS=30 RULES=ABCFG run)
 { has "$withd" "zspam1" && has "$nod" "zspam1" \
   && grep -qE "^zspam1 .* spam-batch " <<<"$withd" \
   && grep -qE "^zspam1 .* stale " <<<"$nod"; } \
   && ok "a repo a disabled rule would have claimed falls through to the next rule" \
-  || no "RULES=ABCEFG let a batch member escape rule C as well as rule D"
+  || no "RULES=ABCFG let a batch member escape rule C as well as rule D"
 
 
 build_fixture; assert_isolated
@@ -1550,7 +1338,7 @@ fs_rows=$(grep -v '^#' "$AUDIT_DIR/first-seen.tsv")
 plan=$(run)
 
 # --- the creation clock cannot be reset by a push --- Every date inside a repo is set by
-# whoever pushed it, so force-pushing every ref with fresh dates would renew rules D and E
+# whoever pushed it, so force-pushing every ref with fresh dates would renew rules D and F
 # forever. What this seed recorded when it first saw the repo cannot be reached from outside,
 # and the age those rules use is whichever of the two is older.
 grep -qE "^zspamaged .*spam-batch" <<<"$plan" \
@@ -1594,18 +1382,9 @@ grep -qE "^zinfetch .*stale" <<<"$plan_fg" \
 
 build_fixture; assert_isolated
 
-# --- what a run cannot read is reported, never quietly dropped --- A repo over the read
-# budget, an empty listing, a home rad never saw, an empty routing table and a directory
-# nobody may read: each one is named, and the run finishes or aborts loudly.
-
-# --- a repo larger than the read budget is judged, not excluded --- Reaching LINK_REPO_BUDGET
-# closes the harvest pipe early and kills the object lister with SIGPIPE. Read as a failure,
-# that quietly drops every large repo from the plan, and past MAX_SCAN_FAIL_PCT it aborts the
-# whole run.
-plan_bud=$(LINK_REPO_BUDGET=100 run)
-{ has "$plan_bud" "zheavy" && ! grep -q "could not read .* repo(s)" <<<"$plan_bud"; } \
-  && ok "a repo bigger than the read budget is still judged, and not counted as unreadable" \
-  || no "the read budget excluded a big repo or reported it as a read failure"
+# --- what a run cannot read is reported, never quietly dropped --- An empty listing, a home
+# rad never saw, an empty routing table and a directory nobody may read: each one is named,
+# and the run finishes or aborts loudly.
 
 # --- an empty `rad ls` degrades loudly: blank names and a blind rule D would otherwise look
 # like a clean seed ---
@@ -1710,7 +1489,7 @@ grep -qE '^# WARN: [0-9]+ scan error' <<<"$out" \
 # The other way a non-number reaches an age comparison, and this one is in every heartwood
 # repo: refs/rad/sigrefs points at a blob, a blob has no creatordate, so `for-each-ref
 # --sort=creatordate` prints that ref first with an empty date field and the object id lands
-# where the date should be. Rules D, E and F then compare a 40-hex string and spare the repo.
+# where the date should be. Rules D and F then compare a 40-hex string and spare the repo.
 build_fixture; assert_isolated
 blob=$(printf 'sigrefs\n' | GIT_DIR="$STORAGE/zmediaone" git hash-object -w --stdin)
 GIT_DIR="$STORAGE/zmediaone" git update-ref refs/rad/sigrefs "$blob"
@@ -2368,7 +2147,7 @@ out=$("$SCRIPT" quarantine purge 2>&1)
   && ok "quarantine purge deletes what is past its window, less 3 hours, and nothing else" \
   || no "quarantine purge deleted the wrong repos"
 
-# --- the run cache --- Rules E and F read every repo's contents, and almost nothing changes
+# --- the run cache --- Rules F and G read every repo's contents, and almost nothing changes
 # between weekly runs, so their per-repo output is kept and reused. The danger is not a slow
 # run, it is a verdict resting on evidence that has since stopped being true.
 build_fixture; assert_isolated
@@ -2404,7 +2183,7 @@ CACHEDIR="$RSP_HOME/prune-audit/cache"
 DISK_AWARE=0 run >/dev/null
 [ -f "$CACHEDIR/keys-media" ] \
   || no "the first run wrote no media keys, so the next check is moot"
-DISK_AWARE=0 RULES=E MEDIA_MIN_BYTES=999999999 "${NOTTY[@]}" "$SCRIPT" \
+DISK_AWARE=0 RULES=G MEDIA_MIN_BYTES=999999999 "${NOTTY[@]}" "$SCRIPT" \
   </dev/null >/dev/null 2>&1
 [ ! -f "$CACHEDIR/keys-media" ] \
   && ok "a cold start drops the keys of the rules it does not run, not just its own" \
@@ -2604,7 +2383,7 @@ out=$("$SCRIPT" 2>&1)
 { grep -qE "^zspam1 .*spam-batch" <<<"$out" && ! grep -qE "^zcode7 " <<<"$out"; } \
   && ok "a row forged into a batch does not make its repo a member" \
   || no "a forged row made zcode7 a member of the flatten batch"
-out=$(SPAM_MIN_BATCH=14 "$SCRIPT" 2>&1)   # the flatten batch is 13 members
+out=$(SPAM_MIN_BATCH=13 "$SCRIPT" 2>&1)   # the flatten batch is 12 members
 ! grep -qE "^zspam[1-9] .*spam-batch" <<<"$out" \
   && ok "a forged row does not count towards the size a batch needs" \
   || no "a forged row made a batch one member short big enough"
@@ -3305,7 +3084,8 @@ out=$(cd "$ROOT" && env RAD_HOME="./rad-home" STORAGE="./rad-home/storage" \
 # zundoprior was blocked before rad-prune pruned it; zjunk1 is logged and blocked, yet in
 # storage.
 # zundotiny and zundobig were pruned for media by an older version, zundobig above the size
-# that may come back. The pardoned repo is lifted whatever its size and the budget.
+# that may come back, and zundofarm by the link-farm rule (E), which is gone. The pardoned repo
+# is lifted whatever its size and the budget.
 build_fixture; assert_isolated
 DENYNID=z6MkgkW6TV5nSgbAraLxWj45jrnw7yRhK3bEgtaEpCVPKYkR
 PARDONED=z3przuV9nGYpx5hmgPG65miGhS68Q
@@ -3315,6 +3095,7 @@ printf 'zundokept\n' > "$AUDIT_DIR/keep.txt"
 undo_log 20000101T000000Z '2026-01-01T00:00:00Z  pressure=0%' <<EOF
 $(undo_row zundotiny 1048576 media-dump)
 $(undo_row zundobig 104857600 media-dump)
+$(undo_row zundofarm 1048576 link-farm)
 $(undo_row zundodeny 1048576 media-dump)
 $(undo_row zundokept 1048576 media-dump)
 $(undo_row zundonid 1048576 media-dump)
@@ -3329,7 +3110,7 @@ undo_log 20000301T000000Z '2026-03-01T00:00:00Z  version=0.8.0  pressure=0%' <<E
 $(undo_row zundonew 1048576 media-dump)
 $(undo_row "$PARDONED" 104857600 media-dump)
 EOF
-undo_block zundotiny zundobig zundodeny zundokept zundonid zundospam zundonew \
+undo_block zundotiny zundobig zundofarm zundodeny zundokept zundonid zundospam zundonew \
            zundohand zundoprior "$PARDONED" zjunk1
 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 run >/dev/null
 for pair in "zundohand:a block no audit log explains" "zundodeny:a repo deny.txt names" \
@@ -3343,9 +3124,10 @@ for pair in "zundohand:a block no audit log explains" "zundodeny:a repo deny.txt
     || no "the undo would lift ${pair#*:} (${pair%%:*})"
 done
 { [ "$(undo_state zundotiny)" = unblock ] && [ "$(undo_state zundobig)" = stays-blocked ] \
+  && [ "$(undo_state zundofarm)" = unblock ] \
   && [ "$(undo_state "$PARDONED")" = unblock ] && [ ! -s "$RSP_HOME/.stub_unseed" ]; } \
   && ok "a dry run says which blocks would be lifted, and lifts none" \
-  || no "a dry run misjudged the media verdicts or the pardon, or lifted a block"
+  || no "a dry run misjudged the media or link-farm verdicts or the pardon, or lifted a block"
 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 UNDO_MAX_COUNT=0 run >/dev/null
 { [ "$(undo_state zundotiny)" = unblock-later ] && [ "$(undo_state "$PARDONED")" = unblock ]; } \
   && ok "UNDO_MAX_COUNT holds back a deleted repo, and not a pardoned one" \
@@ -3382,7 +3164,7 @@ fi
 # operator puts back by hand after the lift stays.
 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null >/dev/null 2>&1
 lifted=$(grep -E 'zundo|z3przu' "$RSP_HOME/.stub_unseed" | sort | tr '\n' ' ')
-{ [ "$lifted" = "rad:$PARDONED rad:zundotiny " ] \
+{ [ "$lifted" = "rad:$PARDONED rad:zundofarm rad:zundotiny " ] \
   && ! grep -qE 'zundo|z3przu' "$RSP_HOME/.stub_seed" 2>/dev/null \
   && grep -q '^# unblocked: rad:zundotiny ' "$AUDIT_DIR"/prune-20[1-9]*.log; } \
   && ok "--apply lifts the blocks the dry run named, seeds none, and logs each lift" \

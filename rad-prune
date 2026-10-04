@@ -2,8 +2,8 @@
 #
 # radicle-seed-prune - automatically detect and prune lower-value repos, spam and abuse from
 # a Radicle (heartwood) node's storage. Two jobs at once: it reclaims disk from stale giants,
-# abandoned repos and disposable ones, and it moderates mass-generated spam, link farms, media
-# dumps and peers who push their own files into repos they are not a delegate of.
+# abandoned repos and disposable ones, and it moderates mass-generated spam, media dumps and
+# peers who push their own files into repos they are not a delegate of.
 #
 # DRY-RUN by default: it only prints the plan and changes nothing. Pass --apply to act.
 #
@@ -24,7 +24,7 @@
 #   commands: rad seed on its own rewrites only an existing policy row's scope, so on a
 #   blocked repo it prints success and leaves the block standing. That re-fetch is why the
 #   size/age rules keep a minimum other-seed count. Rule A's junk-id and the verdicts of
-#   rules D, E and F ship with a floor of 0 and may prune the last copy the network is known
+#   rules D and F ship with a floor of 0 and may prune the last copy the network is known
 #   to hold, which is what the quarantine is for. Every prune is recorded in an audit log.
 #
 # SELECTION  (a repo is pruned if it is denied, see below, or if it is NOT excluded AND matches
@@ -75,12 +75,11 @@
 #   "Other-seeds" is how many OTHER nodes our routing table says announce the repo. It
 #   is NOT proof a copy exists elsewhere (gossip is incomplete, and the author almost
 #   certainly still has theirs), so a floor of 0 is licence to prune the last copy WE
-#   KNOW OF. junk-id, spam-batch, link-farm and the three media verdicts get it, on
-#   the reasoning that for machine-generated bulk, for a repo whose whole purpose is
-#   to advertise a link, and for a pile of media with no project around it, "nobody
-#   else seeds it" measures worthlessness rather than rarity. Rules B and C keep a
-#   floor: a big or long-abandoned UNIQUE repo is the very thing a seed exists to
-#   preserve.
+#   KNOW OF. junk-id, spam-batch and the three media verdicts get it, on the
+#   reasoning that for machine-generated bulk, and for a pile of media with no project
+#   around it, "nobody else seeds it" measures worthlessness rather than rarity. Rules
+#   B and C keep a floor: a big or long-abandoned UNIQUE repo is the very thing a seed
+#   exists to preserve.
 #
 #   Rule C - long-abandoned, replicated (catch-all for whatever the other rules missed):
 #       no new commit/COB for > STALE_YEARS_DAYS
@@ -105,54 +104,6 @@
 #   each of its repos carries its own real description. Timing is not a signal: a bulk import
 #   lands its repos together too, and commit dates are the pusher's to set.
 #   README "Rule D: spam batches" has the worked examples and what they were measured on.
-#
-#   A LINK FARM is a repo published to carry links rather than code. Whatever files it has wrap
-#   the address it wants traffic sent to, which is what somebody is paying for. A generator
-#   changes its naming scheme in one line, which defeats rule D; it cannot change the address
-#   and still be paid.
-#
-#   Rule E - link farms, decided by the CORPUS like rule D:
-#       the repo's DELEGATES link it to >= LINK_MIN_SCORE spam domains
-#       AND it is older than LINK_STALE_DAYS
-#       AND other-seeds >= LINK_MIN_SEEDS  (default 0: may prune the last copy we know of)
-#
-#   A SPAM DOMAIN is a registrable domain meeting BOTH conditions:
-#     (a) enough repos link to it: LINK_MIN_REPOS_PCT% of storage, at least LINK_MIN_REPOS
-#     (b) fewer than LINK_CODE_MAX_PCT% of those repos link to it from their own code
-#   Both are recounted from storage on every run, so there is no blocklist to maintain, and a
-#   spammer who registers new domains gains nothing once enough of their repos link to them.
-#
-#   (b) is what keeps ordinary dependencies out: a dependency sits in somebody's code, a site
-#   that pays for traffic sits in nobody's. It is a percentage rather than "no repo at all", or
-#   one free repo linking to what you sell would immunise the domain for the whole seed. It
-#   also ignores code links from a SUSPECT repo, which takes two passes: pass 1 marks a repo
-#   suspect when rule D calls it generated or when it scores against the looser
-#   LINK_CODE_LOOSE_PCT, and pass 2 counts only the code links pass 1 left alone. Otherwise the
-#   cheapest attack is to commit the link in one repo in ten, using repos already owned.
-#   Turning rule D off (SPAM_MIN_BATCH=999999) leaves pass 1 with a weaker suspect list.
-#
-#   (a) counts by REGISTRABLE DOMAIN, so a wildcard DNS record and a subdomain per repo buy
-#   nothing, and as a SHARE of storage, so "many repos" means the same on a 200-repo seed and a
-#   100k-repo one. It counts every repo, suspect or not: those repos are what makes a domain
-#   stand out. README "Rule E: link farms" has the measurement behind each of these, and the
-#   known limit.
-#
-#   ONLY THE REPO'S OWN LINKS COUNT TOWARDS ITS SCORE. Any peer can push an issue or a comment
-#   to any public repo and it lands in that repo's storage here, so counting a stranger's links
-#   as the repo's own would let anybody delete somebody else's repo by opening five spam issues
-#   on it. Every repo that scores is re-read across the refs its delegates control (the
-#   canonical branches, plus each delegate's namespace) and keeps its score only if it survives
-#   there; one whose delegates cannot be read leaves the plan. LINK_DELEGATE_CHECK=0 skips
-#   this, faster and unsafe. (a) and (b) still count every peer's content: a domain a stranger
-#   pastes into a thousand repos is a spam domain, whoever pasted it.
-#
-#   Rule E is off by default (RULES=ABCDEFGH turns it on). It reads file content, which is
-#   where its cost is.
-#   Within a repo's own refs, where a link sits does not matter: issues, patches, comments and
-#   committed files all count. Only (b) cares, and it reads the canonical branches alone.
-#
-#   LINK_STALE_DAYS does not tighten under disk pressure: rule E may prune the last copy we
-#   know of, and a full disk is not a reason to lower that bar.
 #
 #   A MEDIA DUMP is a repo whose tracked files are video, images or audio with no project
 #   around them. Radicle storage is for collaborating on code; a repo holding one .mp4 and
@@ -283,7 +234,7 @@
 #   scope is, so refs dropped here do not come back. Dropping them frees no disk until git gc
 #   runs, which this tool does not do.
 #
-#   HOW OLD A REPO IS, for rules D, E and F, is the older of two dates: the oldest date on any
+#   HOW OLD A REPO IS, for rules D and F, is the older of two dates: the oldest date on any
 #   of its refs, and the day this seed first saw it (FIRST_SEEN). Ref dates are set by
 #   whoever pushed them, so a spammer who rewrites every ref gets a fresh one; the ledger
 #   cannot be reached from outside this seed. Rules A, B and C are about abandonment instead,
@@ -416,28 +367,6 @@ SPAM_STALE_DAYS="${SPAM_STALE_DAYS:-7}"          # about a week
 # templated descriptions.
 SPAM_REQUIRE_ID="${SPAM_REQUIRE_ID:-1}"          # demand a random-id slot (%) in the skeleton
 
-# --- rule E: link farms ---
-# Flags repos that link to domains almost no repo's own code links to. See rule E at the top.
-# "Many repos link to it" has to mean something on a 200-repo seed and on a 100k-repo one, so
-# the bar is a share of storage with an absolute floor under it. Setting LINK_MIN_REPOS above
-# the share pins it there.
-LINK_MIN_REPOS="${LINK_MIN_REPOS:-8}"            # fewest repos that can make a spam domain
-LINK_MIN_REPOS_PCT="${LINK_MIN_REPOS_PCT:-0.4}"  # or this % of storage, whichever is larger
-LINK_DELEGATE_CHECK="${LINK_DELEGATE_CHECK:-1}"  # 0 counts links from any peer
-LINK_CODE_MAX_PCT="${LINK_CODE_MAX_PCT:-10}"     # a domain stops being spam once this % of its
-                                                 # linkers have it in their own code
-LINK_CODE_LOOSE_PCT="${LINK_CODE_LOOSE_PCT:-50}" # the looser cap of pass 1, deciding whose
-                                                 # code links count at all
-LINK_MIN_SCORE="${LINK_MIN_SCORE:-5}"            # spam domains a repo must link to
-LINK_STALE_DAYS="${LINK_STALE_DAYS:-7}"          # minimum age, from creation like rule D
-LINK_MIN_SEEDS="${LINK_MIN_SEEDS:-0}"            # 0 may prune the last copy we know of
-# How much of each repo to read. These truncate a blob rather than skipping it, so a link
-# sitting near the start of a large file is still seen. A link the file itself encodes (base64,
-# an escaped string) is missed either way: the regex below matches plain text only.
-LINK_BLOB_PREFIX=65536                           # max bytes read from any single blob
-LINK_REPO_BUDGET="${LINK_REPO_BUDGET:-8000000}"  # max bytes read per repo, per pass (all refs,
-                                                 # then canonical branches only)
-
 # --- rule F: media dumps ---
 # Flags repos whose tracked files are media with no project around them. See rule F at the top.
 # Extensions judged as media, matched case-insensitively on whatever follows the last dot. An
@@ -477,7 +406,7 @@ MEDIA_TEXT_MAX_BYTES="${MEDIA_TEXT_MAX_BYTES:-2048}"
 # enough to clear this is a document, not a fig leaf, and spares the repo either way.
 MEDIA_TEXT_CEIL_BYTES="${MEDIA_TEXT_CEIL_BYTES:-65536}"
 MEDIA_MIN_BATCH="${MEDIA_MIN_BATCH:-5}"          # repos holding one blob to call it a campaign
-MEDIA_STALE_DAYS="${MEDIA_STALE_DAYS:-7}"        # minimum age, from creation like D and E
+MEDIA_STALE_DAYS="${MEDIA_STALE_DAYS:-7}"        # minimum age, from creation like rule D
 MEDIA_MIN_SEEDS="${MEDIA_MIN_SEEDS:-0}"          # 0 may prune the last copy; 1 keeps it
 # How much of each repo to look at. Only the first bytes of a file are ever read, and only
 # while the repo could still be a dump, so these bound an already small cost. The biggest files
@@ -580,9 +509,12 @@ MALWARE_BYTES=4194304        # of paths and subjects read per repo in all; a tre
 # means that rule neither scans nor puts anything in the plan. RULES= (set but empty) means no
 # rules at all, not the default: an operator who writes that means none, and on a tool that
 # deletes, reading it as "all of them" fails in the one direction that cannot be undone.
-# The link-farm rule (E) is left out: none of the 36 repos it pruned on a 13k-repo seed was a
-# link farm, so it waits for a redesign. RULES=ABCDEFGH turns it on.
 RULES="${RULES-ABCDFGH}"
+# The link-farm rule (E) is gone, and a cron line written for an older release may still name
+# it. Stopping on the letter would prune nothing until somebody read the error, so the letter
+# is dropped, and every run but a quarantine verb warns about it, once the arguments are read.
+rules_named_e=0
+case "$RULES" in (*E*) rules_named_e=1; RULES=${RULES//E/} ;; esac
 rule_on(){ case "$RULES" in (*"$1"*) return 0 ;; (*) return 1 ;; esac; }
 # How the output names a rule: by what it does, and by the letter RULES takes.
 rule_label() {
@@ -591,7 +523,6 @@ rule_label() {
     B) echo "the size rule (B)" ;;
     C) echo "the stale rule (C)" ;;
     D) echo "the spam-batch rule (D)" ;;
-    E) echo "the link-farm rule (E)" ;;
     F) echo "the media rule (F)" ;;
     G) echo "the parasite-peer rule (G)" ;;
     H) echo "the malware rule (H)" ;;
@@ -692,7 +623,8 @@ UNDO_MAX_GB="${UNDO_MAX_GB:-10}"                 # GiB those repos held when pru
 # block made under the reason by a version below the one named is lifted; a repo bigger than
 # max (K, M or G) when it was pruned stays blocked, since bringing it back costs a fetch of
 # that size. Each entry states the share of that verdict known to be wrong. An entry goes two
-# minor releases after it went in, so the list empties as seeds upgrade.
+# minor releases after it went in, so the list empties as seeds upgrade, except link-farm: no
+# rule reaches that verdict any more, so a seed upgrading from 0.7 at any later time needs it.
 #   media-dump, media-batch: 15 of 54 media verdicts checked by hand on radicle.at were wrong,
 #   all of them at most 23 MiB; 27 of the 39 right ones were 2.5 MiB to 409 MiB.
 #   link-farm: none of the 36 link-farm verdicts on radicle.at was a link farm, and all 36
@@ -711,11 +643,12 @@ UNDO_PARDON="z3przuV9nGYpx5hmgPG65miGhS68Q:0.9.0"
 # the other verdicts: spam campaigns keep pushing to repos that are already blocked.
 UNDO_REVIVE_REASONS="junk-name junk-id size-outlier stale"
 
-# What rules E and F read out of each repo, kept between runs and reused for the repos that
-# have not changed. See "the run cache" below for what a repo is keyed on.
+# What rules F and G and the check for copies read out of each repo, kept between runs and
+# reused for the repos that have not changed. See "the run cache" below for what a repo is
+# keyed on.
 CACHE="${CACHE:-1}"                              # 0 reads every repo on every run
 CACHE_DIR="${CACHE_DIR:-$AUDIT_DIR/cache}"
-# A verdict that rests on a corpus (the same template, domain or file across many repos) is
+# A verdict that rests on a corpus (the same template or file across many repos) is
 # evidence one repo cannot manufacture, so those rows are summarised once a group gets big
 # enough that nobody would read them. Rows resting on a single repo's own metadata are always
 # listed in full, however many there are: those are the ones that want human eyes.
@@ -725,7 +658,7 @@ PLAN_FULL="${PLAN_FULL:-0}"                      # 1 lists every row whatever th
 # as on: that would unfold the rows and still tell the reader to set PLAN_FULL=1.
 case "$PLAN_FULL" in 1) ;; *) PLAN_FULL=0 ;; esac
 # The tables the header prints are the evidence a corpus verdict rests on, so a reviewer who
-# only ever sees the top five cannot check the other 153 spam domains that condemned a repo.
+# only ever sees the top five cannot check the other templates that condemned a batch.
 # PLAN_FULL already means "list everything", so it lifts these caps too rather than earning a
 # knob of its own. Every truncated list below names it, so the way to the rest is on screen.
 top_evidence=5; top_scanerr=3
@@ -743,7 +676,7 @@ RAD_HOME=$(_abs "$RAD_HOME"); STORAGE=$(_abs "$STORAGE")
 CONFIG=$(_abs "$CONFIG");     AUDIT_DIR=$(_abs "$AUDIT_DIR")
 case $RAD in */*) RAD=$(_abs "$RAD") ;; esac   # a bare "rad" keeps resolving through PATH
 # Where this seed records when it first saw each repo. A repo's ref dates are set by whoever
-# pushed them, so rewriting every ref renews rules D, E and F indefinitely. This file cannot
+# pushed them, so rewriting every ref renews rules D and F indefinitely. This file cannot
 # be reached from outside the seed, and age is taken from whichever of the two is older.
 FIRST_SEEN=$(_abs "${FIRST_SEEN:-$AUDIT_DIR/first-seen.tsv}")
 # Set above, possibly relative (from AUDIT_DIR or the operator's own value), and read after
@@ -1038,6 +971,10 @@ done
 case "$QVERB" in
   --help|-h) usage; exit 0 ;;
 esac
+if [ "$rules_named_e" = 1 ] && [ "$CMD" != quarantine ]; then
+  echo "# WARN: the link-farm rule (E) was removed in 0.8.0; E in RULES is ignored." >&2
+  [ -n "$RULES" ] || echo "# WARN: without the E, RULES is empty, so no rule runs." >&2
+fi
 
 # A per-repo command that fails is ordinary here (a repo can vanish or turn unreadable under
 # a live node), so the calls below discard their own errors and carry on. A command that is not
@@ -1493,7 +1430,6 @@ outlier_cut=$(( now - eff_outlier_days*86400 ))
 junk_cut=$(( now - eff_junk_days*86400 ))
 spam_cut=$(( now - eff_spam_days*86400 ))
 stale_cut=$(( now - eff_stale_days*86400 ))
-link_cut=$(( now - LINK_STALE_DAYS*86400 ))
 media_cut=$(( now - MEDIA_STALE_DAYS*86400 ))
 
 run_mode=$([ "$APPLY" = 1 ] && echo APPLY || echo DRY-RUN)
@@ -1528,13 +1464,6 @@ if ! rule_on C; then rule_c="$rule_c [DISABLED: not in RULES]"
 elif [ "$space_rules" = 0 ]; then rule_c="$rule_c [WAITING: no disk pressure]"; fi
 rule_on D || rule_d="$rule_d [DISABLED: not in RULES]"
 echo "# rules: $rule_a  $rule_b  $rule_c  $rule_d"
-
-rule_e="E link-farm(>=${LINK_MIN_SCORE} spam domains, each linked from"
-rule_e="$rule_e >=${LINK_MIN_REPOS_PCT}% of repos and from the code of"
-rule_e="$rule_e <${LINK_CODE_MAX_PCT}% of them, >${LINK_STALE_DAYS}d,"
-rule_e="$rule_e seeds>=${LINK_MIN_SEEDS})"
-rule_on E     || rule_e="$rule_e [DISABLED: not in RULES, off by default]"
-echo "# rule $rule_e"
 
 rule_f="F media-dump(>=$((MEDIA_MIN_BYTES/1024))KB of media and"
 rule_f="$rule_f <${MEDIA_TEXT_MAX_BYTES}B of anything else, no source or build file,"
@@ -1588,15 +1517,9 @@ progress_redraw_secs=1
 progress_bar_full='===================='
 progress_bar_cells=${#progress_bar_full}
 # How many walks this run will do, so a line can say which one is being watched. The two scan
-# walks always run; the three content rules run only when RULES holds them.
+# walks always run; the media (F) and parasite-peer (G) rules run only when RULES holds them.
 progress_phases=2
-for _r in E F G; do rule_on "$_r" && progress_phases=$((progress_phases + 1)); done
-# Rule E walks a second time, over the repos that scored, to see whose links they were. That
-# walk is skipped on a run where nothing scored, so this total is the most walks a run can do,
-# and the last line of such a run reads one short of it.
-if rule_on E && [ "$LINK_DELEGATE_CHECK" = 1 ]; then
-  progress_phases=$((progress_phases + 1))
-fi
+for _r in F G; do rule_on "$_r" && progress_phases=$((progress_phases + 1)); done
 # The prune is a walk too, and the only one that changes anything, so it reports like the scans
 # do: silence between the confirmation and the DONE line is indistinguishable from a hang.
 # A run that aborts before the prune, or answers "n", reads one phase short.
@@ -2401,69 +2324,71 @@ fi
 # become %), then group repos by name skeleton and keep only the groups whose members also
 # agree on one description. Two independent signals; see rule D at the top of this file for why
 # each is needed.
-awk -F'\t' -v K="$SPAM_MIN_BATCH" -v D="$SPAM_DESC_AGREE_PCT" -v REQID="$SPAM_REQUIRE_ID" \
-           -v BATCHES="$tmp/spambatch" '
-  FILENAME == ARGV[1] { twice[$1] = 1; next }
-  # A token is a random id if it is 6+ hex characters with both a letter and a digit. Demanding
-  # a letter is what keeps a date or sequence suffix (release-202401) an enumeration rather
-  # than an id.
-  function cls(t) {
-    if (length(t)>=6 && t ~ /^[0-9a-f]+$/ && t ~ /[a-f]/ && t ~ /[0-9]/) return "%"
-    if (t ~ /^[0-9]+$/) return "#"
-    gsub(/[0-9]+/,"#",t); return t     # ordinary word: only its digits vary (widget2000)
-  }
-  function skel(s,   i,c,out,tok,n) {
-    s=tolower(s); out=""; tok=""; n=length(s)
-    for (i=1;i<=n+1;i++) {
-      c=(i<=n)?substr(s,i,1):""
-      if (c ~ /^[0-9a-z]$/) { tok=tok c; continue }
-      if (tok!="") { out=out cls(tok); tok="" }
-      out=out c
+: > "$tmp/spam"; : > "$tmp/spambatch"
+if rule_on D; then
+  awk -F'\t' -v K="$SPAM_MIN_BATCH" -v D="$SPAM_DESC_AGREE_PCT" -v REQID="$SPAM_REQUIRE_ID" \
+             -v BATCHES="$tmp/spambatch" '
+    FILENAME == ARGV[1] { twice[$1] = 1; next }
+    # A token is a random id if it is 6+ hex characters with both a letter and a digit.
+    # Demanding a letter is what keeps a date or sequence suffix (release-202401) an
+    # enumeration rather than an id.
+    function cls(t) {
+      if (length(t)>=6 && t ~ /^[0-9a-f]+$/ && t ~ /[a-f]/ && t ~ /[0-9]/) return "%"
+      if (t ~ /^[0-9]+$/) return "#"
+      gsub(/[0-9]+/,"#",t); return t     # ordinary word: only its digits vary (widget2000)
     }
-    gsub(/[[:space:]]+/," ",out); gsub(/^ | $/,"",out); return out
-  }
-  # Group on the skeleton with # and % collapsed together, because a random hex token comes out
-  # all-digits about 2% of the time ("chunk-1-96180521") and that would otherwise split a batch
-  # and leave those siblings behind. Whether the batch has a real id slot is then tracked per
-  # batch.
-  function loose(x) { gsub(/[#%]/,"*",x); return x }
-  {
-    N++; rid[N]=$1
-    sn=skel($2); nl[N]=loose(sn); dl[N]=loose(skel($3))
-    cnt[nl[N]]++
-    # Either row of a repo listed twice may be forged, so it is a member that agrees with no
-    # description, is never one of the batch, and does not count towards its size: it can only
-    # lower the agreement.
-    if ($1 in twice) { forged[N]=1; next }
-    real[nl[N]]++
-    if (index(sn,"%")) hasid[nl[N]]=1
-    pair[nl[N] SUBSEP dl[N]]++
-  }
-  END {
-    # awk leaves `for (k in ...)` order unspecified, so ties break on the description text
-    # itself: without that, two equally common descriptions would pick a winner at random and
-    # one seed could produce two different plans.
-    for (k in pair) {
-      split(k,q,SUBSEP)
-      if (pair[k]>best[q[1]] || (pair[k]==best[q[1]] && q[2]<bestd[q[1]]))
-        { best[q[1]]=pair[k]; bestd[q[1]]=q[2] }
+    function skel(s,   i,c,out,tok,n) {
+      s=tolower(s); out=""; tok=""; n=length(s)
+      for (i=1;i<=n+1;i++) {
+        c=(i<=n)?substr(s,i,1):""
+        if (c ~ /^[0-9a-z]$/) { tok=tok c; continue }
+        if (tok!="") { out=out cls(tok); tok="" }
+        out=out c
+      }
+      gsub(/[[:space:]]+/," ",out); gsub(/^ | $/,"",out); return out
     }
-    for (n in cnt) {
-      if (real[n] < K)                       continue   # too few to be a template
-      if (REQID+0==1 && !(n in hasid))       continue   # no machine-generated id in it
-      if (index(n,"*")==0)                   continue   # nothing varies: not a template at all
-      if (bestd[n]=="")                      continue   # no description: only ONE signal
-      if (best[n]*100 < D*cnt[n])            continue   # members disagree on the description
-      good[n]=1
+    # Group on the skeleton with # and % collapsed together, because a random hex token comes
+    # out all-digits about 2% of the time ("chunk-1-96180521") and that would otherwise split a
+    # batch and leave those siblings behind. Whether the batch has a real id slot is then
+    # tracked per batch.
+    function loose(x) { gsub(/[#%]/,"*",x); return x }
+    {
+      N++; rid[N]=$1
+      sn=skel($2); nl[N]=loose(sn); dl[N]=loose(skel($3))
+      cnt[nl[N]]++
+      # Either row of a repo listed twice may be forged, so it is a member that agrees with no
+      # description, is never one of the batch, and does not count towards its size: it can
+      # only lower the agreement.
+      if ($1 in twice) { forged[N]=1; next }
+      real[nl[N]]++
+      if (index(sn,"%")) hasid[nl[N]]=1
+      pair[nl[N] SUBSEP dl[N]]++
     }
-    # Only the members carrying the description the batch agreed on, so a genuine outlier that
-    # happens to share the name shape is left alone.
-    for (i=1;i<=N;i++)
-      if (!(i in forged) && nl[i] in good && dl[i]==bestd[nl[i]])
-        { print rid[i]; batchsize[nl[i]]++ }
-    for (n in batchsize) printf "%d\t%s\n", batchsize[n], n > BATCHES
-  }' "$tmp/meta-twice" "$tmp/meta" > "$tmp/spam" || true
-: >> "$tmp/spambatch"                          # awk only creates it when it finds something
+    END {
+      # awk leaves `for (k in ...)` order unspecified, so ties break on the description text
+      # itself: without that, two equally common descriptions would pick a winner at random and
+      # one seed could produce two different plans.
+      for (k in pair) {
+        split(k,q,SUBSEP)
+        if (pair[k]>best[q[1]] || (pair[k]==best[q[1]] && q[2]<bestd[q[1]]))
+          { best[q[1]]=pair[k]; bestd[q[1]]=q[2] }
+      }
+      for (n in cnt) {
+        if (real[n] < K)                     continue   # too few to be a template
+        if (REQID+0==1 && !(n in hasid))     continue   # no machine-generated id in it
+        if (index(n,"*")==0)                 continue   # nothing varies: not a template at all
+        if (bestd[n]=="")                    continue   # no description: only ONE signal
+        if (best[n]*100 < D*cnt[n])          continue   # members disagree on the description
+        good[n]=1
+      }
+      # Only the members carrying the description the batch agreed on, so a genuine outlier
+      # that happens to share the name shape is left alone.
+      for (i=1;i<=N;i++)
+        if (!(i in forged) && nl[i] in good && dl[i]==bestd[nl[i]])
+          { print rid[i]; batchsize[nl[i]]++ }
+      for (n in batchsize) printf "%d\t%s\n", batchsize[n], n > BATCHES
+    }' "$tmp/meta-twice" "$tmp/meta" > "$tmp/spam" || true
+fi
 nspam=$(wc -l < "$tmp/spam"); nspambatch=$(wc -l < "$tmp/spambatch")
 if [ "$nspam" -gt 0 ]; then
   echo "# spam batches: $nspambatch template(s) matching $nspam repos," \
@@ -2494,7 +2419,7 @@ fi
 # per repo. The scan races a live node: a repo dir can vanish or turn unreadable mid-walk, and
 # find/du then exit non-zero. Collect those errors instead of discarding them, and never let
 # one abort the run. The counting walk below races the same way.
-scanerr="$tmp/scan-errors"; : > "$scanerr"; : > "$tmp/hosts-fail"
+scanerr="$tmp/scan-errors"; : > "$scanerr"
 nrepos=$(find "$STORAGE" -mindepth 1 -maxdepth 1 -type d 2>>"$scanerr" | wc -l) || true
 echo "# scanning $nrepos repos (size + activity), $JOBS parallel workers..." >&2
 
@@ -2620,15 +2545,16 @@ find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -print0 2>>"$scanerr" \
 progress_stop
 
 # ------------------------------------------------------------------------------- the run cache
-# Rules E and F walk the contents of every repo, which is most of a run. On a seed that has
-# caught up almost nothing changes from one week to the next, so their per-repo output is kept
-# and reused for any repo whose refs and size are both untouched since the run that wrote it.
+# Rules F and G and the check for copies walk the contents of every repo, which is most of a
+# run. On a seed that has caught up almost nothing changes from one week to the next, so their
+# per-repo output is kept and reused for any repo whose refs and size are both untouched since
+# the run that wrote it.
 # A repo whose key differs is walked again, so a rule never judges a repo on stale evidence.
 #
 # The key is the ref listing's hash plus the repo's size on disk. Refs alone would miss objects
-# that arrive without one (rule E reads unreachable objects too); size alone would miss a
-# branch deleted or force-pushed onto objects already there. Anything that moves either one
-# recomputes, which is the direction that costs time rather than correctness.
+# that arrive while no ref moves; size alone would miss a branch deleted or force-pushed onto
+# objects already there. Anything that moves either one recomputes, which is the direction
+# that costs time rather than correctness.
 # FILENAME rather than the usual NR == FNR: when the first file is empty that test is true
 # for the second file's first line too, and it would eat a repo.
 awk -F'\t' -v du="$tmp/du" \
@@ -3179,7 +3105,7 @@ for d; do
 done
 COPY
   # The cached rows answer for the list they were checked against. A changed list re-checks
-  # every repo without touching rule E and F's cache, which folding it into the fingerprint
+  # every repo without touching the rest of the cache, which folding it into the fingerprint
   # would throw away, costing a full cold run for every row added.
   copy_set=$(sha1sum < "$tmp/deny-oid-list" | cut -c1-40)
   copy_set_saved=1
@@ -3487,130 +3413,6 @@ PEER
   cache_save_keys peer "$tmp/answered-peer"
 fi
 
-
-# ----------------------------------------------------------------------- rule E: collect hosts
-# Collects the hostnames each repo mentions, folded to domains later. Reading file content is
-# slow, so a RULES without E turns it off, and each repo is walked in two steps: list blob ids
-# sizes without reading them, then read only the ones under the size cap. Where a link sits
-# does not matter here: issues, patches, comments and committed files all count.
-: > "$tmp/hosts"; : > "$tmp/hosts-unwalked"
-if rule_on E; then
-  echo "# harvesting referenced hosts from repo contents ($JOBS workers)..." >&2
-  cat > "$tmp/hosts.sh" <<HOSTS
-#!/usr/bin/env bash
-ceiling=$LINK_BLOB_PREFIX
-budget=$LINK_REPO_BUDGET
-HOSTS
-  cat >> "$tmp/hosts.sh" <<'HOSTS'
-# Reads blob ids on stdin. Prints "<rid>\t<hostname>" for each hostname those blobs mention,
-# without repeats. $1 = the repo's git dir, $2 = its rid. One sed lowercases the line and swaps
-# the scheme for the rid: every line carries the same rid, so sorting after it changes neither
-# which lines are repeats nor their order, and it saves two processes per pass per repo.
-hosts_of() {
-  GIT_DIR="$1" git cat-file --batch 2>/dev/null \
-    | head -c "$budget" \
-    | grep -aoE 'https?://[A-Za-z0-9._-]+' \
-    | sed -E "y/ABCDEFGHIJKLMNOPQRSTUVWXYZ/abcdefghijklmnopqrstuvwxyz/; s#^https?://#$2\t#" \
-    | sort -u
-}
-for d; do
-  rid=${d##*/}
-  # Every file in the repo, wherever it lives. A repo we cannot list is reported on fd 4 rather
-  # than returning an empty host list, which would be indistinguishable from a repo with no
-  # links.
-  # NOT --unordered, though it would skip a sort: the per-repo budget below stops the read
-  # part-way, so the emission order decides WHICH files get scanned. Sorted by object id, that
-  # choice is the same on every run; in pack order it changes whenever git repacks, and a repo
-  # would be judged on different evidence for no reason anyone could see.
-  GIT_DIR="$d" git cat-file --batch-all-objects \
-       --batch-check='%(objectname) %(objecttype) %(objectsize)' 2>/dev/null \
-    | awk -v c="$ceiling" '$2=="blob" && $3+0<=c {print $1}' \
-    | hosts_of "$d" "$rid"
-  # A repo bigger than the budget closes the pipe early, which kills the lister with SIGPIPE
-  # (141). That is the cap doing its job. Any other failure means we could not read the repo.
-  st=${PIPESTATUS[0]}
-  { [ "$st" = 0 ] || [ "$st" = 141 ]; } || echo "$rid" >&4
-  # Same again, restricted to the CANONICAL branches and tags, written to fd 3. Those are the
-  # refs only a delegate can move, so a stranger cannot make a host look like this repo's
-  # dependency. A host enough repos link to from their own code is a dependency, and stops
-  # counting as spam.
-  # Filtered and capped like pass 1 above, so the budget goes on blobs alone and a link in a
-  # commit MESSAGE, which pass 1 never sees, is not counted: the two streams have to agree on
-  # what this repo's own code links to.
-  GIT_DIR="$d" git rev-list --objects --branches --tags \
-       --filter=object:type=blob 2>/dev/null \
-    | cut -d' ' -f1 \
-    | GIT_DIR="$d" git cat-file \
-        --batch-check='%(objectname) %(objecttype) %(objectsize)' 2>/dev/null \
-    | awk -v c="$ceiling" '$2=="blob" && $3+0<=c {print $1}' \
-    | hosts_of "$d" "$rid" >&3
-  # Read as for pass 1, for both git commands. A ref that reaches a missing object drops this
-  # repo's own links, and a host then looks less like a dependency, which leans towards calling
-  # it spam. Such a repo is reported on fd 6 and sits this rule out. The rest of it reads
-  # fine, so the other rules still judge it.
-  st=("${PIPESTATUS[@]}")
-  { [ "${st[0]}" = 0 ] || [ "${st[0]}" = 141 ]; } \
-    && { [ "${st[2]}" = 0 ] || [ "${st[2]}" = 141 ]; } \
-    || echo "$rid" >&6
-  # This repo has been read to the end. A repo that links to nothing writes no host line at
-  # all, so without this the run cache could not tell that from a repo nobody ever read.
-  printf '%s\n' "$rid" >&5
-done
-HOSTS
-  cache_hits hosts
-  # The done stream alone: the worker writes it for every repo it finishes, a repo it could
-  # not read included, so adding the failure stream would count those repos twice. The host
-  # stream holds one line per LINK, which would race ahead and then stall on a repo that
-  # links nowhere.
-  progress_start "link-farm rule (E)" "$(repos_left hosts)" "$tmp/hosts-done"
-  repos_to_read "$tmp/cached-hosts" \
-    | xargs -0r -P "$JOBS" -n 32 "$BASH_BIN" "$tmp/hosts.sh" \
-        > "$tmp/hosts" 3> "$tmp/hosts-code" 4> "$tmp/hosts-fail" 5> "$tmp/hosts-done" \
-        6> "$tmp/hosts-unwalked" || true
-  progress_stop
-  cache_reuse "hosts" 1 hosts      >> "$tmp/hosts"
-  # The consumer counts a repo per line, so a duplicated line would count that repo twice and
-  # lower the bar a domain has to clear to be called spam. Enforced here rather than assumed.
-  sort -u "$tmp/hosts" -o "$tmp/hosts"
-  cache_reuse "hosts-code" 1 hosts >> "$tmp/hosts-code"
-  cache_reuse "hosts-fail" 1 hosts >> "$tmp/hosts-fail"
-  cache_reuse "hosts-unwalked" 1 hosts >> "$tmp/hosts-unwalked"
-  cache_save  "hosts" "$tmp/hosts"
-  cache_save  "hosts-code" "$tmp/hosts-code"
-  cache_save  "hosts-fail" "$tmp/hosts-fail"
-  cache_save  "hosts-unwalked" "$tmp/hosts-unwalked"
-  # A repo that links to nothing emits no host line at all, so the worker marks each repo it
-  # finished on its own stream. Without that, "read it, found nothing" and "never read it"
-  # would look the same and the second would be cached as the first.
-  { cat "$tmp/cached-hosts"; cut -f1 "$tmp/hosts-done" "$tmp/hosts-fail"; } \
-    | sort -u > "$tmp/answered-hosts"
-  cache_save_keys hosts "$tmp/answered-hosts"
-  # A repo read only in part would count with partial links, so it leaves the counts and is not
-  # judged here: one whose own code links are unknown (unwalked), and one whose blob listing
-  # failed. A repo whose blob listing failed is out of the plan and has its own WARN below, so
-  # the unwalked count and list leave it out.
-  sort -u "$tmp/hosts-unwalked" "$tmp/hosts-fail" > "$tmp/hosts-partial"
-  for stream in hosts hosts-code; do
-    awk -F'\t' 'FILENAME == ARGV[1] { out[$1] = 1; next } !($1 in out)' \
-      "$tmp/hosts-partial" "$tmp/$stream" > "$tmp/$stream.walked"
-    mv "$tmp/$stream.walked" "$tmp/$stream"
-  done
-  sort -u "$tmp/hosts-unwalked" | grep -vxFf <(sort -u "$tmp/hosts-fail") \
-    > "$tmp/hosts-unwalked.only" || true
-  mv "$tmp/hosts-unwalked.only" "$tmp/hosts-unwalked"
-  nunwalked=$(wc -l < "$tmp/hosts-unwalked")
-  if [ "$nunwalked" -gt 0 ]; then
-    echo "# WARN: the link-farm rule (E) could not walk the branches and tags of $nunwalked" \
-         "repo(s), so they sit it out. The other rules still judge them." \
-         "$AUDIT_DIR/last-run/E-link-unwalked.tsv lists them." >&2
-  fi
-  echo "# harvested $(wc -l < "$tmp/hosts") repo/host pairs over" \
-       "$(cut -f1 "$tmp/hosts" | sort -u | wc -l) repos" >&2
-  nhostfail=$(sort -u "$tmp/hosts-fail" | wc -l)
-  [ "$nhostfail" = 0 ] \
-    || echo "# WARN: could not read $nhostfail repo(s); excluded from the plan." >&2
-fi
-
 # A repo we could not fully read has an untrustworthy size and age, so exclude it from the plan
 # rather than judge it on partial data. find and du name the offending path, so take the
 # component right after $STORAGE/ instead of pattern-matching a rid: exact for any rid length,
@@ -3620,7 +3422,7 @@ while IFS= read -r line; do
   [ "$rid" = "$line" ] && continue          # this error is not about a repo dir
   rid=${rid%%/*}; rid=${rid%%\'*}           # first component, minus find/du's closing quote
   case "$rid" in ?*) printf '%s\n' "$rid" ;; esac
-done < "$scanerr" | cat - "$tmp/hosts-fail" | sort -u > "$tmp/scanfail"
+done < "$scanerr" | sort -u > "$tmp/scanfail"
 nscanerr=$(wc -l < "$scanerr"); nscanfail=$(wc -l < "$tmp/scanfail")
 if [ "$nscanerr" -gt 0 ]; then
   echo "# WARN: $nscanerr scan error(s); $nscanfail repo(s) unreadable, excluded:" >&2
@@ -3629,155 +3431,7 @@ if [ "$nscanerr" -gt 0 ]; then
     && echo "#   ...and $((nscanerr - top_scanerr)) more (PLAN_FULL=1 lists them)" >&2
 fi
 
-# ------------------------------------------------------------------- rule E: find spam domains
-# A spam domain is one that at least $minrepos repos link to and under LINK_CODE_MAX_PCT% of
-# those link to from their own code. The second condition tells a site the spam advertises
-# apart from github.com: hundreds of repos link to each, but nearly every github.com linker
-# also has it in source or a README. Both are counted from storage on every run, so there is no
-# blocklist.
-#
-# It takes two passes, because a code link only counts when the repo it comes from is not
-# itself suspect. Pass 1 marks the suspects: repos rule D already calls generated, plus repos
-# that reach LINK_MIN_SCORE against a looser reading of what a spam domain is. Pass 2 is the
-# real test and ignores their code links. Otherwise a spammer clears their own domain by
-# committing the link in one repo in ten, using repos they already have.
-minrepos=$(awk -v n="$nrepos" -v pct="$LINK_MIN_REPOS_PCT" -v floor="$LINK_MIN_REPOS" \
-               'BEGIN{ s=n*pct/100; printf "%d", (s>floor)?s:floor }')
-: > "$tmp/linkfarm"; : > "$tmp/linktop"
-if [ -s "$tmp/hosts" ]; then
-  awk -F'\t' -v MINREPOS="$minrepos" -v MINSCORE="$LINK_MIN_SCORE" \
-             -v CODEPCT="$LINK_CODE_MAX_PCT" -v LOOSEPCT="$LINK_CODE_LOOSE_PCT" \
-             -v TOP="$tmp/linktop" '
-    # Count by registrable domain, not by hostname: a wildcard DNS record and one subdomain per
-    # repo would otherwise keep every name below the linker bar for free. Three labels when the
-    # last is a two-letter country code behind a short one (co.uk, com.br, ne.jp), two
-    # otherwise.
-    function reg(h,   n,a) {
-      n = split(h, a, ".")
-      if (n <= 2) return h
-      if (length(a[n])==2 && length(a[n-1])<=3) return a[n-2] "." a[n-1] "." a[n]
-      return a[n-1] "." a[n]
-    }
-    FILENAME==ARGV[1] { suspect[$1]=1; next }        # rule D calls these repos generated
-    FILENAME==ARGV[2] { d=reg($2); codepair[$1 SUBSEP d]=1; allcode[d]++; next }  # from code
-    { d=reg($2); links[d]++; pair[$1 SUBSEP d]=1 }   # one line per repo/domain: counts repos
-    END {
-      # Pass 1: the same test at the looser cap, used only to add to the suspect list.
-      for (h in links)
-        if (links[h] >= MINREPOS && (allcode[h]+0)*100 < LOOSEPCT*links[h]) loose[h]=1
-      for (k in pair) { split(k,q,SUBSEP); if (q[2] in loose) loosescore[q[1]]++ }
-      for (r in loosescore) if (loosescore[r] >= MINSCORE) suspect[r]=1
-      # Pass 2: the real test. Only links[] counts every repo, on purpose: the spam repos are
-      # the linkers that make a host stand out, so filtering them would erase the signal.
-      for (k in codepair) { split(k,q,SUBSEP); if (!(q[1] in suspect)) vouch[q[2]]++ }
-      for (h in links)
-        if (links[h] >= MINREPOS && (vouch[h]+0)*100 < CODEPCT*links[h])
-          { spamdom[h]=1; printf "%d\t%s\n", links[h], h > TOP }
-      for (k in pair) { split(k,q,SUBSEP); if (q[2] in spamdom) score[q[1]]++ }
-      for (r in score) if (score[r] >= MINSCORE) printf "%s\t%d\n", r, score[r]
-    }' "$tmp/spam" "$tmp/hosts-code" "$tmp/hosts" > "$tmp/linkfarm" || true
-  # Reported whenever the corpus yields any spam domain, even if no repo then crosses the score
-  # bar: what the rule saw is worth knowing on a run where it decides to flag nothing.
-  nfarm=$(wc -l < "$tmp/linkfarm"); nspamdom=$(wc -l < "$tmp/linktop")
-  if [ "$nspamdom" -gt 0 ]; then
-    echo "# spam domains: $nspamdom domain(s) linked from >=$minrepos repos," \
-         "<$LINK_CODE_MAX_PCT% from code;"
-    echo "#   $nfarm repo(s) link to >=$LINK_MIN_SCORE of them," \
-         "before the age and seed checks:"
-    sort -k1,1nr "$tmp/linktop" \
-      | awk -F'\t' -v n="$top_evidence" 'NR<=n {printf "#   %5d repos  %s\n", $1, $2}'
-    [ "$nspamdom" -gt "$top_evidence" ] \
-      && echo "#   ...and $((nspamdom - top_evidence)) more (PLAN_FULL=1 lists them)"
-  fi
-fi
-
-# ---------------------------------------------------------------- rule E: whose links are they
-# Any peer may push an issue or a comment to any public repo, and it lands in that repo's
-# storage here, so the harvest above counts a stranger's links as the repo's own. Left alone
-# that turns rule E into a weapon: five spam links in five issues and somebody else's repo is
-# in the plan. Every repo that scored is therefore re-read across the refs its DELEGATES
-# control (the canonical branches and each delegate's namespace) and keeps its score only if
-# it survives there. A repo whose delegates cannot be read is dropped from the plan, not kept.
-if [ "$LINK_DELEGATE_CHECK" = 1 ] && [ -s "$tmp/linkfarm" ]; then
-  cut -f2 "$tmp/linktop" | sort -u > "$tmp/spamdomains"
-  cat > "$tmp/owned.sh" <<OWNED
-#!/usr/bin/env bash
-RAD=$(printf %q "$RAD"); STORAGE=$(printf %q "$STORAGE")
-ceiling=$LINK_BLOB_PREFIX
-budget=$LINK_REPO_BUDGET
-OWNED
-  cat >> "$tmp/owned.sh" <<'OWNED'
-for rid in "$@"; do
-  d="$STORAGE/$rid"
-  # `rad inspect` gives the CURRENT identity revision, not the union of every revision ever
-  # signed. Here a delegate list is what lets a link condemn a repo, so the narrower list is
-  # the one that errs toward sparing.
-  nids=$("$RAD" inspect "rad:$rid" --delegates 2>/dev/null \
-         | grep -oE 'z[1-9A-HJ-NP-Za-km-z]{40,}' | tr '\n' ' ')
-  # No delegate list, so the repo's own links cannot be told from a stranger's. The done
-  # marker goes out on this path too, so the progress count below is repos finished rather
-  # than repos that turned out to be readable.
-  [ -n "$nids" ] || { echo "$rid" >&3; printf '%s\n' "$rid" >&4; continue; }
-  # The blob filter keeps trees out of the reader below, which only ever wanted blobs.
-  GIT_DIR="$d" git for-each-ref --format='%(objectname) %(refname)' 2>/dev/null \
-    | awk -v ok="$nids" '
-        BEGIN { n=split(ok,a," "); for (i=1;i<=n;i++) keep[a[i]]=1 }
-        { if ($2 ~ /^refs\/namespaces\//) { split($2,p,"/"); if (!(p[3] in keep)) next }
-          print $1 }' \
-    | GIT_DIR="$d" git rev-list --objects --stdin --filter=object:type=blob 2>/dev/null \
-    | cut -d' ' -f1 \
-    | GIT_DIR="$d" git cat-file \
-        --batch-check='%(objectname) %(objecttype) %(objectsize)' 2>/dev/null \
-    | awk -v c="$ceiling" '$2=="blob" && $3+0<=c {print $1}' \
-    | GIT_DIR="$d" git cat-file --batch 2>/dev/null \
-    | head -c "$budget" \
-    | grep -aoE 'https?://[A-Za-z0-9._-]+' \
-    | sed -E 's#^https?://##' | tr '[:upper:]' '[:lower:]' | sort -u | sed "s#^#$rid\t#"
-  # This repo has been re-read to the end. One line per repo, which is what the progress
-  # ticker counts; the stream above holds one line per repo/host pair instead.
-  printf '%s\n' "$rid" >&4
-done
-OWNED
-  # Every flagged repo is read again here, in full, so this walk is slow whenever rule E
-  # flagged many of them. It announces itself and reports progress rather than going quiet.
-  nflagged=$(wc -l < "$tmp/linkfarm")
-  echo "# re-reading $nflagged flagged repo(s) across their delegates' refs" \
-       "($JOBS workers)..." >&2
-  progress_start "delegates" "$nflagged" "$tmp/owned-done"
-  cut -f1 "$tmp/linkfarm" | tr '\n' '\0' \
-    | xargs -0r -P "$JOBS" -n 8 "$BASH_BIN" "$tmp/owned.sh" \
-        > "$tmp/owned" 3> "$tmp/owned-fail" 4> "$tmp/owned-done" || true
-  progress_stop
-  # reg() below must fold exactly as the harvest pass does, or a domain counted there would
-  # score differently here. Kept as its own copy so each awk program reads on its own.
-  awk -F'\t' -v MINSCORE="$LINK_MIN_SCORE" '
-    function reg(h,   n,a) {
-      n = split(h, a, ".")
-      if (n <= 2) return h
-      if (length(a[n])==2 && length(a[n-1])<=3) return a[n-2] "." a[n-1] "." a[n]
-      return a[n-1] "." a[n]
-    }
-    FILENAME==ARGV[1] { spam[$1]=1; next }
-    { d=reg($2); if (d in spam) pair[$1 SUBSEP d]=1 }
-    END {
-      for (k in pair) { split(k,q,SUBSEP); score[q[1]]++ }
-      for (r in score) if (score[r] >= MINSCORE) printf "%s\t%d\n", r, score[r]
-    }' "$tmp/spamdomains" "$tmp/owned" > "$tmp/linkfarm.owned" || true
-  # Two different outcomes, counted apart: a repo whose own peers turned out not to be linking
-  # the spam, and a repo we could not attribute at all. Both leave the plan, for different
-  # reasons.
-  nunreadable=$(sort -u "$tmp/owned-fail" | wc -l)
-  nspared=$(( $(wc -l < "$tmp/linkfarm") - $(wc -l < "$tmp/linkfarm.owned") - nunreadable ))
-  mv "$tmp/linkfarm.owned" "$tmp/linkfarm"
-  [ "$nspared" -le 0 ] \
-    || echo "# the link-farm rule (E): $nspared repo(s) spared, the spam links were pushed by peers" \
-            "that are not their delegates"
-  [ "$nunreadable" = 0 ] \
-    || echo "# WARN: the link-farm rule (E): $nunreadable repo(s) spared," \
-            "their delegates could not be read" >&2
-fi
-
-declare -A SIZE MTIME LIFE BIRTH NAME SEEDS EXCL SCANFAIL SPAM LINKSCORE MEDIA SHARED \
+declare -A SIZE MTIME LIFE BIRTH NAME SEEDS EXCL SCANFAIL SPAM MEDIA SHARED \
            FIRSTSEEN MEDIABYTES DELEGATES SIGNERS DENY_RID DENY_NID COPY COPYHELD COPYPCT COPYROW
 while IFS=$'\t' read -r sz path; do SIZE[${path##*/}]=$sz; done < "$tmp/du"
 while IFS=$'\t' read -r rid mt;   do MTIME[$rid]=${mt%.*}; done < "$tmp/mtimes"
@@ -3822,9 +3476,8 @@ declare -A PARDON=()
 while read -r r; do [ -n "$r" ] && PARDON[$r]=1; done < "$tmp/undo-pardoned"
 while read -r r; do [ -n "$r" ] && SCANFAIL[$r]=1; done < "$tmp/scanfail"
 while read -r r; do [ -n "$r" ] && SPAM[$r]=1; done < "$tmp/spam"
-while IFS=$'\t' read -r rid sc; do [ -n "$rid" ] && LINKSCORE[$rid]=$sc; done < "$tmp/linkfarm"
 # When this seed first saw each repo. Every date inside a repo is set by whoever pushed it, so
-# a spammer who rewrites all their refs resets the age rules D, E and F measure from. This
+# a spammer who rewrites all their refs resets the age rules D and F measure from. This
 # ledger cannot be reached from outside, so those rules use whichever of the two is older.
 # The file is appended to on every run, dry or not; without it the tool still works, on ref
 # dates alone. Non-numeric timestamps are skipped rather than trusted: this file is appended to
@@ -3838,10 +3491,10 @@ done < "$FIRST_SEEN"
 if mkdir -p "$AUDIT_DIR" 2>/dev/null && { : >> "$FIRST_SEEN"; } 2>/dev/null; then
   add_header "$FIRST_SEEN" \
     "The day this seed first saw each repo: repo id, then Unix time. It tells the spam-batch" \
-    "(D), link-farm (E) and media (F) rules how old a repo really is, and the check for" \
-    "copies which repo held a listed file first. Deleting it leaves the rules only the commit" \
-    "dates, which whoever pushed the repo can set to anything, and counts every listed file" \
-    "against its copies again." \
+    "(D) and media (F) rules how old a repo really is, and the check for copies which repo" \
+    "held a listed file first. Deleting it leaves the rules only the commit dates, which" \
+    "whoever pushed the repo can set to anything, and counts every listed file against its" \
+    "copies again." \
     || echo "# WARN: could not add a header to $FIRST_SEEN; its rows are unaffected." >&2
   for rid in "${!SIZE[@]}"; do
     [ -n "${FIRSTSEEN[$rid]:-}" ] && continue
@@ -4291,7 +3944,7 @@ while IFS=$'\t' read -r rid sz mt life birth; do
   [ "$mt" -ge "$fresh_cut" ] && { nfresh=$((nfresh+1)); continue; }   # in-flight fetch
   [ "$life" = 0 ] && { nnoage=$((nnoage+1)); continue; }               # unknown age: leave it
 
-  # Rules D, E and F measure age from here: the older of the repo's own oldest ref date and
+  # Rules D and F measure age from here: the older of the repo's own oldest ref date and
   # the day this seed first saw it. A pusher controls the first and cannot reach the second.
   origin=$birth
   [ -n "${FIRSTSEEN[$rid]:-}" ] && [ "${FIRSTSEEN[$rid]}" -lt "$origin" ] \
@@ -4314,7 +3967,7 @@ while IFS=$'\t' read -r rid sz mt life birth; do
   fi
   # A disposable word in the name of a project that predates its `rad init` is no evidence it
   # was thrown away. Asked of every repo the word branch's other tests would let through, since
-  # it reads the repo's history; rules D, E and F below may still prune some of them first.
+  # it reads the repo's history; rules D and F below may still prune some of them first.
   gap=""; is_import=0
   if [ "$is_junk" = 1 ] && rule_on A && [ "$life" -lt "$junk_cut" ] \
      && [ "$seeds" -ge "$JUNK_MIN_SEEDS" ]; then
@@ -4325,9 +3978,8 @@ while IFS=$'\t' read -r rid sz mt life birth; do
   is_big=0; [ "$sz" -gt "$abscut" ] && [ "$sz" -ge "$relcut" ] && is_big=1
 
   reason=""
-  # D, E and F come first, so a repo the corpus shows to be generated bulk or to be selling
-  # links, or whose own tree is nothing but media, reads as that rather than as ordinary
-  # staleness.
+  # D and F come first, so a repo the corpus shows to be generated bulk, or whose own tree is
+  # nothing but media, reads as that rather than as ordinary staleness.
   #
   # They measure $origin. None of their evidence is about time, so the window is only a grace
   # period in case the evidence was wrong, and measured from LAST ACTIVITY that grace period
@@ -4338,19 +3990,13 @@ while IFS=$'\t' read -r rid sz mt life birth; do
   # minimum.
   #
   # Each branch asks rule_on first, so a rule left out of RULES cannot claim a repo and then
-  # have its row dropped later: that would hide the repo from the rules still running. Rule D
-  # needs this most, because its corpus scan runs even when D is off, since rule E reads it.
+  # have its row dropped later: that would hide the repo from the rules still running.
   age_from=$life
   near=""
   if   rule_on D && [ -n "${SPAM[$rid]:-}" ] && [ "$origin" != 0 ] \
        && [ "$origin" -lt "$spam_cut" ] && [ "$seeds" -ge "$SPAM_MIN_SEEDS" ]; then
     reason="spam-batch"; age_from=$origin
     near_age "$origin" "$spam_cut"; near_min "$seeds" "$SPAM_MIN_SEEDS" seeds
-  elif rule_on E && [ -n "${LINKSCORE[$rid]:-}" ] && [ "$origin" != 0 ] \
-       && [ "$origin" -lt "$link_cut" ] && [ "$seeds" -ge "$LINK_MIN_SEEDS" ]; then
-    reason="link-farm"; age_from=$origin
-    near_age "$origin" "$link_cut"; near_min "$seeds" "$LINK_MIN_SEEDS" seeds
-    near_min "${LINKSCORE[$rid]}" "$LINK_MIN_SCORE" score
   elif rule_on F && [ -n "${MEDIA[$rid]:-}" ] && [ "$origin" != 0 ] \
        && [ "$origin" -lt "$media_cut" ] && [ "$seeds" -ge "$MEDIA_MIN_SEEDS" ]; then
     reason=${MEDIA[$rid]}; age_from=$origin
@@ -4520,7 +4166,7 @@ fi
 # in audit logs written before it was renamed. A reason missing here is ratcheted on its own,
 # under its own name, so a new verdict is never one the ratchet cannot see.
 RULE_OF_REASON="junk-name:A junk-id:A size-outlier:B stale:C"
-RULE_OF_REASON="$RULE_OF_REASON spam-batch:D spam-family:D link-farm:E"
+RULE_OF_REASON="$RULE_OF_REASON spam-batch:D spam-family:D"
 RULE_OF_REASON="$RULE_OF_REASON media-dump:F media-ratio:F media-batch:F"
 # rule \t how many verdicts that rule has in the file named by $1, one line per rule.
 count_by_rule() {
@@ -4634,7 +4280,7 @@ awk -F'\t' -v now="$now" -v collapse="$PLAN_COLLAPSE_ROWS" -v full="$PLAN_FULL" 
      }
      # The corpus verdicts. Each one is decided by a pattern across MANY repos, so reading its
      # rows one by one tells a reader nothing the group line does not already say.
-     BEGIN { split("spam-batch link-farm media-batch", c, " ")
+     BEGIN { split("spam-batch media-batch", c, " ")
              for (i = 1; i in c; i++) corpus[c[i]] = 1 }
      NR == FNR { n[$5]++; b[$5] += $2; if ($8 != "") near[$5]++; next }
      FNR == 1 { for (r in n) if (corpus[r] && !full && n[r] >= collapse) fold[r] = 1
@@ -4797,10 +4443,10 @@ if [ "$nmalware_repos" -gt 0 ]; then
 fi
 
 # What the report above printed is trimmed to what a terminal can hold: corpus verdicts folded
-# to one line, five spam domains out of a hundred and fifty. The lists it was rendered from go
-# out whole here, so the evidence behind a verdict outlives the scroll buffer and can be read
-# by something other than a human. Written by a dry run as much as by an apply, since a dry run
-# is when somebody decides whether the verdicts are right.
+# to one line, five spam templates out of a hundred and fifty. The lists it was rendered from
+# go out whole here, so the evidence behind a verdict outlives the scroll buffer and can be
+# read by something other than a human. Written by a dry run as much as by an apply, since a
+# dry run is when somebody decides whether the verdicts are right.
 #
 # Overwritten every run rather than kept per run: a directory of them grows without bound on a
 # weekly cron, and a run that changes anything already leaves a dated audit log behind.
@@ -4835,14 +4481,6 @@ if [ "$lr_ok" = 1 ]; then
     printf '# repos\ttemplate\n'
     sort -k1,1nr "$tmp/spambatch"; } \
     > "$staging/D-spam-batch-templates.tsv" 2>/dev/null || lr_ok=0
-  { lr_head "Domains the link-farm rule (E) treats as spam, and how many repos link to each."
-    printf '# repos\tdomain\n'
-    sort -k1,1nr "$tmp/linktop"; } > "$staging/E-link-farm-domains.tsv" 2>/dev/null || lr_ok=0
-  { lr_head "Repos the link-farm rule (E) left out because a branch or tag reaches an object" \
-            "the repo does not have, so their own code links are unknown. The other rules" \
-            "still judged them."
-    printf '# rid\n'
-    cat "$tmp/hosts-unwalked"; } > "$staging/E-link-unwalked.tsv" 2>/dev/null || lr_ok=0
   # The verdict, not a size: this column says which of rule F's verdicts the repo matched.
   { lr_head "Media dumps the media rule (F) found but kept, because fewer than" \
             "MEDIA_MIN_SEEDS other nodes seed them. Nothing here was pruned."

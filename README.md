@@ -14,7 +14,7 @@
 It does two jobs:
 
 - **Reclaims disk**: prunes stale giants, long-abandoned repos and disposable ones.
-- **Moderates content**: prunes mass-generated spam, link farms and media dumps, and names peers who push their own files into repos they are not a delegate of.
+- **Moderates content**: prunes mass-generated spam and media dumps, and names peers who push their own files into repos they are not a delegate of.
 
 Tuned against and running in production for seed.radicle.at seeding the whole public Radicle network. Read the plan before you apply anything.
 
@@ -78,7 +78,6 @@ A dry run against a seed of 12,292 repos:
 # home=/var/lib/radicle  audit=/var/lib/radicle/prune-audit
 # disk: 125.5GB free (46.5%)  pressure=0% [relax>=54GB crit<=2GB]
 # rules: A junk(>30d, seeds>=1, spare-import>14d; id-names seeds>=0)  B size(>500MB & >=P95, >90d, seeds>=3) [WAITING: no disk pressure]  C stale(>730d, seeds>=3) [WAITING: no disk pressure]  D spam(batch>=5 & desc>=80%, >7d, seeds>=0)
-# rule E link-farm(>=5 spam domains, each linked from >=0.4% of repos and from the code of <10% of them, >7d, seeds>=0) [DISABLED: not in RULES, off by default]
 # rule F media-dump(>=64KB of media and <2048B of anything else, no source or build file, >7d, seeds>=0)  media-ratio(>=6144KB of images+video+audio at the tips, anything else <1/1000 of that, no archive, nothing else at the tips but <=1 README)  media-batch(>=64KB of media held by >=5 repos, <65536B of anything else)
 # rule G parasite-peer(one file of theirs in >=10 repos they are not a delegate of, >=1MB media, <16384B of anything else) [reports only; --block-peers asks per peer]
 # rule H malware-op(>=3 malware words, one strong, in the names and descriptions of >=2 and >=50% of the repos an identity signed as a delegate; or one repo with a strong word in its name or description and in a file path or commit subject, first commit <=7d before its rad init) [reports only]
@@ -120,11 +119,11 @@ zEXAMPLEREPOwwwwwwwwwwwwwww           73.9KB     13       31 junk-name     age  
 # DRY-RUN: nothing in storage changed. Re-run with --apply to execute.
 ```
 
-Corpus verdicts (`spam-batch`, `link-farm`, `media-batch`) fold to one summary line per group at `PLAN_COLLAPSE_ROWS` (20) rows. Single-repo verdicts are always listed in full, and `PLAN_FULL=1` lists everything. The evidence tables above the plan (spam templates, spam domains, scan errors, and any media dumps a raised `MEDIA_MIN_SEEDS` kept) show their top few entries and say how many they left out; `PLAN_FULL=1` prints those whole too.
+Corpus verdicts (`spam-batch`, `media-batch`) fold to one summary line per group at `PLAN_COLLAPSE_ROWS` (20) rows. Single-repo verdicts are always listed in full, and `PLAN_FULL=1` lists everything. The evidence tables above the plan (spam templates, scan errors, and any media dumps a raised `MEDIA_MIN_SEEDS` kept) show their top few entries and say how many they left out; `PLAN_FULL=1` prints those whole too.
 
-`AGE(d)` is the age the matching rule measured: days since last activity for the junk-name (A), size (B) and stale (C) rules, days since creation for the spam-batch (D), link-farm (E) and media (F) rules.
+`AGE(d)` is the age the matching rule measured: days since last activity for the junk-name (A), size (B) and stale (C) rules, days since creation for the spam-batch (D) and media (F) rules.
 
-`NEAR` names any threshold the row cleared by less than `NEAR_PCT` (20%), and is `-` when the row cleared every one of them comfortably. It reports the numbers the matching rule tested: `age` for every rule, `seeds` where the rule has a seed floor above zero, plus `import` on `junk-name` rows, `size` for the size rule (B), `media` for the media rule (F) and `score` for the link-farm rule (E). For copies of denied files it reports only `bytes` and `share`. Rows whose `NEAR` is not `-` are the ones to read first, and the summary under the plan counts them. `NEAR_PCT=0` marks nothing.
+`NEAR` names any threshold the row cleared by less than `NEAR_PCT` (20%), and is `-` when the row cleared every one of them comfortably. It reports the numbers the matching rule tested: `age` for every rule, `seeds` where the rule has a seed floor above zero, plus `import` on `junk-name` rows, `size` for the size rule (B) and `media` for the media rule (F). For copies of denied files it reports only `bytes` and `share`. Rows whose `NEAR` is not `-` are the ones to read first, and the summary under the plan counts them. `NEAR_PCT=0` marks nothing.
 
 Everything a run says about itself, the progress below included, goes to stderr, and the plan to stdout, so `> plan.txt` keeps them apart.
 
@@ -133,7 +132,7 @@ Everything a run says about itself, the progress below included, goes to stderr,
 Each phase goes through every repo in storage, which on a large seed is minutes per phase. In a terminal one line is kept up to date with the phase, the repos read so far and how much longer it has:
 
 ```
-  [5/6] link-farm rule (E) [=====      ]  52% 5820/11184 repos 2m14s ~2m03s left
+  [3/4] media rule (F) [=====      ]  52% 5820/11184 repos 2m14s ~2m03s left
 ```
 
 It is redrawn in place and wiped when the phase ends, leaving a line per phase saying what that phase cost:
@@ -143,13 +142,11 @@ It is redrawn in place and wiped when the phase ends, leaving a line per phase s
 # activity: 11184 repos in 1m12s
 # media rule (F): 11184 repos in 4m38s
 # parasite-peer rule (G): 11184 repos in 2m11s
-# link-farm rule (E): 11184 repos in 6m02s
-# delegates: 893 repos in 1m47s
 ```
 
 Where the output is not a terminal (cron, a pipe, a log file) the same reading is printed as an ordinary line every `PROGRESS_SECS` (60) instead of being redrawn. `PROGRESS_SECS=0` turns all of it off.
 
-A phase counts the repos it has to read this run, not everything in storage, so a run that reuses the cache measures itself against the handful of repos that changed. The `delegates` phase, where the link-farm rule (E) re-reads what it flagged to check whose links they are, measures itself against those flagged repos.
+A phase counts the repos it has to read this run, not everything in storage, so a run that reuses the cache measures itself against the handful of repos that changed.
 
 ### Exit codes
 
@@ -172,7 +169,7 @@ A repo is pruned when one of these holds, unless it is pinned, private, your own
 - the [deny list](#deny-list) names it or one of its delegates;
 - it holds [copies of denied files](#copies-of-denied-files).
 
-`RULES` (default `ABCDFGH`, every rule but the [link-farm rule (E)](#rule-e-link-farms)) selects which rules run. A letter absent from it means that rule neither scans nor puts anything in the plan, and a repo a disabled rule would have claimed falls through to the next rule.
+`RULES` (default `ABCDFGH`, every rule) selects which rules run. A letter absent from it means that rule neither scans nor puts anything in the plan, and a repo a disabled rule would have claimed falls through to the next rule.
 
 ### Exclusions (never touched by a rule)
 
@@ -224,7 +221,6 @@ Every rule has the same shape: **something about the repo**, *and* it is old eno
 | **B, size**        | a giant: over `ABS_SIZE_FLOOR_MB` (500M) *and* in the top `REL_PCTL`% by size (P95)                    | `OUTLIER_STALE_DAYS`, 90d | ≥ `MIN_OTHER_SEEDS`, 3   |
 | **C, stale**       | nothing in particular; the catch-all for whatever the other rules missed                               | `STALE_YEARS_DAYS`, 730d  | ≥ `MIN_OTHER_SEEDS`, 3   |
 | **D, spam-batch**  | one of a batch stamped out from one template ([more](#rule-d-spam-batches))                            | `SPAM_STALE_DAYS`, 7d     | ≥ `SPAM_MIN_SEEDS`, 0    |
-| **E, link-farm**   | published to carry links rather than code ([more](#rule-e-link-farms))                                 | `LINK_STALE_DAYS`, 7d     | ≥ `LINK_MIN_SEEDS`, 0    |
 | **F, media-dump**  | video, images or audio with no project around them ([more](#rule-f-media-dumps))                       | `MEDIA_STALE_DAYS`, 7d    | ≥ `MEDIA_MIN_SEEDS`, 0   |
 | **F, media-ratio** | a great deal of images, video or audio beside one short file ([more](#rule-f-media-dumps))             | `MEDIA_STALE_DAYS`, 7d    | ≥ `MEDIA_MIN_SEEDS`, 0   |
 | **F, media-batch** | the same media files, published across many repos ([more](#rule-f-media-dumps))                        | `MEDIA_STALE_DAYS`, 7d    | ≥ `MEDIA_MIN_SEEDS`, 0   |
@@ -237,11 +233,11 @@ The parasite-peer rule (G) is missing from the table because it judges a **peer*
 
 The junk-name (A), size (B) and stale (C) rules measure **last activity**. Activity is any signed change, however small: a commit, an issue, a comment, a reaction, a label. The tool uses the newest `creatordate` across every peer's refs.
 
-The spam-batch (D), link-farm (E) and media (F) rules measure **creation** instead, because spam that comments on its own repos would reset a last-activity clock. Creation is the older of the repo's oldest ref date and the day this seed first saw it (`$RAD_HOME/prune-audit/first-seen.tsv`, appended on every run, dry or not). A pusher controls the first date and cannot reach the second.
+The spam-batch (D) and media (F) rules measure **creation** instead, because spam that comments on its own repos would reset a last-activity clock. Creation is the older of the repo's oldest ref date and the day this seed first saw it (`$RAD_HOME/prune-audit/first-seen.tsv`, appended on every run, dry or not). A pusher controls the first date and cannot reach the second.
 
 #### Verdicts that may delete the last copy we know of
 
-`junk-id`, `spam-batch`, `link-farm`, `media-dump`, `media-ratio` and `media-batch`, which default to a seed floor of `0`. "Other seeds" counts the nodes our routing table says announce a repo, not proof a copy exists elsewhere; these verdicts are why pruning [quarantines instead of deleting](#quarantine). `JUNK_ID_MIN_SEEDS=1 SPAM_MIN_SEEDS=1 LINK_MIN_SEEDS=1 MEDIA_MIN_SEEDS=1` restores a floor of 1 for these. `denied` and `denied-copy` have no seed floor and no setting for one.
+`junk-id`, `spam-batch`, `media-dump`, `media-ratio` and `media-batch`, which default to a seed floor of `0`. "Other seeds" counts the nodes our routing table says announce a repo, not proof a copy exists elsewhere; these verdicts are why pruning [quarantines instead of deleting](#quarantine). `JUNK_ID_MIN_SEEDS=1 SPAM_MIN_SEEDS=1 MEDIA_MIN_SEEDS=1` restores a floor of 1 for these. `denied` and `denied-copy` have no seed floor and no setting for one.
 
 #### Names that count as disposable
 
@@ -263,13 +259,13 @@ The thresholds above are the **relaxed** values. As free disk falls, pressure `p
 
 The header prints the live pressure and the effective thresholds every run. Pressure is read from free space once, at the start of a run, counting the quarantine copies that run is due to purge as free, so anything else that fills the disk for a few hours (a cache, a log) makes that run prune as if storage had. A run warns when free space fell by more than 10 GB beyond what storage and the quarantine grew by since the last run `history.log` records, if that run is at most 8 days old. On one node, with every rule on and the size (B) and stale (C) rules pruning at any free space, pruning scaled from ~1.3k repos / 18 GiB at `p=0` to ~7.1k repos / 92 GiB at `p=1`.
 
-**Hard floors never scale.** `MIN_OTHER_SEEDS` bottoms out at 1, every exclusion holds at any pressure, and none of the link-farm rule (E)'s thresholds move with pressure. `DISK_AWARE=0` turns the scaling off, so every knob keeps its relaxed value, the size (B) and stale (C) rules prune at any free space, and a disk at the critical free-space threshold neither empties the quarantine nor holds back the blocks a run lifts.
+**Hard floors never scale.** `MIN_OTHER_SEEDS` bottoms out at 1, and every exclusion holds at any pressure. `DISK_AWARE=0` turns the scaling off, so every knob keeps its relaxed value, the size (B) and stale (C) rules prune at any free space, and a disk at the critical free-space threshold neither empties the quarantine nor holds back the blocks a run lifts.
 
 ## Safety and recovery
 
 - **Dry run by default.** Nothing is pruned, and nothing on the deny list is blocked, without `--apply`. A peer that the parasite-peer rule (G) named is blocked only under `--block-peers`.
 - **Quarantine instead of deletion.** A pruned repo stays on disk for `QUARANTINE_DAYS` (7) and is restorable with one command ([details](#quarantine)).
-- **Minimum seed counts** keep the last copy we know of, except for the [deny list](#deny-list) and [copies of denied files](#copies-of-denied-files), and under `junk-id`, `spam-batch`, `link-farm` and the three verdicts of the media rule (F) ([why](#verdicts-that-may-delete-the-last-copy-we-know-of)).
+- **Minimum seed counts** keep the last copy we know of, except for the [deny list](#deny-list) and [copies of denied files](#copies-of-denied-files), and under `junk-id`, `spam-batch` and the three verdicts of the media rule (F) ([why](#verdicts-that-may-delete-the-last-copy-we-know-of)).
 - **Runaway caps** (`MAX_PRUNE_COUNT`, `MAX_PRUNE_GB`) abort a plan whose rules picked more than either cap; repos on the deny list are not counted, [copies of denied files](#copies-of-denied-files) are. Two things get past them: `--force`, or a person answering `y` at the prompt, which is a human signing off on the numbers just printed. `--yes` is not one of them, so an unattended run still stops.
 - **A rule that suddenly plans far more repos than usual is held back.** An unattended run compares each rule's part of the plan with the median that rule pruned over the last `RATCHET_RUNS` (8) applied runs in which it could prune, however far back those are. A rule that plans more than `RATCHET_FACTOR` (3) times its median, and more than `RATCHET_FLOOR` (20) repos, is held back. Its repos stay in storage, the other rules go ahead, and the run exits 4. A dry run lists what would be held, and every run writes it to `last-run/held.tsv`. `--force` or a `y` at the prompt gets past it. The median comes from the audit logs `history.log` names. A run that held a rule back, ran without it, or had it waiting for disk pressure does not count for that rule, and neither does a repo pruned again after its block was lifted. A rule with fewer than 3 runs that count has `RATCHET_FLOOR` as its limit, and with fewer than 3 readable logs nothing is held. The spam-batch (D) and media (F) rules usually prune nothing, so a sudden batch of more than 20 repos from one of them waits for `--force` or a `y`.
 - **A stopped run deletes nothing from quarantine and lifts no block.** A run the runaway caps stop, or an `n` at the prompt, leaves expired repos there ([more](#quarantine)).
@@ -354,9 +350,9 @@ A run lifts the block on at most `UNDO_MAX_COUNT` (200) deleted repos, and `UNDO
 
 ## Speed
 
-The link-farm (E), media (F) and parasite-peer (G) rules read the contents of every repo, which is most of a run. Almost nothing changes from one weekly run to the next, so what those three rules read is kept in `$AUDIT_DIR/cache`. A repo is reused from the cache when both its refs and its size on disk are identical to what the run that wrote that entry saw; if either has moved, the repo is read again.
+The media (F) and parasite-peer (G) rules read the contents of every repo, which is most of a run. Almost nothing changes from one weekly run to the next, so what those two rules read is kept in `$AUDIT_DIR/cache`. A repo is reused from the cache when both its refs and its size on disk are identical to what the run that wrote that entry saw; if either has moved, the repo is read again.
 
-On a seed of 11,221 repos and 270 GB on six cores, a first run takes about 10 minutes and the next one about 3, reusing 11,218 repos and producing the same plan.
+On a seed of 13,181 repos on six cores, a first run takes about 10 minutes and the next one under 2.5 minutes, reusing all but 4 repos.
 
 The whole cache is dropped whenever the script file changes, or any of the settings below changes value, so a threshold you have just tuned never leaves last week's verdicts standing. The settings that only act on a plan already made keep the cache: `MAX_PRUNE_*`, `MAX_SCAN_FAIL_PCT`, `RATCHET_*`, `UNDO*`, `QUARANTINE*` and `NEAR_PCT`. `CACHE=0` reads every repo on every run; deleting the cache directory forces one full re-read, after which caching resumes.
 
@@ -368,9 +364,9 @@ Every knob is an environment variable. Defaults shown.
 
 | Variable | Default   | Meaning                                                                                       |
 | -------- | --------- | --------------------------------------------------------------------------------------------- |
-| `RULES`  | `ABCDFGH`  | The rules that run; a letter absent from it means that rule neither scans nor plans anything |
+| `RULES`  | `ABCDFGH` | The rules that run; a letter absent from it means that rule neither scans nor plans anything |
 
-`RULES=`, set but empty, means no rules at all, not the default set.
+`RULES=`, set but empty, means no rules at all, not the default set. The link-farm rule (E) was removed in 0.8.0, and an `E` in `RULES` is ignored with a warning.
 
 **Where it runs**
 
@@ -401,14 +397,6 @@ Every knob is an environment variable. Defaults shown.
 | D    | `SPAM_REQUIRE_ID`     | `1`       | Demand a random-id slot in the name skeleton (`0` is looser)            |
 | D    | `SPAM_STALE_DAYS`     | `7`       | Age since creation                                                      |
 | D    | `SPAM_MIN_SEEDS`      | `0`       | Other seeds required; `0` may prune the last copy we know of            |
-| E    | `LINK_MIN_REPOS_PCT`  | `0.4`     | Share of storage that must link to a host before it can be a spam host  |
-| E    | `LINK_MIN_REPOS`      | `8`       | Absolute floor under that share                                         |
-| E    | `LINK_CODE_MAX_PCT`   | `10`      | Share of a host's linkers that may link from their own code             |
-| E    | `LINK_REPO_BUDGET`    | `8000000` | Bytes read per repo, per pass                                          |
-| E    | `LINK_MIN_SCORE`      | `5`       | Spam domains a repo must link to before it is flagged                   |
-| E    | `LINK_DELEGATE_CHECK` | `1`       | Count only links from the repo's own delegates (`0` is faster, unsafe)  |
-| E    | `LINK_STALE_DAYS`     | `7`       | Age since creation                                                      |
-| E    | `LINK_MIN_SEEDS`      | `0`       | Other seeds required; `0` may prune the last copy we know of            |
 | F    | `MEDIA_MIN_BYTES`     | `65536`   | Media bytes below which a repo is not worth judging                     |
 | F    | `MEDIA_TEXT_MAX_BYTES`| `2048`    | Everything that is not media, added up, must stay under this            |
 | F    | `MEDIA_STALE_DAYS`    | `7`       | Age since creation                                                      |
@@ -425,7 +413,7 @@ Every knob is an environment variable. Defaults shown.
 | H    | `MALWARE_STRONG_WORDS` | `hvnc\|stealer\|...` | Lower-case, `\|`-separated words, one of which an identity's repos, or a single repo, must use |
 | H    | `MALWARE_WEAK_WORDS`  | `c2\|payload\|...` | Lower-case, `\|`-separated words that count towards the 3 different words the malware rule (H) needs |
 
-`MEDIA_EXTS` and `LINK_REPO_BUDGET` shape rather than fire. Everything else the content rules use to classify is a constant in the script, next to the comment saying why it has that value.
+`MEDIA_EXTS` shapes rather than fires. Everything else the content rules use to classify is a constant in the script, next to the comment saying why it has that value.
 
 **Brakes**
 
@@ -454,7 +442,7 @@ Every knob is an environment variable. Defaults shown.
 | `QUARANTINE`         | `1`     | Quarantine pruned repos instead of deleting (`0` deletes, with no way back) |
 | `QUARANTINE_DAYS`    | `7`     | Days a quarantined repo stays recoverable before a later run purges it     |
 | `KEEP_FILE`          | `$AUDIT_DIR/keep.txt` | Repos excluded from every rule, one id per line, or a `did:key:` identity, which only the malware rule (H) reads; `quarantine restore` appends to it |
-| `CACHE`              | `1`     | Reuse what the link-farm (E), media (F) and parasite-peer (G) rules, and the check for copies, read out of repos that have not changed (`0` reads everything, every run) |
+| `CACHE`              | `1`     | Reuse what the media (F) and parasite-peer (G) rules, and the check for copies, read out of repos that have not changed (`0` reads everything, every run) |
 | `CACHE_DIR`          | `$AUDIT_DIR/cache` | Where that reading is kept                                      |
 | `PLAN_COLLAPSE_ROWS` | `20`    | Group size at which a corpus verdict folds to one summary line             |
 | `PLAN_FULL`          | `0`     | `1` lists every plan row and every evidence table entry, untruncated       |
@@ -500,10 +488,10 @@ Anything this tool does is written to `$RAD_HOME/prune-audit/` (default `~/.radi
 - **`keep.txt`**: repos excluded from every rule, one id per line, or a `did:key:` identity, which only the malware rule (H) reads; editable by hand; `quarantine restore` appends to it.
 - **`deny.txt`**: repos and identities to prune and block on sight ([more](#deny-list)). The tool only reads it. The audit log names the entry each repo was pruned for on a `# denied:` line, and records each new block of an identity, or of a repo not yet fetched, on a `blocked-denied` line.
 - **`deny-files.tsv`**: files whose copies are pruned too ([more](#copies-of-denied-files)). The tool only reads it. The audit log says how much of each copy was listed files, and from which source, on a `# denied-copy:` line.
-- **`cache/`**: what the link-farm (E), media (F) and parasite-peer (G) rules, and the check for copies, last read out of each repo. Safe to delete at any time; the next run reads everything again.
+- **`cache/`**: what the media (F) and parasite-peer (G) rules, and the check for copies, last read out of each repo. Safe to delete at any time; the next run reads everything again.
 - **`history.log`**: one line appended per applied run that went ahead with its plan: timestamp, repos pruned, GiB moved out of storage, whether the quarantine was on, disk pressure, the run's audit log, and free space and what storage and the quarantine held on that disk when the run started. An unattended run reads the audit logs named here to learn what each rule usually prunes.
 - **`cron.log`**: with the cron recipe above, the full console output of every run.
-- **`first-seen.tsv`**: when this seed first saw each repo. The spam-batch (D), link-farm (E) and media (F) rules read it as a repo's creation date, and the check for copies to tell which repo held a listed file first. Written on every run, dry or not. Deleting it counts every listed file the check had set aside against its copies again.
+- **`first-seen.tsv`**: when this seed first saw each repo. The spam-batch (D) and media (F) rules read it as a repo's creation date, and the check for copies to tell which repo held a listed file first. Written on every run, dry or not. Deleting it counts every listed file the check had set aside against its copies again.
 - **`last-run/`**: what the last run decided and what it decided it on, untrimmed and tab-separated, whether or not that run acted. The terminal folds repetitive rows and cuts each evidence table to its top few; these files hold all of it, for reading later or piping elsewhere. A file named after a rule starts with that rule's letter, so a rule's files sit together. Replaced whole by the next run that gets far enough to write them. A run that aborts earlier leaves the previous run's files, and of the `#` lines at the top of each file, the one that starts with a time names the run that wrote it (time, version, dry or applying, rules, storage path).
   - `plan.tsv`: every repo the run planned to prune, one row each, same columns as the audit log above. It is the plan, not the outcome; what an applying run actually removed is in that run's `prune-*.log`.
   - `held.tsv`: every rule an unattended run would hold back for planning far more than usual, with its planned count, its usual and its limit. Its repos are still listed in `plan.tsv`, since `--force` or a yes would prune them.
@@ -511,8 +499,6 @@ Anything this tool does is written to `$RAD_HOME/prune-audit/` (default `~/.radi
   - `scan-errors.txt`: everything the run could not read.
   - `A-junk-name-kept-imports.tsv`: every junk-named repo the junk-name rule (A) kept because its history starts more than 14 days before its `rad init`.
   - `D-spam-batch-templates.tsv`: every template of the spam-batch rule (D), with how many repos matched it.
-  - `E-link-farm-domains.tsv`: every domain the link-farm rule (E) condemned, with how many repos link to it.
-  - `E-link-unwalked.tsv`: every repo the link-farm rule (E) left out because a branch or tag reaches an object the repo does not have. The other rules still judged them.
   - `F-media-kept-few-seeds.tsv`: every dump the media rule (F) found and kept because fewer than `MEDIA_MIN_SEEDS` other nodes seed it. Empty at the default of 0.
   - `F-media-unjudged.tsv`: every repo the media rule (F) could not read, gave up on for holding more than `MEDIA_MAX_REFS` refs or `MEDIA_MAX_OPS` ops, or could not judge from the files it read, with each one's size. These are the repos its warning counts. The warning comes only when one of them was not on the last run's list, and names those.
   - `G-parasite-peers.tsv`: every peer the parasite-peer rule (G) accused, with the evidence each accusation rests on.
@@ -544,25 +530,6 @@ Every name and description in storage is *skeletonised*: digit runs become `#`, 
 Only the members carrying the agreed description are pruned; repos with no description at all are never flagged. Descriptions differing only by a number count as agreeing.
 
 On a real seed mirroring the whole public network the rule flags 442 repos in 10 batches and nothing else, leaving large mirror imports alone.
-
-## Rule E: link farms
-
-Rule E is off by default, because none of the 36 repos it pruned on one 13k-repo seed was a link farm. `RULES=ABCDEFGH` turns it on.
-
-A **link farm** is a repo published to carry links rather than code. Rule E matches on the addresses a repo points its readers at, so it also reaches a spammer who injects links into a clone of a real project.
-
-Every hostname mentioned anywhere in every repo (committed files, issues, patches, comments) is folded to its **registrable domain**. A domain is a **spam domain** when both hold:
-
-1. at least `LINK_MIN_REPOS_PCT`% of the repos on the seed link to it, and at least `LINK_MIN_REPOS` of them;
-2. fewer than `LINK_CODE_MAX_PCT`% of those repos link to it *from their own code*, meaning from a file reachable from a branch or tag.
-
-A repo is flagged when **its own delegates** link it to at least `LINK_MIN_SCORE` spam domains, the repo is older than `LINK_STALE_DAYS`, and at least `LINK_MIN_SEEDS` other seeds hold it. Only links pushed by the repo's delegates count, so a stranger opening spam issues on somebody's repo cannot get that repo deleted, and a repo whose delegate list cannot be read is dropped from the plan rather than judged.
-
-Both counts are recomputed from storage on every run, so there is no blocklist to maintain.
-
-A code link is ignored in condition 2 when the repo it comes from is itself suspect, so that a farm cannot vouch for the domain it sells. A repo counts as suspect when the spam-batch rule (D) calls it generated, or when it would already qualify as a link farm under a looser version of condition 2 (`LINK_CODE_LOOSE_PCT`, 50%, in place of `LINK_CODE_MAX_PCT`). Turning the spam-batch rule (D) off leaves this rule with a shorter suspect list.
-
-Rule E reads file content, capped per blob (`LINK_BLOB_PREFIX`, 65536 bytes) and per repo (`LINK_REPO_BUDGET`); a blob past the cap is read up to the cap rather than skipped. On the seed above it takes about 4 minutes of a 9-minute uncached dry run with 5 workers.
 
 ## Rule F: media dumps
 
@@ -599,9 +566,9 @@ The **batch path** reaches repos the other two miss, such as one with a script, 
 - everything that is not media adds up to less than `MEDIA_TEXT_CEIL_BYTES` (64 KiB), the wider budget;
 - no branch or tag holds a build file. A source file alone does not spare it.
 
-`MEDIA_MIN_SEEDS=1` raises the floor, and a dump no other node announces is then listed under `# review:` for a human to look at rather than pruned. At the default floor of `0` that list is empty, and rule F, like `spam-batch` and `link-farm`, may prune the last copy this seed knows of, because the evidence is what the repo holds.
+`MEDIA_MIN_SEEDS=1` raises the floor, and a dump no other node announces is then listed under `# review:` for a human to look at rather than pruned. At the default floor of `0` that list is empty, and rule F, like `spam-batch`, may prune the last copy this seed knows of, because the evidence is what the repo holds.
 
-Rule F lists every file of every repo, which is another 4 minutes of that same 9-minute uncached dry run.
+Rule F lists every file of every repo, which takes about 6 minutes of an uncached run with 5 workers on a seed of 13,181 repos.
 
 ## Rule G: parasite peers
 

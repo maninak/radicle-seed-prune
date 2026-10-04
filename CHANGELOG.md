@@ -10,16 +10,15 @@ Replace the script, then do a dry run with the settings your cron uses. The medi
 
 An `--apply` run may now lift the block on repos an earlier release pruned, including one you had blocked by hand before the prune, because those releases did not record your block. A dry run lists the blocks the next `--apply` run would lift in `last-run/undo.tsv`. To keep one blocked, add its repo id to `deny.txt`. A `deny.txt` line naming one of its delegates keeps it blocked only while the repo is still in the quarantine. To lift no block at all, set `UNDO=0`.
 
-If you set `RULES` yourself, take out `E` if it is there, and add `H`. The link-farm rule (E) pruned real projects and is now off by default, and the malware rule (H) is new.
+If you set `RULES` yourself, take out `E` and add `H`. The link-farm rule (E) is gone, and a run warns about an `E` it finds there. The malware rule (H) is new. The link-farm rule left its cache in `hosts`, `hosts-code` and `hosts-fail` in the cache directory (`CACHE_DIR`, by default `cache/` in the audit directory), which nothing reads any more; delete them to free that space.
 
 An unattended run now exits `4` when it holds back a rule that planned far more repos than usual. A monitor that alerts on exit `3` should alert on `4` too.
 
-The files rad-prune writes in the audit directory now open with a few `#` lines saying what they hold, so the line naming the run is no longer the first ([details](./README.md#audit-trail)). In an audit log that line now reads `# <time>  version=<v>  pressure=<p>%  rules=<letters>`. A script that reads any of them must skip lines starting with `#`. One that reads repo ids from an audit log must also skip the new `blocked-denied` rows, as it already skips `blocked-peer` rows. Five files in `last-run/` are renamed:
+The files rad-prune writes in the audit directory now open with a few `#` lines saying what they hold, so the line naming the run is no longer the first ([details](./README.md#audit-trail)). In an audit log that line now reads `# <time>  version=<v>  pressure=<p>%  rules=<letters>`. A script that reads any of them must skip lines starting with `#`. One that reads repo ids from an audit log must also skip the new `blocked-denied` rows, as it already skips `blocked-peer` rows. Four files in `last-run/` are renamed, and `spam-domains.tsv` is gone with the link-farm rule (E):
 
 | Before | Now |
 |---|---|
 | `spam-batches.tsv` | `D-spam-batch-templates.tsv` |
-| `spam-domains.tsv` | `E-link-farm-domains.tsv` |
 | `media-review.tsv` | `F-media-kept-few-seeds.tsv` |
 | `media-unjudged.tsv` | `F-media-unjudged.tsv` |
 | `parasite-peers.tsv` | `G-parasite-peers.tsv` |
@@ -34,7 +33,6 @@ The files rad-prune writes in the audit directory now open with a few `#` lines 
 
 ### Changed
 
-- **The link-farm rule (E) is off by default.** None of the 36 repos it pruned on one 13k-repo seed was a link farm. `--apply` lifts the block on the repos it pruned before this release, unless a repo was over 512 MiB when pruned and is no longer in the quarantine ([details](./README.md#blocks-the-tool-lifts-on-its-own)). A repo still in the quarantine goes back into storage, and a node whose default seeding policy is `allow` fetches the others again.
 - **When one rule plans far more repos than usual, an unattended run holds back only that rule.** The other repos in the plan are pruned, and the run exits `4` ([details](./README.md#safety-and-recovery)). It used to prune nothing and exit `3`.
 - **The size (B) and stale (C) rules prune only under disk pressure.** While free space is at or above the relaxed free-space threshold (`PRESSURE_RELAX_*`), the header marks them `WAITING` ([details](./README.md#disk-pressure)). `DISK_AWARE=0` lets them prune at any free space, and turns off the rest of disk pressure with it. A run in which they wait does not count toward what they usually prune, so their usual stays what it was the last time they could prune. When pressure starts, an unattended run holds either rule back if it plans more than `RATCHET_FACTOR` (3) times that usual and more than `RATCHET_FLOOR` (20) repos.
 - **The media rule (F) leaves a repo with more than `MEDIA_MAX_OPS` (20000) issue and patch ops unjudged.** The busiest real project on a 13k-repo seed has about 11k ops. The rule also no longer reads the code history that a patch's commits reach.
@@ -43,6 +41,10 @@ The files rad-prune writes in the audit directory now open with a few `#` lines 
 - **`quarantine restore` writes the restore date and what the repo was pruned as beside its id in `keep.txt`.**
 - **An `--apply` or `--block-peers` run that gets past its settings check prints its exit code last, and records it in its audit log when it wrote one.**
 - **Changing `MAX_PRUNE_*`, `MAX_SCAN_FAIL_PCT`, a `RATCHET_*` or `QUARANTINE*` setting, or `NEAR_PCT` no longer clears the run cache.** The next run does not re-read every repo.
+
+### Removed
+
+- **The link-farm rule (E) is removed.** None of the 36 repos it pruned on one 13k-repo seed was a link farm. An `E` in `RULES` is ignored with a warning, and the `LINK_*` settings do nothing. `--apply` lifts the block on the repos it pruned before this release, unless a repo was over 512 MiB when pruned and is no longer in the quarantine ([details](./README.md#blocks-the-tool-lifts-on-its-own)). A repo still in the quarantine goes back into storage, and a node whose default seeding policy is `allow` fetches the others again.
 
 ### Fixed
 
@@ -63,7 +65,6 @@ The files rad-prune writes in the audit directory now open with a few `#` lines 
 - **`history.log` and the `DONE` line count only what left storage.** A run that could not remove every repo in its plan used to count the whole plan.
 - **Repos that `rad ls` lists as `local` are no longer pruned as `spam-batch`.** Their head commit was read as their description.
 - **A run no longer writes over the audit log of a run that opened its own in the same second.** It waits for the next second.
-- **A repo with a branch or tag git cannot walk sits out the link-farm rule (E).** It used to count with fewer of its own links, which could make a host its code depends on look like spam. The other rules still judge it.
 - **A run by hand and a run from cron no longer drop each other's cache when they start bash from different paths or run with a different `HOME`.** Each used to read every repo again, as on a first run.
 - **An unexpected failure always exits `1`.** It used to pass on the failed command's exit code, which could look like exit `3` or `5`.
 - **rad-prune keeps working once `rad` drops `rad self --nid`.** rad 1.10 deprecates the flag.
@@ -135,7 +136,7 @@ Rules E, F and G are new and on by default, so read one dry run before you apply
 
 ### Added
 
-- **Rule E, link farms.** Prunes repos published to carry links rather than code: a domain counts as spam when many repos link to it but almost none from their own code, and a repo is pruned when its own delegates link it to `LINK_MIN_SCORE` such domains ([details](./README.md#rule-e-link-farms)). Both counts are recomputed from storage every run, so there is no blocklist to maintain, and like `spam-batch` it defaults to a seed floor of `0` (`LINK_MIN_SEEDS=1` restores a floor).
+- **Rule E, link farms.** Prunes repos published to carry links rather than code: a domain counts as spam when many repos link to it but almost none from their own code, and a repo is pruned when its own delegates link it to `LINK_MIN_SCORE` such domains. Both counts are recomputed from storage every run, so there is no blocklist to maintain, and like `spam-batch` it defaults to a seed floor of `0` (`LINK_MIN_SEEDS=1` restores a floor).
 
 - **Rule F, media dumps.** Prunes repos that are video, images or audio with almost no text, judged by file content rather than file names, and a second verdict, `media-batch`, catches the same media published across many repos ([details](./README.md#rule-f-media-dumps)). It keeps the last copy we know of by default, and it adds about 4 minutes to an uncached dry run on an 11k-repo seed.
 

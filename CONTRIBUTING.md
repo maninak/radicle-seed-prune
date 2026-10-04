@@ -21,7 +21,7 @@ Then post in Zulip with:
 - the repo id, and the rule that caught it (the `reason` column)
 - the version, from `rad prune --version`
 - that repo's row from `$RAD_HOME/prune-audit/last-run/plan.tsv`
-- for the spam-batch (D), link-farm (E), media (F) and parasite-peer (G) rules, the matching rows from the evidence file beside it: `D-spam-batch-templates.tsv`, `E-link-farm-domains.tsv`, `F-media-kept-few-seeds.tsv`, `G-parasite-peers.tsv`. Those rows are what the rule decided on, and without them a tuning can only be guessed at.
+- for the spam-batch (D), media (F) and parasite-peer (G) rules, the matching rows from the evidence file beside it: `D-spam-batch-templates.tsv`, `F-media-kept-few-seeds.tsv`, `G-parasite-peers.tsv`. Those rows are what the rule decided on, and without them a tuning can only be guessed at.
 
 Spam that every rule missed is as welcome as a false positive: send the repo id, and what marks it as junk/spam/abuse to your eye.
 
