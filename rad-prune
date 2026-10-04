@@ -1317,8 +1317,8 @@ fi
 # number, a typo turns every test against it false, which lets everything through without a
 # word, and a leading zero reads as octal. Checked here, after the quarantine verbs, which use
 # none of them.
-for knob in MAX_PRUNE_COUNT RATCHET_FACTOR RATCHET_RUNS RATCHET_FLOOR MEDIA_RATIO_MIN_BYTES \
-            UNDO_MAX_COUNT UNDO_MAX_GB; do
+for knob in MAX_PRUNE_COUNT MAX_PRUNE_GB RATCHET_FACTOR RATCHET_RUNS RATCHET_FLOOR \
+            MEDIA_RATIO_MIN_BYTES UNDO_MAX_COUNT UNDO_MAX_GB; do
   case "${!knob}" in
     0) ;;
     ''|0*|*[!0-9]*) echo "# $knob must be a whole number, not '${!knob}'." >&2; exit 2 ;;
@@ -2462,9 +2462,11 @@ awk -F'\t' -v du="$tmp/du" \
 # on every start, so a hand run and a cron run invalidated each other's cache in both
 # directions, which on an 11k-repo seed is a full uncached run every time. The names below are
 # left out because none of them can change a verdict: they say how the work is done, how it is
-# printed, which service gets restarted, and which bash runs the workers (a hand run and cron
-# may resolve different paths to the same shell).
-skip='JOBS|CACHE|PLAN_FULL|PLAN_COLLAPSE_ROWS|SERVICE|PROGRESS_SECS|BASH'
+# printed, which service gets restarted, which bash runs the workers (a hand run and cron may
+# resolve different paths to the same shell), and the HOME a default RAD_HOME is built from
+# (RAD_HOME is hashed as resolved). HOME also picks git's user config, which a few git reads
+# here depend on, but hashing HOME never covered that file's contents either way.
+skip='JOBS|CACHE|PLAN_FULL|PLAN_COLLAPSE_ROWS|SERVICE|PROGRESS_SECS|BASH|HOME'
 knobs=$(grep -oE '\$\{[A-Z_][A-Z0-9_]*[:-]' "$SELF" 2>/dev/null \
         | tr -d '${:-' | grep -vxE "$skip" | sort -u)
 fingerprint=$( { sha1sum < "$SELF"
@@ -4086,11 +4088,14 @@ if [ "$nimportblind" -gt 0 ]; then
 fi
 # Two people's words disagree here, and the one that keeps the repo wins, since a prune is the
 # one of the two that cannot be taken back. Named, so the disagreement gets settled by hand.
-if [ -s "$tmp/deny-kept" ]; then
-  echo "# WARN: $(wc -l < "$tmp/deny-kept") repo(s) on the deny list or holding copies of" \
+ndenykept=$(wc -l < "$tmp/deny-kept")
+if [ "$ndenykept" -gt 0 ]; then
+  echo "# WARN: $ndenykept repo(s) on the deny list or holding copies of" \
        "denied files are kept anyway, because they are pinned, private, our own or in" \
        "$KEEP_FILE:" >&2
-  sed 's/^/#   /; s/\t/  /' "$tmp/deny-kept" >&2
+  head -n "$top_evidence" "$tmp/deny-kept" | sed 's/^/#   /; s/\t/  /' >&2
+  [ "$ndenykept" -gt "$top_evidence" ] \
+    && echo "#   ...and $((ndenykept - top_evidence)) more (PLAN_FULL=1 lists them)" >&2
 fi
 # A repo can reach $tmp/repos without being one of the directories counted at the top of the
 # walk, so this subtraction can come out below zero and must not then credit the scan.

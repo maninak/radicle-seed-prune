@@ -2879,9 +2879,11 @@ grep -q 'cannot read 2 of the 4 most recent audit logs' <<<"$out" \
   && ok "the ratchet says when the audit logs it measures against are gone" \
   || no "missing audit logs thinned the ratchet's baseline without a word"
 out=$(RATCHET_FLOOR=twenty "$SCRIPT" 2>&1); rc=$?
-{ [ "$rc" = 2 ] && grep -q 'RATCHET_FLOOR must be a whole number' <<<"$out"; } \
+out2=$(MAX_PRUNE_GB=80G "$SCRIPT" 2>&1); rc2=$?
+{ [ "$rc" = 2 ] && grep -q 'RATCHET_FLOOR must be a whole number' <<<"$out" \
+    && [ "$rc2" = 2 ] && grep -q 'MAX_PRUNE_GB must be a whole number' <<<"$out2"; } \
   && ok "a brake set to something other than a whole number stops the run" \
-  || no "a mistyped brake was read as a number (rc=$rc)"
+  || no "a mistyped brake was read as a number (rc=$rc, MAX_PRUNE_GB rc=$rc2)"
 
 # --- a run that stops leaves the quarantine as it found it --- The stop is what makes a human
 # look, and what they look at includes the last runs' verdicts, which only the quarantine has.

@@ -444,7 +444,7 @@ Every knob is an environment variable. Defaults shown.
 | ------------------- | ------- | ------------------------------------------------------------------- |
 | `FRESH_GUARD_DAYS`  | `2`     | Skip repos written this recently (an in-flight fetch)               |
 | `MAX_PRUNE_COUNT`   | `1000`  | Runaway guard: abort over this many repos                           |
-| `MAX_PRUNE_GB`      | `80`    | Runaway guard: abort over this much disk                            |
+| `MAX_PRUNE_GB`      | `80`    | Runaway guard: abort over this many whole GiB                       |
 | `RATCHET_FACTOR`    | `3`     | Hold back a rule that plans over this multiple of its recent median |
 | `RATCHET_RUNS`      | `8`     | Applied runs the median is taken over; under 3 holds nothing back   |
 | `RATCHET_FLOOR`     | `20`    | A rule planning this many repos or fewer is never held back         |
