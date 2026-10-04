@@ -5260,6 +5260,12 @@ while IFS=$'\t' read -r rid _; do
   # repo's message. A $tmp this cannot write is a $tmp the redirections below cannot write
   # either, and then no repo is touched at all.
   : > "$tmp/prune-err" 2>/dev/null || true
+  # A storage entry whose name is no repo id has no repo for rad to unseed or block, and a
+  # path built from it may point outside storage, so it is left alone before either.
+  if ! is_rid "$rid"; then
+    progress_warn "#   SKIP not a repo id, left alone: $STORAGE/$rid"
+    continue
+  fi
   # Who can bring the repo back by pushing to it, and what each of them had pushed, read while
   # the repo is still here. A later run lifts the block when a delegate's node announces
   # something else: a node announcing what it already had is no push. Unrecorded, the repo

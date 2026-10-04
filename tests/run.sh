@@ -3040,6 +3040,20 @@ rm -f "$AUDIT_DIR/deny.txt" "$AUDIT_DIR/keep.txt"
   && ok "a kept repo whose delegate is denied still sets its file aside" \
   || no "a kept repo lost its file to the copies of it once its delegate was denied"
 
+# A storage entry named like no repo id is left alone by --apply, before rad is asked to unseed
+# or block it, however it got into the plan.
+build_fixture; assert_isolated
+e_tree zcode4 90 master "leak.mp4:6291456:same" "README.md:100"
+cp -a "$STORAGE/zcode4" "$STORAGE/zcode_4"
+leak=$(GIT_DIR="$STORAGE/zcode4" git rev-parse master:leak.mp4)
+printf '%s\t6291456\trad:zgonesrc\t2026-10-02\n' "$leak" > "$AUDIT_DIR/deny-files.tsv"
+out=$(RULES='' "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1)
+{ [ -e "$STORAGE/zcode_4" ] && [ ! -e "$STORAGE/zcode4" ] \
+    && ! grep -q 'zcode_4' "$RSP_HOME/.stub_block" "$RSP_HOME/.stub_unseed" \
+    && grep -qF "SKIP not a repo id, left alone: $STORAGE/zcode_4" <<<"$out"; } \
+  && ok "an entry that is no repo id is left alone, neither blocked nor removed" \
+  || no "--apply blocked or removed a storage entry that is no repo id"
+
 # A row naming a restored repo stops condemning. A row missing its size column must not read
 # its date as the source and slip past that. The cache is warm here, so the list changing is
 # what has to send each repo to be checked again. zcode7 has lost the object of its other
