@@ -2487,9 +2487,15 @@ awk -F'\t' -v du="$tmp/du" \
 # left out because none of them can change a verdict: they say how the work is done, how it is
 # printed, which service gets restarted, which bash runs the workers (a hand run and cron may
 # resolve different paths to the same shell), and the HOME a default RAD_HOME is built from
-# (RAD_HOME is hashed as resolved). HOME also picks git's user config, which a few git reads
-# here depend on, but hashing HOME never covered that file's contents either way.
+# (RAD_HOME is hashed as resolved). HOME also picks git's user config, but hashing HOME never
+# covered that file's contents either way.
 skip='JOBS|CACHE|PLAN_FULL|PLAN_COLLAPSE_ROWS|SERVICE|PROGRESS_SECS|BASH|HOME'
+# These act on a plan already built, or on what happens to its repos, and no worker that writes
+# the cache reads them. Hashing them made an operator who lowered a cap for one careful run pay
+# for a full uncached read of every repo.
+skip+='|MAX_PRUNE_COUNT|MAX_PRUNE_GB|MAX_SCAN_FAIL_PCT'
+skip+='|RATCHET_FACTOR|RATCHET_RUNS|RATCHET_FLOOR'
+skip+='|UNDO|UNDO_MAX_COUNT|UNDO_MAX_GB|QUARANTINE|QUARANTINE_DAYS|NEAR_PCT'
 knobs=$(grep -oE '\$\{[A-Z_][A-Z0-9_]*[:-]' "$SELF" 2>/dev/null \
         | tr -d '${:-' | grep -vxE "$skip" | sort -u)
 fingerprint=$( { sha1sum < "$SELF"

@@ -370,7 +370,7 @@ The link-farm (E), media (F) and parasite-peer (G) rules read the contents of ev
 
 On a seed of 11,221 repos and 270 GB on six cores, a first run takes about 10 minutes and the next one about 3, reusing 11,218 repos and producing the same plan.
 
-The whole cache is dropped whenever the script file changes, or any of the settings below changes value, so a threshold you have just tuned never leaves last week's verdicts standing. `CACHE=0` reads every repo on every run; deleting the cache directory forces one full re-read, after which caching resumes.
+The whole cache is dropped whenever the script file changes, or any of the settings below changes value, so a threshold you have just tuned never leaves last week's verdicts standing. The settings that only act on a plan already made keep the cache: `MAX_PRUNE_*`, `MAX_SCAN_FAIL_PCT`, `RATCHET_*`, `UNDO*`, `QUARANTINE*` and `NEAR_PCT`. `CACHE=0` reads every repo on every run; deleting the cache directory forces one full re-read, after which caching resumes.
 
 ## Configuration
 

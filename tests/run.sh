@@ -2292,6 +2292,11 @@ DISK_AWARE=0 run | grep -qE "^zmediaone .*media-dump" \
 # A threshold the operator has just tuned must not leave last week's verdicts standing.
 build_fixture; assert_isolated
 DISK_AWARE=0 run >/dev/null
+# ...while a cap acts on the plan after every reading is in, so tightening it keeps the cache.
+out=$(DISK_AWARE=0 MAX_PRUNE_GB=79 run 2>&1)
+grep -q 'cache: media reuses' <<<"$out" \
+  && ok "changing a cap keeps the cache" \
+  || no "a cap that no reading depends on still drops the cache"
 out=$(DISK_AWARE=0 MEDIA_MIN_BYTES=999999999 "${NOTTY[@]}" "$SCRIPT" </dev/null 2>&1)
 { grep -q 'cache: cold' <<<"$out" && ! has "$out" "zmediaone"; } \
   && ok "changing a threshold drops the whole cache" \
