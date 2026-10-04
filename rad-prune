@@ -624,6 +624,16 @@ PRESSURE_RELAX_PCT="${PRESSURE_RELAX_PCT:-20}"   # >= max(pct,gb) free  -> press
 PRESSURE_RELAX_GB="${PRESSURE_RELAX_GB:-20}"
 PRESSURE_CRIT_PCT="${PRESSURE_CRIT_PCT:-10}"     # <= min(pct,gb) free -> pressure 1 (max)
 PRESSURE_CRIT_GB="${PRESSURE_CRIT_GB:-2}"
+# GB of free space a run may find gone since the last run history.log records, beyond what
+# storage and the quarantine grew by, before it warns that something else is filling the disk.
+# Pressure reads one sample of free space, so a cache that fills the disk for a few hours
+# steers a whole run.
+DISK_DROP_WARN_GB=10
+# Days old that run's line may be and still count as a baseline. history.log gains a line only
+# from a run that goes ahead with a plan, and against a line months old the slow growth of
+# logs and caches adds up past DISK_DROP_WARN_GB to a warning every week. Just over one weekly
+# cycle.
+DISK_DROP_BASELINE_DAYS=8
 ABS_SIZE_FLOOR_MB_AGG="${ABS_SIZE_FLOOR_MB_AGG:-50}"     # full-pressure endpoints
 REL_PCTL_AGG="${REL_PCTL_AGG:-50}"
 OUTLIER_STALE_DAYS_AGG="${OUTLIER_STALE_DAYS_AGG:-14}"
@@ -1229,7 +1239,7 @@ quar_purge_expired() {
 # afford to do this sit far apart in the apply path below.
 quar_purge_all_if_critical() {
   [ "$QUARANTINE" = 1 ] && [ "$DISK_AWARE" = 1 ] \
-    && awk -v a="$disk_avail" -v c="$crit_free" 'BEGIN{exit !(a <= c)}' || return 0
+    && awk -v a="$free_eff" -v c="$crit_free" 'BEGIN{exit !(a <= c)}' || return 0
   local d purged=0
   for d in "$quar"/z*; do
     [ -e "$d" ] || continue
@@ -1412,15 +1422,34 @@ esac
 
 # disk pressure p in [0,1] on the storage filesystem
 read -r disk_total disk_avail < <(df -Pk "$STORAGE" \
-  | awk 'NR==2{printf "%.0f %.0f\n", $2*1024, $4*1024}')
+  | awk 'NR==2{printf "%.0f %.0f\n", $2*1024, $4*1024}') || true
 : "${disk_total:=0}"; : "${disk_avail:=0}"
+# A disk of no size, from a df that failed or printed no number, reads as full, and full
+# pressure empties the quarantine.
+if [ "$DISK_AWARE" = 1 ] && [ "$disk_total" = 0 ]; then
+  echo "# cannot read the size of the disk $STORAGE is on (df), so disk pressure is unknown." \
+       "DISK_AWARE=0 runs without it." >&2
+  exit 5
+fi
+# Pressure counts what this run's own purge frees as free already. A copy a run pruned a week
+# ago is due now, and reading pressure before it goes would prune a second wave for the space
+# the first is about to give back. Only a quarantine on the storage filesystem frees space
+# here.
+quar_due=0
+if [ "$QUARANTINE" = 1 ] && [ -d "$quar" ] \
+   && [ "$(stat -L -c %d "$quar")" = "$(stat -L -c %d "$STORAGE")" ]; then
+  # Summed line by line: xargs splits a long list over several du calls, each with a total.
+  quar_due=$(quar_expired | xargs -r -d '\n' du -sb 2>/dev/null \
+               | awk '{ s += $1 } END { printf "%.0f", s }') || true
+fi
+free_eff=$(awk -v a="$disk_avail" -v q="${quar_due:-0}" 'BEGIN { printf "%.0f", a + q }')
 relax_free=$(awk -v t="$disk_total" -v p="$PRESSURE_RELAX_PCT" -v g="$PRESSURE_RELAX_GB" \
   'BEGIN{a=t*p/100;b=g*1e9;print (a>b)?a:b}')
 crit_free=$(awk  -v t="$disk_total" -v p="$PRESSURE_CRIT_PCT"  -v g="$PRESSURE_CRIT_GB" \
   'BEGIN{a=t*p/100;b=g*1e9;print (a<b)?a:b}')
 # Free-space thresholds set the wrong way round leave no band to interpolate over. The critical
 # one still empties the quarantine at or under it, so pressure is full there and none above it.
-p=$(awk -v av="$disk_avail" -v r="$relax_free" -v c="$crit_free" -v on="$DISK_AWARE" 'BEGIN{
+p=$(awk -v av="$free_eff" -v r="$relax_free" -v c="$crit_free" -v on="$DISK_AWARE" 'BEGIN{
   if(on=="0"){print 0;exit} if(r<=c){print (av<=c)?1:0;exit}
   x=(r-av)/(r-c); if(x<0)x=0; if(x>1)x=1; printf "%.3f",x }')
 if [ "$DISK_AWARE" = 1 ] \
@@ -1476,7 +1505,10 @@ free_pct=$(awk -v a="$disk_avail" -v t="$disk_total" 'BEGIN{printf "%.1f",(t>0)?
 press_pct=$(awk -v p="$p" 'BEGIN{printf "%.0f",p*100}')
 relax_gb=$(awk -v r="$relax_free" 'BEGIN{printf "%.0f",r/1e9}')
 crit_gb=$(awk  -v c="$crit_free" 'BEGIN{printf "%.0f",c/1e9}')
-echo "# disk: ${free_gb}GB free (${free_pct}%)  pressure=${press_pct}%" \
+due_note=""
+[ "${quar_due:-0}" = 0 ] \
+  || due_note=$(awk -v q="$quar_due" 'BEGIN{printf " + %.1fGB due out of quarantine",q/1e9}')
+echo "# disk: ${free_gb}GB free (${free_pct}%)${due_note}  pressure=${press_pct}%" \
      "[relax>=${relax_gb}GB crit<=${crit_gb}GB]"
 
 rule_a="A junk(>${eff_junk_days}d, seeds>=${JUNK_MIN_SEEDS}, spare-import>${IMPORT_SPARE_DAYS}d;"
@@ -2184,7 +2216,7 @@ fi
 # and quarantined repos cost no fetch, so the budget is spent on the deleted ones alone.
 : > "$tmp/undo-states"
 undo_crit=0
-[ "$DISK_AWARE" = 1 ] && awk -v a="$disk_avail" -v c="$crit_free" 'BEGIN{exit !(a <= c)}' \
+[ "$DISK_AWARE" = 1 ] && awk -v a="$free_eff" -v c="$crit_free" 'BEGIN{exit !(a <= c)}' \
   && undo_crit=1
 undo_n=0; undo_bytes=0; undo_max_bytes=$(( UNDO_MAX_GB * 1073741824 ))
 while IFS=$'\t' read -r order rid why reason size at ver copy; do
@@ -2468,6 +2500,36 @@ find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -print0 2>>"$scanerr" \
 progress_stop
 find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -printf '%f\t%T@\n' 2>>"$scanerr" \
   > "$tmp/mtimes" || true
+
+# What storage and the quarantine hold on the disk free space is read from, for history.log.
+# Measured the way the scan measures repos (apparent size), so one run compares with the next
+# like for like. A quarantine on another filesystem takes nothing from this one's free space.
+used_bytes=$(awk -F'\t' '{ s += $1 } END { printf "%.0f", s }' "$tmp/du")
+quar_bytes=0
+if [ -d "$quar" ] && [ "$(stat -L -c %d "$quar")" = "$(stat -L -c %d "$STORAGE")" ]; then
+  # du still prints the total when it cannot read a file, and exits 1 for it.
+  quar_bytes=$(du -sb "$quar/" 2>/dev/null | cut -f1) || true
+fi
+used_gb=$(awk -v s="$used_bytes" -v q="${quar_bytes:-0}" 'BEGIN { printf "%.1f", (s + q) / 1e9 }')
+# Free space that left since the last run history.log records, minus what storage and the
+# quarantine grew by, is what something else on the disk took. A line written before these
+# fields existed has neither, and is skipped, as is one older than DISK_DROP_BASELINE_DAYS.
+last_hist=$(grep -v '^#' "$AUDIT_DIR/history.log" 2>/dev/null | tail -1) || true
+prev_free=$(grep -oE 'free_gb=[0-9.]+' <<<"$last_hist" | cut -d= -f2) || true
+prev_used=$(grep -oE 'used_gb=[0-9.]+' <<<"$last_hist" | cut -d= -f2) || true
+prev_ts=${last_hist%%$'\t'*}
+prev_at=$(date -u -d "$prev_ts" +%s 2>/dev/null) || prev_at=0
+if [ "$DISK_AWARE" = 1 ] && [ -n "$prev_free" ] && [ -n "$prev_used" ] \
+   && [ "$prev_at" -ge $(( now - DISK_DROP_BASELINE_DAYS*86400 )) ]; then
+  elsewhere_gb=$(awk -v pf="$prev_free" -v f="$free_gb" -v pu="$prev_used" -v u="$used_gb" \
+                   'BEGIN { printf "%.1f", (pf - f) - (u - pu) }')
+  if awk -v e="$elsewhere_gb" -v w="$DISK_DROP_WARN_GB" 'BEGIN { exit !(e > w) }'; then
+    echo "# WARN: free space fell from ${prev_free} to ${free_gb} GB since ${prev_ts}," \
+         "${elsewhere_gb} GB more than storage and the quarantine grew by. Something else" \
+         "on this disk took it, and pressure=${press_pct}% is read from that one sample of" \
+         "free space." >&2
+  fi
+fi
 
 # Every per-repo worker after the scan is fed through this. Repos the cache already answers
 # for are dropped here rather than inside each worker, so what a rule reads and what it reuses
@@ -5206,13 +5268,16 @@ fi
 
 # one appended line per run: the index into the per-run audit logs
 add_header "$AUDIT_DIR/history.log" \
-  "One line per applying run: when, repos pruned, GiB moved out of storage, quarantine on or" \
-  "off, disk pressure, and the name of that run's own log. Unattended runs read it to learn" \
-  "what each rule usually prunes." \
+  "One line per applying run that went ahead with its plan: when, repos pruned, GiB moved" \
+  "out of storage, quarantine on or off, disk pressure, the name of that run's own log, and free" \
+  "space and what storage and the quarantine held on that disk when it started. Unattended" \
+  "runs read it to learn what each rule usually prunes." \
   || echo "# WARN: could not add a header to $AUDIT_DIR/history.log." >&2
-printf '%s\tdeleted=%s\treclaimed_gib=%s\tquarantine=%s\tpressure=%s%%\taudit=%s\n' \
+hist_fmt='%s\tdeleted=%s\treclaimed_gib=%s\tquarantine=%s\tpressure=%s%%\taudit=%s'
+hist_fmt+='\tfree_gb=%s\tused_gb=%s\n'
+printf "$hist_fmt" \
   "$run_ts" "$deleted" "$gone_gib" "$([ "$QUARANTINE" = 1 ] && echo on || echo off)" \
-  "$press_pct" "$(basename "$audit")" \
+  "$press_pct" "$(basename "$audit")" "$free_gb" "$used_gb" \
   >> "$AUDIT_DIR/history.log"
 
 # The GiB figure is what LEAVES storage. With quarantine on it is not free space yet, and

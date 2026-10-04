@@ -41,6 +41,7 @@ A run that holds back a rule exits `4`. A monitor that alerts on exit `3` should
 - **The media rule (F)'s warning about repos it could not judge comes only when one of them is new since the last run, and names the new ones.** The same busy repos are left unjudged every week, and a warning that repeats weekly stops being read. `last-run/F-media-unjudged.tsv` gains each repo's size.
 - **`quarantine restore` writes when it restored the repo and what it was pruned as beside its id in `keep.txt`.**
 - **An `--apply` or `--block-peers` run that gets past its settings check prints its exit code last and records it in its audit log.**
+- **`history.log` records free space and what storage and the quarantine held, after the audit log's name, and a run warns when free space fell by more than 10 GB beyond what they grew by since a run at most 8 days earlier.** Pressure is read from one sample of free space, so something else filling the disk for a few hours makes a run prune as if storage had.
 
 ### Fixed
 
@@ -61,6 +62,7 @@ A run that holds back a rule exits `4`. A monitor that alerts on exit `3` should
 - **A repo with no `refs/rad/id` of its own is judged without a name.** A description in another repo's `rad ls` row could forge a row naming it. A run says how many rows it set aside.
 - **A stopped run no longer deletes expired repos from the quarantine.** A run stopped by the runaway caps or by an `n` at the prompt used to delete them first.
 - **A disk at or under the critical free-space threshold counts as full pressure even when `PRESSURE_CRIT_*` is set above `PRESSURE_RELAX_*`.**
+- **A run that cannot read the size of its disk stops with exit `5` and says so, unless `DISK_AWARE=0`.** A `df` that printed no number read as a full disk, which empties the quarantine.
 - **A typo in `MAX_PRUNE_COUNT`, `MAX_PRUNE_GB`, a `RATCHET_*` setting, `MEDIA_MAX_REFS`, `MEDIA_MAX_OPS`, `DISK_AWARE` or `QUARANTINE` stops the run with exit `2`.** It used to turn a check off without a word, and a `QUARANTINE` typo deleted repos outright.
 - **rad-prune finds `keep.txt`, `deny.txt` and the quarantine when `AUDIT_DIR` or `RAD_HOME` is a relative path.** It used to look for them under `/`, so the keep list read as empty and repos on it could be pruned.
 - **A run by hand and a run from cron no longer drop each other's cache when they start bash from different paths or run with a different `HOME`.** Each used to read every repo again, as on a first run.

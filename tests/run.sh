@@ -2438,6 +2438,66 @@ out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 STALE_YEARS_DAYS=30 "${NOTTY[@]}" "$SCRIP
   && ok "a repo untouched for years still gets its full quarantine window" \
   || no "quarantine measured the window from the repo's own mtime, so it purged immediately"
 
+# --- free space that something outside storage took --- Pressure reads one sample of free
+# space, so a run says when it fell by far more than storage and the quarantine grew. A last
+# line with free_gb=99999 is a drop from a disk that large; free_gb=0 is no drop at all.
+build_fixture; assert_isolated
+calm_disk="DISK_AWARE=1 PRESSURE_RELAX_PCT=0 PRESSURE_RELAX_GB=0 PRESSURE_CRIT_PCT=0"
+calm_disk="$calm_disk PRESSURE_CRIT_GB=0 RULES=AB"
+mkdir -p "$AUDIT_DIR"
+fresh=$(date -u -d "2 days ago" +%Y-%m-%dT%H:%M:%SZ)
+printf '%s\tdeleted=0\tfree_gb=99999.0\tused_gb=0.0\taudit=x.log\n' "$fresh" \
+  > "$AUDIT_DIR/history.log"
+dropped=$(env $calm_disk "$SCRIPT" 2>&1)
+printf '%s\tdeleted=0\tfree_gb=0.0\tused_gb=0.0\taudit=x.log\n' "$fresh" \
+  > "$AUDIT_DIR/history.log"
+steady=$(env $calm_disk "$SCRIPT" 2>&1)
+# A month-old line is no baseline: logs and caches outside storage grow that much on their own.
+printf '%s\tdeleted=0\tfree_gb=99999.0\tused_gb=0.0\taudit=x.log\n' \
+  "$(date -u -d "30 days ago" +%Y-%m-%dT%H:%M:%SZ)" > "$AUDIT_DIR/history.log"
+stale=$(env $calm_disk "$SCRIPT" 2>&1)
+env $calm_disk "${NOTTY[@]}" "$SCRIPT" --apply </dev/null >/dev/null 2>&1
+{ grep -q "WARN: free space fell from 99999.0 to .* since $fresh," <<<"$dropped" \
+  && ! grep -q 'WARN: free space fell' <<<"$steady" \
+  && ! grep -q 'WARN: free space fell' <<<"$stale" \
+  && tail -1 "$AUDIT_DIR/history.log" \
+     | grep -qE $'\taudit=prune-[^\t]+\tfree_gb=[0-9.]+\tused_gb=[0-9.]+$'; } \
+  && ok "a run records free space and warns when something outside storage took it" \
+  || no "free space that left from outside storage went unrecorded or unwarned"
+# Rule B waited in that run, so its log must not say it could prune: the ratchet would read the
+# week as one in which B pruned nothing, and pull its usual down.
+grep -q '  rules=A$' "$(ls "$AUDIT_DIR"/prune-*.log | tail -1)" \
+  && ok "a run records a rule waiting for disk pressure as not on" \
+  || no "a waiting rule was recorded as on, a zero sample for the ratchet"
+
+# --- pressure counts what the run's own purge frees --- A df that reports a 10 MB disk with
+# 1 MB free puts the disk under pressure, and a 3 MB copy due out of the quarantine lifts it
+# above the relaxed threshold of 2 MB, so the size and stale rules (B, C) wait. A df that
+# prints nothing is no reading at all, and full pressure would empty the quarantine.
+build_fixture; assert_isolated
+fakedf="$ROOT/fakedf"; mkdir -p "$fakedf"
+printf '#!/bin/sh\necho "Filesystem 1024-blocks Used Available Capacity Mounted"\n%s\n' \
+  'echo "fake 10240 9240 1000 90% /"' > "$fakedf/df"
+chmod +x "$fakedf/df"
+small="DISK_AWARE=1 PRESSURE_RELAX_PCT=20 PRESSURE_RELAX_GB=0 PRESSURE_CRIT_PCT=0"
+small="$small PRESSURE_CRIT_GB=0"
+Q="$RSP_HOME/prune-audit/quarantine"
+squeezed=$(env PATH="$fakedf:$PATH" $small "$SCRIPT" 2>&1)
+mkdir -p "$Q/zdueq1"; head -c 3000000 /dev/zero > "$Q/zdueq1/pack"
+touch -d "10 days ago" "$Q/zdueq1"
+relieved=$(env PATH="$fakedf:$PATH" $small "$SCRIPT" 2>&1)
+{ ! grep -q 'B size.*WAITING' <<<"$squeezed" \
+  && grep -q 'B size.*\[WAITING: no disk pressure\]' <<<"$relieved" \
+  && grep -q '^# disk: .*GB due out of quarantine' <<<"$relieved"; } \
+  && ok "pressure counts the quarantine a run is about to purge as free" \
+  || no "a copy due out of the quarantine left the disk under pressure"
+printf '#!/bin/sh\nexit 1\n' > "$fakedf/df"
+out=$(env PATH="$fakedf:$PATH" DISK_AWARE=1 "${NOTTY[@]}" "$SCRIPT" --apply --yes </dev/null 2>&1)
+rc=$?
+{ [ "$rc" = 5 ] && [ -d "$Q/zdueq1" ] && grep -q 'cannot read the size of the disk' <<<"$out"; } \
+  && ok "a disk whose size cannot be read stops the run, quarantine untouched" \
+  || no "an unreadable disk size read as full pressure (rc=$rc)"
+
 # A seed that has caught up has an empty plan every week. If the purge only ran on weeks with
 # something to prune, quarantined disk would never come back at all.
 build_fixture; assert_isolated
