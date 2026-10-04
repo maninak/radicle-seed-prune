@@ -6,11 +6,15 @@ All notable changes to this project are documented here. The format is based on 
 
 ### Upgrading
 
-Replace the script, then do a dry run. The media rule (F) now needs `gzip` and OpenSSL 3, and the dry run stops and says so if either is missing.
+Replace the script, then do a dry run with the settings your cron uses. The media rule (F) now needs `gzip` and OpenSSL 3. If either is missing, every run with that rule on stops, and the dry run says what to fix.
 
-The first `--apply` may lift the block on repos earlier releases pruned, including repos pruned for inactivity that a node has announced refs for since. A dry run lists them in `last-run/undo.tsv`. Those releases recorded neither a repo's delegates nor a block that stood before the prune, so to keep one of those repos blocked, add its repo id to `deny.txt` first. To lift none, set `UNDO=0`.
+An `--apply` run may now lift the block on repos an earlier release pruned, including one you had blocked by hand before the prune, because those releases did not record your block. A dry run lists the blocks the next `--apply` run would lift in `last-run/undo.tsv`. To keep one blocked, add its repo id to `deny.txt`. A `deny.txt` line naming one of its delegates keeps it blocked only while the repo is still in the quarantine. To lift no block at all, set `UNDO=0`.
 
-The files rad-prune writes in the audit directory now open with a few `#` lines saying what they hold, so the line naming the run is no longer the first ([details](./README.md#audit-trail)). A script that reads them must skip lines starting with `#`. Five files in `last-run/` are renamed:
+If you set `RULES` yourself, take out `E` if it is there, and add `H`. The link-farm rule (E) pruned real projects and is now off by default, and the malware rule (H) is new.
+
+An unattended run now exits `4` when it holds back a rule that planned far more repos than usual. A monitor that alerts on exit `3` should alert on `4` too.
+
+The files rad-prune writes in the audit directory now open with a few `#` lines saying what they hold, so the line naming the run is no longer the first ([details](./README.md#audit-trail)). In an audit log that line now reads `# <time>  version=<v>  pressure=<p>%  rules=<letters>`. A script that reads any of them must skip lines starting with `#`. One that reads repo ids from an audit log must also skip the new `blocked-denied` rows, as it already skips `blocked-peer` rows. Five files in `last-run/` are renamed:
 
 | Before | Now |
 |---|---|
@@ -20,60 +24,55 @@ The files rad-prune writes in the audit directory now open with a few `#` lines 
 | `media-unjudged.tsv` | `F-media-unjudged.tsv` |
 | `parasite-peers.tsv` | `G-parasite-peers.tsv` |
 
-The link-farm rule (E) is off by default, and the size (B) and stale (C) rules wait for disk pressure (see Changed). A cron that sets `RULES=ABCDEFGH` keeps E on, so drop the `E` there. `DISK_AWARE=0` lets B and C prune at any free space.
-
-A run that holds back a rule exits `4`. A monitor that alerts on exit `3` should alert on `4` too.
-
 ### Added
 
-- **`--apply` lifts the block on repos that rad-prune may have pruned by mistake.** These are repos pruned under a verdict a later release no longer trusts, repos pruned for inactivity that a node announced new refs for since (needs `sqlite3`), and known mistakes the script lists ([details](./README.md#blocks-the-tool-lifts-on-its-own)).
-- **You can name repos and identities to prune and block on sight.** List them in `deny.txt` in the audit directory. `--apply` prunes and blocks each listed repo and every repo a listed identity is a delegate of, and blocks the identity too ([details](./README.md#deny-list)). Pinned, private, your own and kept repos are spared.
-- **Repos that hold copies of files from a repo `deny.txt` names are pruned too.** A repo is pruned when at least 5 MiB of files listed in `deny-files.tsv` make up half or more of what its delegates committed ([details](./README.md#copies-of-denied-files)). `rad prune quarantine files <rid>` prints a quarantined repo's files in that list's format.
+- **`--apply` lifts the block on repos that rad-prune may have pruned by mistake.** These are repos pruned under a verdict a later release no longer trusts, repos pruned for inactivity that a node announced refs for after the prune (needs `sqlite3`), and known mistakes the script lists ([details](./README.md#blocks-the-tool-lifts-on-its-own)). A repo still in the quarantine goes back into storage.
+- **You can name repos and identities to prune and block on sight.** List them in `deny.txt` in the audit directory. `--apply` prunes and blocks each listed repo and every repo a listed identity is a delegate of, and blocks the identity too ([details](./README.md#deny-list)). Pinned, private, your own and kept repos are spared, and an identity that is a delegate of one of them is not blocked.
+- **Repos that hold copies of files you list in `deny-files.tsv` are pruned.** A repo is pruned when at least 5 MiB of those files make up half or more of what its delegates committed ([details](./README.md#copies-of-denied-files)). `rad prune quarantine files <rid>` prints a quarantined repo's images, video, audio and archives as rows for that list.
 - **The media rule (F) catches more media dumps.** A repo with 6 MiB or more of images, video and audio, at most one README and almost nothing else is now pruned as `media-ratio` ([details](./README.md#rule-f-media-dumps)).
-- **Identities and repos that look like a malware operation are listed for you to review.** Nothing is pruned or blocked ([details](./README.md#rule-h-malware-operations)). If you set `RULES` yourself, add `H` to it.
+- **Identities and repos that look like a malware operation are listed for you to review.** The malware rule (H) prunes and blocks nothing ([details](./README.md#rule-h-malware-operations)).
 
 ### Changed
 
+- **The link-farm rule (E) is off by default.** None of the 36 repos it pruned on one 13k-repo seed was a link farm. `--apply` lifts the block on the repos it pruned before this release, unless a repo was over 512 MiB when pruned and is no longer in the quarantine ([details](./README.md#blocks-the-tool-lifts-on-its-own)). A repo still in the quarantine goes back into storage, and a node whose default seeding policy is `allow` fetches the others again.
 - **When one rule plans far more repos than usual, an unattended run holds back only that rule.** The other repos in the plan are pruned, and the run exits `4` ([details](./README.md#safety-and-recovery)). It used to prune nothing and exit `3`.
-- **Changing `MAX_PRUNE_*`, `MAX_SCAN_FAIL_PCT`, a `RATCHET_*`, `UNDO*` or `QUARANTINE*` setting, or `NEAR_PCT` no longer clears the run cache**, so the next run doesn't re-read every repo. None of them changes what a run reads.
-- **The link-farm rule (E) is off by default.** None of the 36 repos it pruned on one 13k-repo seed was a link farm. The block each one left is [lifted](./README.md#blocks-the-tool-lifts-on-its-own) once, so a seed that seeds by default fetches them again.
-- **The size (B) and stale (C) rules prune only under disk pressure.** While free space is above the relaxed threshold, a big or long-quiet repo costs nothing, so they wait and the header marks them `WAITING`. `DISK_AWARE=0` lets them prune at any free space, and turns off the rest of disk pressure with it. Their usual count comes from the last runs in which they could prune, however far back. Where those runs pruned little or nothing of theirs, or number fewer than 3, the first spell of pressure holds either one back past `RATCHET_FLOOR` (20) repos until `--force`. Pressure counts the quarantine copies a run is about to purge as free.
-- **The media rule (F)'s warning about repos it could not judge comes only when one of them is new since the last run, and names the new ones.** The same busy repos are left unjudged every week, and a warning that repeats weekly stops being read. `last-run/F-media-unjudged.tsv` gains each repo's size.
-- **`quarantine restore` writes when it restored the repo and what it was pruned as beside its id in `keep.txt`.**
-- **An `--apply` or `--block-peers` run that gets past its settings check prints its exit code last and records it in its audit log.**
-- **`history.log` records free space and what storage and the quarantine held, after the audit log's name, and a run warns when free space fell by more than 10 GB beyond what they grew by since a run at most 8 days earlier.** Pressure is read from one sample of free space, so something else filling the disk for a few hours makes a run prune as if storage had.
+- **The size (B) and stale (C) rules prune only under disk pressure.** While free space is at or above the relaxed free-space threshold (`PRESSURE_RELAX_*`), the header marks them `WAITING` ([details](./README.md#disk-pressure)). `DISK_AWARE=0` lets them prune at any free space, and turns off the rest of disk pressure with it. A run in which they wait does not count toward what they usually prune, so their usual stays what it was the last time they could prune. When pressure starts, an unattended run holds either rule back if it plans more than `RATCHET_FACTOR` (3) times that usual and more than `RATCHET_FLOOR` (20) repos.
+- **The media rule (F) leaves a repo with more than `MEDIA_MAX_OPS` (20000) issue and patch ops unjudged.** The busiest real project on a 13k-repo seed has about 11k ops. The rule also no longer reads the code history that a patch's commits reach.
+- **The media rule (F) warns about repos it could not judge only when one of them is new since the last run, and names the new ones.** `last-run/F-media-unjudged.tsv` gains each repo's size.
+- **A run warns when something other than storage and the quarantine is filling the disk.** It compares free space with the last line of `history.log`, if that line is at most 8 days old, and warns when more than 10 GB went elsewhere. Each `history.log` line now ends with the free space and what storage and the quarantine held.
+- **`quarantine restore` writes the restore date and what the repo was pruned as beside its id in `keep.txt`.**
+- **An `--apply` or `--block-peers` run that gets past its settings check prints its exit code last, and records it in its audit log when it wrote one.**
+- **Changing `MAX_PRUNE_*`, `MAX_SCAN_FAIL_PCT`, a `RATCHET_*` or `QUARANTINE*` setting, or `NEAR_PCT` no longer clears the run cache.** The next run does not re-read every repo.
 
 ### Fixed
 
 - **Your own and private repos can no longer be pruned when `rad ls` misses them or fails.** The run now checks each repo on disk too, and stops with exit `5` when `rad ls` fails.
 - **An older project brought to Radicle is no longer pruned as junk for a word like `demo` or `test` in its name.** The junk-name rule (A) spares a repo whose first commit is more than 14 days before its `rad init`.
-- **The media rule (F) spares more real projects.** A source file or a build file (such as a `Makefile` or `package.json`) now spares a repo from `media-dump`, and a build file spares it from `media-batch` too. Compressed text such as `rows.csv.gz` counts as text, and a repo named after a seed's hostname with under 1 MiB of media is never flagged. Only repos with almost no text count toward a media batch, and a repo with a branch whose commit is missing from storage is no longer judged.
-- **`keep.txt` is read correctly however it was saved.** A byte-order mark from some Windows editors, or a `quarantine restore` onto a file with no final line break, could make a run ignore a listed repo and prune it.
-- **Repos that `rad ls` lists as `local` are no longer pruned as `spam-batch`.** Their head commit was read as their description.
+- **The media rule (F) spares more real projects.** A source file or a build file (such as a `Makefile` or `package.json`) now spares a repo from `media-dump`, and a build file spares it from `media-batch` too. Compressed text such as `rows.csv.gz` counts as text, and a repo with under 1 MiB of media whose name is shaped like a hostname, such as a seed's logo repo, is spared. Only repos with almost no text count toward a media batch, and a repo with a branch whose commit is missing from storage is no longer judged.
+- **A repo listed in `keep.txt` is no longer pruned when the file starts with a byte-order mark or lacks a final line break.** A byte-order mark from some Windows editors, or a `quarantine restore` onto a file with no final line break, could make a run ignore a listed repo and prune it.
+- **A typo in `MAX_PRUNE_COUNT`, `MAX_PRUNE_GB`, a `RATCHET_*` setting, `MEDIA_MAX_REFS`, `DISK_AWARE` or `QUARANTINE` stops the run with exit `2`.** It used to turn a check off without a word, and a `QUARANTINE` typo deleted repos outright.
+- **rad-prune finds `keep.txt` and the quarantine when `AUDIT_DIR` or `RAD_HOME` is a relative path.** It used to look for them under `/`, so the keep list read as empty and repos on it could be pruned.
+- **A run that cannot read the size of its disk stops with exit `5` and says so, unless `DISK_AWARE=0`.** A `df` that printed no number read as a full disk, which emptied the quarantine.
 - **`--apply` stops with exit `1` before it touches any repo when it cannot write storage or the quarantine.** It used to block every repo in the plan and leave them all in storage.
-- **`--apply` and `--block-peers` stop with exit `1` before the scan when they cannot write the audit directory.** They could block a peer or a `deny.txt` entry and then fail to record it.
-- **A run that could not remove a repo in its plan exits `1`.** It used to exit as if nothing had failed, with only a warning. The run that does remove it later no longer records the block left behind as somebody else's, which kept the undo from ever lifting it. Once `keep.txt` lists the repo, or it is pinned, private or your own, a run lifts that block.
+- **`--apply` and `--block-peers` stop with exit `1` before the scan when they cannot write the audit directory.** They could block a peer and then fail to record it.
+- **A weekly cron deletes a quarantined repo after 7 days (`QUARANTINE_DAYS`), not 14.** A repo's 7 days now count from the start of the run that pruned it, and it is due three hours before they end. It used to be dated minutes into that run, so the run a week later found it a few minutes short and kept it another week.
+- **A stopped run no longer deletes expired repos from the quarantine.** A run stopped by the runaway caps or by an `n` at the prompt used to delete them first.
+- **Disk pressure counts the quarantined repos a run is about to delete as free space.** A run used to prune for space that its own quarantine purge was about to give back.
+- **A disk at or under the critical free-space threshold counts as full pressure even when that threshold is set at or above the relaxed one.** It used to count as no pressure.
+- **A run that could not remove a repo in its plan exits `1`.** It used to exit as if nothing had failed, with only a warning. Once `keep.txt` lists that repo, or it is pinned, private or your own, the next `--apply` run lifts the block it left.
 - **`history.log` and the `DONE` line count only what left storage.** A run that could not remove every repo in its plan used to count the whole plan.
+- **Repos that `rad ls` lists as `local` are no longer pruned as `spam-batch`.** Their head commit was read as their description.
 - **A run no longer writes over the audit log of a run that opened its own in the same second.** It waits for the next second.
 - **A repo with a branch or tag git cannot walk sits out the link-farm rule (E).** It used to count with fewer of its own links, which could make a host its code depends on look like spam. The other rules still judge it.
-- **A repo pruned again after its block was lifted no longer raises its rule's usual count.** If it counted, an undo wave pruned again could let the next real wave past the hold-back.
-- **The media rule (F) leaves a repo with more than `MEDIA_MAX_OPS` (20000) issue and patch ops unjudged.** Anybody can push ops naming a delegate's key, and each one cost a signature check. The busiest real project on a 13k-repo seed has about 11k. It also no longer walks the code history a patch's commits reach.
-- **A weekly cron deletes a quarantined repo after 7 days, not 14.** Each copy was dated when it moved, minutes into its run, so the run a week later found it a few minutes short of `QUARANTINE_DAYS` and kept it another week. A copy is now due three hours early.
-- **A repo with no `refs/rad/id` of its own is judged without a name.** A description in another repo's `rad ls` row could forge a row naming it. A run says how many rows it set aside.
-- **A stopped run no longer deletes expired repos from the quarantine.** A run stopped by the runaway caps or by an `n` at the prompt used to delete them first.
-- **A disk at or under the critical free-space threshold counts as full pressure even when `PRESSURE_CRIT_*` is set above `PRESSURE_RELAX_*`.**
-- **A run that cannot read the size of its disk stops with exit `5` and says so, unless `DISK_AWARE=0`.** A `df` that printed no number read as a full disk, which empties the quarantine.
-- **A typo in `MAX_PRUNE_COUNT`, `MAX_PRUNE_GB`, a `RATCHET_*` setting, `MEDIA_MAX_REFS`, `MEDIA_MAX_OPS`, `DISK_AWARE` or `QUARANTINE` stops the run with exit `2`.** It used to turn a check off without a word, and a `QUARANTINE` typo deleted repos outright.
-- **rad-prune finds `keep.txt`, `deny.txt` and the quarantine when `AUDIT_DIR` or `RAD_HOME` is a relative path.** It used to look for them under `/`, so the keep list read as empty and repos on it could be pruned.
 - **A run by hand and a run from cron no longer drop each other's cache when they start bash from different paths or run with a different `HOME`.** Each used to read every repo again, as on a first run.
 - **An unexpected failure always exits `1`.** It used to pass on the failed command's exit code, which could look like exit `3` or `5`.
 - **rad-prune keeps working once `rad` drops `rad self --nid`.** rad 1.10 deprecates the flag.
 
 ### Security
 
-- **A stranger can no longer get a repo pruned as a media dump by opening a patch or issue on it.** The media rule (F) now counts only comments and patches the delegates signed.
+- **A stranger can no longer get a repo pruned as a media dump by opening a patch or issue on it.** The media rule (F) now counts only the issues, patches and comments the delegates signed.
 - **Only a repo's real delegates count as its delegates.** An identity merely named in its identity document, such as in the description, used to count as one, so the media rule (F) counted that identity's uploads as the repo's own.
-- **A line break in a repo's description can no longer get another repo pruned.** `rad ls` printed it as is, so the text after it read as another repo's row.
+- **A line break in a repo's description can no longer get another repo pruned.** `rad ls` printed it as is, so the text after it read as another repo's row. A repo with no `refs/rad/id` of its own is now judged without a name, since nothing on this node vouches for its row. A run says how many `rad ls` rows it set aside for that.
 - **Control characters in a repo's name or description no longer reach the terminal.** An escape sequence there could change what the plan showed.
 
 ## [0.7.0] - 2026-09-10
