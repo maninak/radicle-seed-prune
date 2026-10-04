@@ -1093,6 +1093,26 @@ plan_e3=$(LINK_MIN_REPOS=3 LINK_MIN_SCORE=2 LINK_STALE_DAYS=99999 run)
 
 build_fixture; assert_isolated
 
+# --- rule E: a canonical ref that cannot be walked --- The branch points at an object the repo
+# does not have, so zcode4's own code links are unknown and it sits the rule out, while the
+# other rules still judge it. Other fixture repos miss objects on purpose, so the count is
+# compared with a run before the ref breaks. At a 60% cap, github.example's two remaining
+# vouchers out of three linkers keep it a dependency; counted as a linker that vouches for
+# nothing, zcode4 would make it two out of four, a spam domain.
+unwalked_e(){ sed -nE 's/.*could not walk the branches and tags of ([0-9]+) .*/\1/p' <<<"$1"; }
+run_ew(){ RULES=E LINK_MIN_REPOS=3 LINK_MIN_SCORE=2 LINK_CODE_MAX_PCT=60 run; }
+before_ew=$(unwalked_e "$(run_ew)")
+printf '%040d\n' 1 > "$STORAGE/zcode4/refs/heads/broken"
+out_ew=$(run_ew)
+[ "$(unwalked_e "$out_ew")" = "$((${before_ew:-0} + 1))" ] \
+  && grep -qx zcode4 "$AUDIT_DIR/last-run/E-link-unwalked.tsv" \
+  && ! grep -q "could not read .* repo(s)" <<<"$out_ew" \
+  && ! cut -f2 "$AUDIT_DIR/last-run/E-link-farm-domains.tsv" | grep -qx 'github.example' \
+  && ok "a canonical ref the link pass cannot walk keeps the repo out of rule E alone" \
+  || no "a failed canonical-ref walk is counted as fewer links, or excludes the repo outright"
+
+build_fixture; assert_isolated
+
 # --- rule E: whose links count, and what counts as one host --- The thresholds are lowered
 # again here, and the plan built rather than inherited, so this section can run on its own.
 plan_e=$(LINK_MIN_REPOS=3 LINK_MIN_SCORE=2 run)

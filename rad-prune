@@ -3239,7 +3239,7 @@ fi
 # slow, so a RULES without E turns it off, and each repo is walked in two steps: list blob ids
 # sizes without reading them, then read only the ones under the size cap. Where a link sits
 # does not matter here: issues, patches, comments and committed files all count.
-: > "$tmp/hosts"
+: > "$tmp/hosts"; : > "$tmp/hosts-unwalked"
 if rule_on E; then
   echo "# harvesting referenced hosts from repo contents ($JOBS workers)..." >&2
   cat > "$tmp/hosts.sh" <<HOSTS
@@ -3290,6 +3290,14 @@ for d; do
         --batch-check='%(objectname) %(objecttype) %(objectsize)' 2>/dev/null \
     | awk -v c="$ceiling" '$2=="blob" && $3+0<=c {print $1}' \
     | hosts_of "$d" "$rid" >&3
+  # Read as for pass 1, for both git commands. A ref that reaches a missing object drops this
+  # repo's own links, and a host then looks less like a dependency, which leans towards calling
+  # it spam. Such a repo is reported on fd 6 and sits this rule out. The rest of it reads
+  # fine, so the other rules still judge it.
+  st=("${PIPESTATUS[@]}")
+  { [ "${st[0]}" = 0 ] || [ "${st[0]}" = 141 ]; } \
+    && { [ "${st[2]}" = 0 ] || [ "${st[2]}" = 141 ]; } \
+    || echo "$rid" >&6
   # This repo has been read to the end. A repo that links to nothing writes no host line at
   # all, so without this the run cache could not tell that from a repo nobody ever read.
   printf '%s\n' "$rid" >&5
@@ -3303,7 +3311,8 @@ HOSTS
   progress_start "link-farm rule (E)" "$(repos_left hosts)" "$tmp/hosts-done"
   repos_to_read "$tmp/cached-hosts" \
     | xargs -0r -P "$JOBS" -n 32 "$BASH_BIN" "$tmp/hosts.sh" \
-        > "$tmp/hosts" 3> "$tmp/hosts-code" 4> "$tmp/hosts-fail" 5> "$tmp/hosts-done" || true
+        > "$tmp/hosts" 3> "$tmp/hosts-code" 4> "$tmp/hosts-fail" 5> "$tmp/hosts-done" \
+        6> "$tmp/hosts-unwalked" || true
   progress_stop
   cache_reuse "hosts" 1 hosts      >> "$tmp/hosts"
   # The consumer counts a repo per line, so a duplicated line would count that repo twice and
@@ -3311,15 +3320,36 @@ HOSTS
   sort -u "$tmp/hosts" -o "$tmp/hosts"
   cache_reuse "hosts-code" 1 hosts >> "$tmp/hosts-code"
   cache_reuse "hosts-fail" 1 hosts >> "$tmp/hosts-fail"
+  cache_reuse "hosts-unwalked" 1 hosts >> "$tmp/hosts-unwalked"
   cache_save  "hosts" "$tmp/hosts"
   cache_save  "hosts-code" "$tmp/hosts-code"
   cache_save  "hosts-fail" "$tmp/hosts-fail"
+  cache_save  "hosts-unwalked" "$tmp/hosts-unwalked"
   # A repo that links to nothing emits no host line at all, so the worker marks each repo it
   # finished on its own stream. Without that, "read it, found nothing" and "never read it"
   # would look the same and the second would be cached as the first.
   { cat "$tmp/cached-hosts"; cut -f1 "$tmp/hosts-done" "$tmp/hosts-fail"; } \
     | sort -u > "$tmp/answered-hosts"
   cache_save_keys hosts "$tmp/answered-hosts"
+  # A repo read only in part would count with partial links, so it leaves the counts and is not
+  # judged here: one whose own code links are unknown (unwalked), and one whose blob listing
+  # failed. A repo whose blob listing failed is out of the plan and has its own WARN below, so
+  # the unwalked count and list leave it out.
+  sort -u "$tmp/hosts-unwalked" "$tmp/hosts-fail" > "$tmp/hosts-partial"
+  for stream in hosts hosts-code; do
+    awk -F'\t' 'FILENAME == ARGV[1] { out[$1] = 1; next } !($1 in out)' \
+      "$tmp/hosts-partial" "$tmp/$stream" > "$tmp/$stream.walked"
+    mv "$tmp/$stream.walked" "$tmp/$stream"
+  done
+  sort -u "$tmp/hosts-unwalked" | grep -vxFf <(sort -u "$tmp/hosts-fail") \
+    > "$tmp/hosts-unwalked.only" || true
+  mv "$tmp/hosts-unwalked.only" "$tmp/hosts-unwalked"
+  nunwalked=$(wc -l < "$tmp/hosts-unwalked")
+  if [ "$nunwalked" -gt 0 ]; then
+    echo "# WARN: the link-farm rule (E) could not walk the branches and tags of $nunwalked" \
+         "repo(s), so they sit it out. The other rules still judge them." \
+         "$AUDIT_DIR/last-run/E-link-unwalked.tsv lists them." >&2
+  fi
   echo "# harvested $(wc -l < "$tmp/hosts") repo/host pairs over" \
        "$(cut -f1 "$tmp/hosts" | sort -u | wc -l) repos" >&2
   nhostfail=$(sort -u "$tmp/hosts-fail" | wc -l)
@@ -4451,6 +4481,11 @@ if [ "$lr_ok" = 1 ]; then
   { lr_head "Domains the link-farm rule (E) treats as spam, and how many repos link to each."
     printf '# repos\tdomain\n'
     sort -k1,1nr "$tmp/linktop"; } > "$staging/E-link-farm-domains.tsv" 2>/dev/null || lr_ok=0
+  { lr_head "Repos the link-farm rule (E) left out because a branch or tag reaches an object" \
+            "the repo does not have, so their own code links are unknown. The other rules" \
+            "still judged them."
+    printf '# rid\n'
+    cat "$tmp/hosts-unwalked"; } > "$staging/E-link-unwalked.tsv" 2>/dev/null || lr_ok=0
   # The verdict, not a size: this column says which of rule F's verdicts the repo matched.
   { lr_head "Media dumps the media rule (F) found but kept, because fewer than" \
             "MEDIA_MIN_SEEDS other nodes seed them. Nothing here was pruned."

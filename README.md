@@ -523,6 +523,7 @@ Anything this tool does is written to `$RAD_HOME/prune-audit/` (default `~/.radi
   - `A-junk-name-kept-imports.tsv`: every junk-named repo the junk-name rule (A) kept because its history starts more than 14 days before its `rad init`.
   - `D-spam-batch-templates.tsv`: every template of the spam-batch rule (D), with how many repos matched it.
   - `E-link-farm-domains.tsv`: every domain the link-farm rule (E) condemned, with how many repos link to it.
+  - `E-link-unwalked.tsv`: every repo the link-farm rule (E) left out because a branch or tag reaches an object the repo does not have. The other rules still judged them.
   - `F-media-kept-few-seeds.tsv`: every dump the media rule (F) found and kept because fewer than `MEDIA_MIN_SEEDS` other nodes seed it. Empty at the default of 0.
   - `F-media-unjudged.tsv`: every repo the media rule (F) could not read, gave up on for holding more than `MEDIA_MAX_REFS` refs, or could not judge from the files it read. These are the repos its warning counts.
   - `G-parasite-peers.tsv`: every peer the parasite-peer rule (G) accused, with the evidence each accusation rests on.
