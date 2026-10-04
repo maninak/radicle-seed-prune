@@ -5,10 +5,10 @@
 # abandoned repos and disposable ones, and it moderates mass-generated spam, link farms, media
 # dumps and peers who push their own files into repos they are not a delegate of.
 #
-# DRY-RUN by default - it only prints the plan and changes nothing. Pass --apply to act.
+# DRY-RUN by default: it only prints the plan and changes nothing. Pass --apply to act.
 #
 # WHAT "PRUNE" MEANS
-#   There is no `rad rm`. Unseeding or blocking a repo frees ZERO bytes - those only
+#   There is no `rad rm`. Unseeding or blocking a repo frees ZERO bytes, since those only
 #   change policy. Disk is reclaimed solely by deleting the repo's storage directory.
 #   So pruning a repo is three steps, in this order:
 #       rad unseed <rid>   # drop any existing seeding policy
@@ -95,10 +95,11 @@
 #       AND the repo is older than SPAM_STALE_DAYS
 #       AND other-seeds >= SPAM_MIN_SEEDS  (default 0: may prune the last copy we know of)
 #
-#   Names and descriptions are skeletonised - digit runs become #, random-id tokens become % -
+#   Names and descriptions are skeletonised (digit runs become #, random-id tokens become %)
 #   and rule D looks for a template that repeats. TWO INDEPENDENT SIGNALS are required, the
 #   name shape AND the description, because a bulk mirror import shares a name skeleton while
-#   each of its repos carries its own real description. Timing is deliberately not a signal.
+#   each of its repos carries its own real description. Timing is not a signal: a bulk import
+#   lands its repos together too, and commit dates are the pusher's to set.
 #   README "Rule D: spam batches" has the worked examples and what they were measured on.
 #
 #   A LINK FARM is a repo published to carry links rather than code. Whatever files it has wrap
@@ -150,7 +151,7 @@
 #
 #   A MEDIA DUMP is a repo whose tracked files are video, images or audio with no project
 #   around them. Radicle storage is for collaborating on code; a repo holding one .mp4 and
-#   nothing else is using the seed as free file hosting, and the spam wave does exactly that.
+#   nothing else is using the seed as free file hosting, and that is what the spam wave does.
 #
 #   Rule F - media dumps, decided by the repo's OWN content:
 #       >= MEDIA_MIN_BYTES of media files on the refs this repo's own delegates control
@@ -206,12 +207,12 @@
 #   shipped scripts beside their media.
 #
 #   WHAT A FILE IS, NOT WHAT IT IS CALLED. Extensions are only a fast path. A file on neither
-#   list is read - its first 16 bytes - and matched against media signatures, so renaming a
+#   list is read (its first 16 bytes) and matched against media signatures, so renaming a
 #   video to .dat does not hide it, and compressed data (a .csv.gz) is judged by what it
-#   unpacks to; a file matching nothing counts as text, so an unfamiliar
-#   one spares the repo rather than condemning it. A recognised TEXT file over
-#   MEDIA_SNIFF_TEXT_BYTES is read too, or a video called README.md would both hide itself and
-#   blow the very budget that spares the repo.
+#   unpacks to. A file matching nothing counts as text, so an unfamiliar one spares the repo
+#   rather than condemning it. A recognised TEXT file over MEDIA_SNIFF_TEXT_BYTES is read too,
+#   or a video called README.md would both hide itself and blow the very budget that spares
+#   the repo.
 #
 #   ONLY THE REPO'S OWN CONTENT COUNTS: the canonical branches and tags, plus the namespaces of
 #   the delegates named in refs/rad/id, a ref the local node writes only after verifying the
@@ -223,17 +224,17 @@
 #   any patch a delegate replied to. openssl checks each signature. Every OTHER peer's
 #   namespace is skipped, so pushing a video onto a stranger's near-empty repo cannot put THEIR
 #   repo in the plan. Skipping beats subtracting what those namespaces hold: replication
-#   mirrors a repo's own branches and COBs into every peer that seeds it, so subtracting on
-#   that erased the repo's own README and issue payloads and left a real project looking like a
-#   dump. What the delegates hold is this repo's content whoever else has a copy. A repo we
-#   cannot read is left out of rule F, as is one over MEDIA_MAX_REFS refs: walking them all
-#   costs minutes to learn that a widely replicated repo is not a dump. So is one whose listing
-#   dies part-way, since the fragment reads as a repo holding less text, and less text is what
-#   condemns. A branch or tag is read at its TIP, so media committed and then deleted is
-#   missed; walking every branch's history would cost far more and would count against a repo
-#   that legitimately dropped a big asset years ago. The walk stops as soon as the repo has
-#   more text than any verdict allows, which on a mirror of a real project is the first few
-#   files out of a million.
+#   mirrors a repo's own branches and COBs into every peer that seeds it, so subtracting what
+#   those peers hold would erase the repo's own README and issue payloads and leave a real
+#   project looking like a dump. What the delegates hold is this repo's content whoever else
+#   has a copy. A repo we cannot read is left out of rule F, as is one over MEDIA_MAX_REFS
+#   refs: walking them all costs minutes to learn that a widely replicated repo is not a dump.
+#   So is one whose listing dies part-way, since the fragment reads as a repo holding less
+#   text, and less text is what condemns. A branch or tag is read at its TIP, so media
+#   committed and then deleted is missed; walking every branch's history would cost far more
+#   and would count against a repo that legitimately dropped a big asset years ago. The walk
+#   stops as soon as the repo has more text than any verdict allows, which on a mirror of a
+#   real project is the first few files out of a million.
 #
 #   A TOKEN README defeats the budget, and below a few MB of media nothing measurable about ONE
 #   repo tells it from the README of a small real project: they are the same bytes. Above that,
@@ -255,8 +256,8 @@
 #   evidence that counts here is ONE FILE, byte for byte, appearing in PARASITE_MIN_REPOS
 #   repos where that peer is not a delegate and where the repo's own refs do not hold it. A
 #   person attaching a screenshot to an issue posts a different file each time; the same
-#   object id turning up in unrelated repos is a campaign. Totals alone are deliberately not
-#   enough: someone active across many repos accumulates megabytes honestly.
+#   object id turning up in unrelated repos is a campaign. Totals alone are not enough:
+#   someone active across many repos accumulates megabytes honestly.
 #
 #   A DELEGATE IS NEVER ACCUSED, wherever in storage they are one. The node runs delegate refs
 #   through the same block list before it checks the signature threshold, so blocking a
@@ -267,14 +268,13 @@
 #   peer, and refuses outright when there is no terminal and no --yes to stand in for the
 #   answers. --block-peers --yes is the unattended form, and blocks every peer the rule names.
 #   It is also an action of its own and does not imply --apply, since nobody should have to
-#   delete five hundred repos to deal with one peer. The plan prints the
-#   exact `rad block` line for every peer it names whether or not that flag was given, so an
-#   operator can act on one peer without handing the
-#   tool a standing licence over the whole list, and each block is written to the audit log
-#   with the evidence behind it. Blocking is what makes it stick: the node filters every
-#   namespaced ref it receives through the block list whatever its seeding scope is, so refs
-#   dropped here do not come back. Dropping them frees no disk until git gc runs, which this
-#   tool does not do.
+#   delete five hundred repos to deal with one peer. The plan prints the exact `rad block`
+#   line for every peer it names whether or not that flag was given, so an operator can act on
+#   one peer without handing the tool a standing licence over the whole list, and each block is
+#   written to the audit log with the evidence behind it. Blocking is what makes it stick: the
+#   node filters every namespaced ref it receives through the block list whatever its seeding
+#   scope is, so refs dropped here do not come back. Dropping them frees no disk until git gc
+#   runs, which this tool does not do.
 #
 #   HOW OLD A REPO IS, for rules D, E and F, is the older of two dates: the oldest date on any
 #   of its refs, and the day this seed first saw it (FIRST_SEEN). Ref dates are set by
@@ -282,8 +282,8 @@
 #   cannot be reached from outside this seed. Rules A, B and C are about abandonment instead,
 #   so they use activity:
 #
-#   "Activity" = ANY signed change, however small. Every Radicle interaction - a commit,
-#   a new issue/patch, a comment, a reaction, an edit, a label - is a git commit appended
+#   "Activity" = ANY signed change, however small. Every Radicle interaction (a commit,
+#   a new issue/patch, a comment, a reaction, an edit, a label) is a git commit appended
 #   under some peer's refs/cobs/*, and it also advances that peer's refs/rad/sigrefs. The
 #   tool reads the newest creatordate across ALL refs (every namespace included), so the
 #   freshest of any of these wins. creatordate is when the change was authored, not when we
@@ -303,7 +303,7 @@
 #
 # USAGE
 #   Installed on PATH as rad-prune, `rad` runs this as one of its own subcommands, which is
-#   the spelling below. rad-prune and ./rad-prune take exactly the same arguments.
+#   the spelling below. rad-prune and ./rad-prune take the same arguments.
 #
 #   rad prune                        # preview (dry-run), print the plan
 #   rad prune --apply                # apply; asks [y/N] first when run in a terminal
@@ -329,9 +329,8 @@
 # both to do both.
 #
 # ENVIRONMENT
-#   Everything is configured by environment variable - there are no tuning flags. RAD_HOME is
-#   the same variable heartwood itself reads, so this reads exactly like any other rad
-#   invocation:
+#   Everything is configured by environment variable, and there are no tuning flags. RAD_HOME
+#   is the same variable heartwood itself reads, so this reads like any other rad invocation:
 #
 #     RAD_HOME=/var/lib/radicle rad prune              # a seed home that is not ours
 #     RAD=/nix/store/.../bin/rad RAD_HOME=/var/lib/radicle rad-prune
@@ -436,7 +435,7 @@ LINK_REPO_BUDGET="${LINK_REPO_BUDGET:-8000000}"  # max bytes read per repo, per 
 # Flags repos whose tracked files are media with no project around them. See rule F at the top.
 # Extensions judged as media, matched case-insensitively on whatever follows the last dot. An
 # extension missing from this list counts as text, so an unfamiliar file spares a repo instead
-# of condemning it. SVG is deliberately absent: it is markup, and real projects commit it as an
+# of condemning it. SVG is left out: it is markup, and real projects commit it as an
 # asset. Archives are here because zipping a video is a one-command evasion; the cost is that a
 # repo holding a release tarball and nothing else reads as a dump. That is the intended
 # reading: MEDIA_TEXT_MAX_BYTES spares a tarball that has a project around it.
@@ -446,7 +445,7 @@ mp4|m4v|mkv|avi|mov|webm|wmv|flv|mpg|mpeg|3gp|\
 mp3|m4a|aac|wav|flac|ogg|opus|wma|\
 zip|rar|7z|tar|gz|tgz|bz2|xz|zst}"
 # Extensions and bare filenames known to be text. Their only job is to keep the reading below
-# to the few files whose kind is genuinely unknown; anything not on either list gets read.
+# to the few files whose kind is unknown; anything not on either list gets read.
 MEDIA_TEXT_EXTS="\
 md|markdown|txt|rst|adoc|org|tex|bib|html|htm|xml|svg|css|scss|less|\
 js|mjs|cjs|jsx|ts|tsx|vue|svelte|json|jsonc|yaml|yml|toml|ini|cfg|conf|properties|env|\
@@ -536,7 +535,7 @@ MEDIA_RATIO_MAX_FILES=1            # READMEs at the tips of branches and tags; n
 PARASITE_MIN_REPOS="${PARASITE_MIN_REPOS:-10}"   # repos one blob must reach to accuse a peer
 PARASITE_MIN_BYTES="${PARASITE_MIN_BYTES:-1048576}"
 # A peer who writes is a contributor, whatever else they push. This is generous on purpose: it
-# is cheap for a real person to clear and costly for a bot to fake, so it errs toward mercy.
+# is cheap for a real person to clear and costly for a bot to fake.
 PARASITE_TEXT_MAX_BYTES="${PARASITE_TEXT_MAX_BYTES:-16384}"
 
 # --- rule H: malware operations ---
@@ -991,8 +990,8 @@ case "$QVERB" in
   --help|-h) usage; exit 0 ;;
 esac
 
-# A per-repo command that fails is ordinary here - a repo can vanish or turn unreadable under
-# a live node - so the calls below discard their own errors and carry on. A command that is not
+# A per-repo command that fails is ordinary here (a repo can vanish or turn unreadable under
+# a live node), so the calls below discard their own errors and carry on. A command that is not
 # installed fails in that same shape for every repo at once, and the run then reports storage
 # as unreadable when one binary is missing from PATH. Name it here, before a repo is read.
 # What the quarantine verbs call, checked whatever the command is. `restore` reaches dirname,
@@ -1048,12 +1047,12 @@ if [ "$CMD" != quarantine ] || [ "$QVERB" = restore ]; then
 fi
 
 # `quarantine list|delete|purge` read and write the quarantine alone, and an operator most
-# wants to look at what is held when storage is unmounted, so only a run that scans storage is
-# gated on it. `restore` needs it, since it moves a repo back in there.
+# wants to look at what is held when storage is unmounted, so only a run that scans storage
+# checks for it. `restore` needs it, since it moves a repo back in there.
 if [ "$CMD" != quarantine ] || [ "$QVERB" = restore ]; then
   [ -d "$STORAGE" ] || { echo "no storage dir at $STORAGE" >&2; exit 1; }
-  # Without this, an unreadable storage dir scans zero repos and reports a serene "prune 0
-  # repos".
+  # Without this, an unreadable storage dir scans zero repos and reports "prune 0 repos" like
+  # a clean seed.
   { [ -r "$STORAGE" ] && [ -x "$STORAGE" ]; } \
     || { echo "cannot read storage dir $STORAGE (wrong user?)" >&2; exit 1; }
 fi
@@ -1654,9 +1653,9 @@ grep -oE 'rad:z[1-9A-HJ-NP-Za-km-z]+' "$tmp/ls-private" \
 grep -oE 'rad:z[1-9A-HJ-NP-Za-km-z]+' "$tmp/ls-own" 2>/dev/null \
   | sed 's/^rad://' | sort -u > "$tmp/own" || true
 # The keep list is the operator's own verdict on a repo, so it is read the same way as a pin:
-# comments and blank lines out, ids in. Both spellings are taken, because every other id this
-# tool prints carries the rad: prefix and this is the one list a person writes by hand. A
-# byte-order mark goes too: a file saved by a Windows editor would otherwise lose its first id.
+# comments and blank lines out, ids in. Both spellings are taken, because a person writes this
+# list by hand, copying ids from output that prints them both ways. A byte-order mark goes
+# too: a file saved by a Windows editor would otherwise lose its first id.
 # An identity is 48 characters and a repo id under 40, as in the deny list below.
 sed $'1s/^\xef\xbb\xbf//; s/#.*//; s/rad://' "$KEEP_FILE" 2>/dev/null \
   | grep -oE '^\s*z[1-9A-HJ-NP-Za-km-z]+' \
@@ -2189,8 +2188,8 @@ undo_apply() {
 # ------------------------------------------------------------------- rid -> name + description
 # One `rad ls --all` feeds both the plan's NAME column and rule D's batch statistics, so parse
 # the whole row: "| <name> rad:<rid> <visibility> <head> <description...> |". Take the FIRST
-# rad: token, never the last - a description may itself quote an rid (they do: "...used for X
-# in rad:z3U9...") and matching the last one files the row under a repo that isn't this one.
+# rad: token, never the last: a description may itself quote an rid (some do: "...used for X
+# in rad:z3U9..."), and matching the last one files the row under a repo that isn't this one.
 # Walk the trailing columns rather than counting fields, because visibility, head and
 # description are each independently missing on some rows. A name and a description are
 # whatever a repo's delegates wrote, and both reach the terminal, so control characters go
@@ -2237,14 +2236,14 @@ if [ -s "$tmp/meta-foreign" ]; then
        "rows forged by a line break in a description, or repos removed while '$RAD ls' ran." \
        "They are ignored." >&2
 fi
-# Losing this is not fatal but it is not nothing either: the plan's NAME column goes blank and
-# rule D has no corpus to reason about, which would look exactly like "no spam here". Say so.
+# Losing this is not fatal, but the plan's NAME column goes blank and rule D has no corpus to
+# reason about, which would look like "no spam here". Say so.
 [ -s "$tmp/meta" ] \
   || echo "# WARN: '$RAD ls --all' returned no repos; the spam-batch (D) and malware (H) rules cannot run." >&2
 
 # -------------------------------------------------------------- rule D: generated-bulk batches
-# Skeletonise every name and description in storage - digit runs become #, random-id tokens
-# become % - then group repos by name skeleton and keep only the groups whose members also
+# Skeletonise every name and description in storage (digit runs become #, random-id tokens
+# become %), then group repos by name skeleton and keep only the groups whose members also
 # agree on one description. Two independent signals; see rule D at the top of this file for why
 # each is needed.
 awk -F'\t' -v K="$SPAM_MIN_BATCH" -v D="$SPAM_DESC_AGREE_PCT" -v REQID="$SPAM_REQUIRE_ID" \
@@ -2335,7 +2334,7 @@ fi
 
 # ----------------------------------------------------------------- scan: size, mtime, activity
 # Batch the cheap per-repo work into one process each (size via a single du, mtime via a single
-# find), and fan the one unavoidable per-repo call - `git for-each-ref` for last activity -
+# find), and fan the one unavoidable per-repo call (`git for-each-ref` for last activity)
 # across $JOBS workers. Everything then goes into bash maps so the classify loop spawns nothing
 # per repo. The scan races a live node: a repo dir can vanish or turn unreadable mid-walk, and
 # find/du then exit non-zero. Collect those errors instead of discarding them, and never let
@@ -2353,7 +2352,7 @@ find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -printf '%f\t%T@\n' 2>>"$scanerr
 
 # Every per-repo worker after the scan is fed through this. Repos the cache already answers
 # for are dropped here rather than inside each worker, so what a rule reads and what it reuses
-# stay visible in one place. An empty list leaves the walk exactly as it was.
+# stay visible in one place. An empty list leaves the walk unchanged.
 #
 # Feeding the workers biggest-repo-first in smaller chunks was tried and reverted: on the real
 # seed it cost 56s of a 538s run, since the giants then contend for IO all at once and the
@@ -2856,7 +2855,7 @@ MEDIA
   sort -u "$tmp/blobs"/* 2>/dev/null > "$tmp/blobs-all" || : > "$tmp/blobs-all"
   cache_save  "blobs" "$tmp/blobs-all"
   # Every repo the worker reads yields either a measurement or a failure line, so these two
-  # files are the honest record of what rule F actually answered for.
+  # files list every repo rule F answered for.
   cut -f1 "$tmp/media" "$tmp/media-fail" | sort -u > "$tmp/answered-media"
   cache_save_keys media "$tmp/answered-media"
   nmediafail=$(sort -u "$tmp/media-fail" | wc -l)
@@ -3359,9 +3358,8 @@ if [ -s "$tmp/hosts" ]; then
         if (links[h] >= MINREPOS && (allcode[h]+0)*100 < LOOSEPCT*links[h]) loose[h]=1
       for (k in pair) { split(k,q,SUBSEP); if (q[2] in loose) loosescore[q[1]]++ }
       for (r in loosescore) if (loosescore[r] >= MINSCORE) suspect[r]=1
-      # Pass 2: the real test. Only links[] counts every repo, on purpose - the spam repos are
-      # exactly the linkers that make a host stand out, so filtering them would erase the
-      # signal.
+      # Pass 2: the real test. Only links[] counts every repo, on purpose: the spam repos are
+      # the linkers that make a host stand out, so filtering them would erase the signal.
       for (k in codepair) { split(k,q,SUBSEP); if (!(q[1] in suspect)) vouch[q[2]]++ }
       for (h in links)
         if (links[h] >= MINREPOS && (vouch[h]+0)*100 < CODEPCT*links[h])
@@ -3389,7 +3387,7 @@ fi
 # storage here, so the harvest above counts a stranger's links as the repo's own. Left alone
 # that turns rule E into a weapon: five spam links in five issues and somebody else's repo is
 # in the plan. Every repo that scored is therefore re-read across the refs its DELEGATES
-# control - the canonical branches and each delegate's namespace - and keeps its score only if
+# control (the canonical branches and each delegate's namespace) and keeps its score only if
 # it survives there. A repo whose delegates cannot be read is dropped from the plan, not kept.
 if [ "$LINK_DELEGATE_CHECK" = 1 ] && [ -s "$tmp/linkfarm" ]; then
   cut -f2 "$tmp/linktop" | sort -u > "$tmp/spamdomains"
@@ -3503,8 +3501,8 @@ if [ -s "$tmp/unlisted" ]; then
 fi
 while read -r r; do DENY_RID[$r]=1; done < "$tmp/deny-rids"
 while read -r r; do DENY_NID[$r]=1; done < "$tmp/deny-nids"
-# Reaching this lock at all means the worker's filter let something through, and the repos it
-# fires on go unjudged by every age rule. Silence there reads exactly like a clean scan.
+# A non-zero count means the worker's filter let something through, and those repos go
+# unjudged by every age rule. Without this warning that would read like a clean scan.
 [ "$ncoerced" = 0 ] \
   || echo "# WARN: $ncoerced repo date(s) were not numbers and were read as unknown," \
           "so those repos are outside the age rules; the ref scan may be broken" >&2
@@ -3625,7 +3623,7 @@ done < "$tmp/copies"
 # ------------------------------------------------------------------- rule G: judge the peers
 # Folds the per-repo evidence into one verdict per peer. The accusation is a single file, byte
 # for byte, that this peer put into PARASITE_MIN_REPOS repos it is not a delegate of. Totals
-# across different files are deliberately NOT enough on their own: someone active on many
+# across different files are NOT enough on their own: someone active on many
 # repos accumulates those honestly, while the same oid landing in unrelated repos does not
 # happen by accident. A peer who is a delegate anywhere in storage is never accused, because
 # blocking a delegate stops the repos they are a delegate of from replicating (the node
@@ -4272,7 +4270,7 @@ if [ "$ncopies" -gt 0 ]; then
 fi
 
 echo
-# The plan promises only what the run will actually deliver, and says it the same way the DONE
+# The plan promises only what the run will deliver, and says it the same way the DONE
 # line below does. Under quarantine no disk is freed today, so a forecast saying "reclaim"
 # would be an overclaim, and one saying "the disk comes back then" leaves a reader working out
 # both when and from where.
@@ -4387,7 +4385,7 @@ fi
 # to one line, five spam domains out of a hundred and fifty. The lists it was rendered from go
 # out whole here, so the evidence behind a verdict outlives the scroll buffer and can be read
 # by something other than a human. Written by a dry run as much as by an apply, since a dry run
-# is exactly when somebody is deciding whether the verdicts are right.
+# is when somebody decides whether the verdicts are right.
 #
 # Overwritten every run rather than kept per run: a directory of them grows without bound on a
 # weekly cron, and a run that changes anything already leaves a dated audit log behind.
@@ -4425,7 +4423,7 @@ if [ "$lr_ok" = 1 ]; then
   { lr_head "Domains the link-farm rule (E) treats as spam, and how many repos link to each."
     printf '# repos\tdomain\n'
     sort -k1,1nr "$tmp/linktop"; } > "$staging/E-link-farm-domains.tsv" 2>/dev/null || lr_ok=0
-  # The verdict, not a size: this column says which of rule F's two readings the repo matched.
+  # The verdict, not a size: this column says which of rule F's verdicts the repo matched.
   { lr_head "Media dumps the media rule (F) found but kept, because fewer than" \
             "MEDIA_MIN_SEEDS other nodes seed them. Nothing here was pruned."
     printf '# rid\tverdict\tname\n'
@@ -4463,8 +4461,8 @@ if [ "$lr_ok" = 1 ]; then
     printf '# rule\tplanned\tusual\tlimit\n'
     cat "$tmp/held"; } > "$staging/held.tsv" 2>/dev/null || lr_ok=0
   # The repos the run output counts under "# undo:", one per row, for the operator who wants to
-  # check why one is unblocked or stays blocked. Like plan.tsv it is the plan: what a lift
-  # actually did is in the audit log's "# unblocked:" lines.
+  # check why one is unblocked or stays blocked. Like plan.tsv it is the plan: what a lift did
+  # is in the audit log's "# unblocked:" lines.
   { lr_head "Blocks rad-prune made that this run plans to lift, holds for a later run, or" \
             "leaves blocked, and why. An --apply run lifts the rows marked unblock once it goes" \
             "ahead."
@@ -4657,10 +4655,10 @@ ask() {
   fi
 }
 
-# An empty plan nobody turns down still empties the quarantine of what is past its window, and of
-# everything at the critical free-space threshold: a seed that has caught up has an empty plan
-# every week, and quarantined disk that only comes back on a week with something to prune is
-# quarantined disk that never comes back.
+# An empty plan nobody turns down still empties the quarantine of what is past its window, and
+# of everything at the critical free-space threshold: a seed that has caught up has an empty
+# plan every week, so quarantined disk that came back only on a week with something to prune
+# would never come back.
 if [ "$nplan" = 0 ]; then
   # Lifting a block changes the node as much as pruning does, so a person present is asked. A
   # no stops the run here, purging nothing, since a run somebody turned down is the one they
@@ -4684,9 +4682,9 @@ fi
 # caps below.
 CONFIRMED=0
 if [ "$YES" = 0 ]; then
-  # The line a human actually answers, so it says what the run will really do. Under
-  # quarantine nothing is deleted today and the disk does not come back until the window
-  # passes; promising "reclaiming" here would be the overclaim the plan line avoids.
+  # This is the line a human says yes to, so it must not overclaim. Under quarantine nothing
+  # is deleted today and the disk does not come back until the window passes; promising
+  # "reclaiming" here would be the overclaim the plan line avoids.
   if [ "$QUARANTINE" = 1 ]; then
     prompt="# Apply now? unseed + block + quarantine $nplan repos, ${gib} GiB"
     prompt="$prompt (deleted for good in ${QUARANTINE_DAYS}d)"
@@ -4885,7 +4883,7 @@ progress_stop
 [ "$deleted" = "$nplan" ] || {
   echo "# WARN: $((nplan - deleted)) of $nplan deletions failed;" \
        "less than ${gib} GiB was reclaimed." >&2
-  echo "# The audit log lists the plan, not what actually got deleted." >&2
+  echo "# The audit log lists the plan, not what got deleted." >&2
 }
 
 deny_block_ahead

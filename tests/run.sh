@@ -306,7 +306,7 @@ e_tree(){
 e_code(){ local rid=$1; shift; e_push "$rid" master README.md "$@"; }
 
 # Building the fixture below is about 700 git invocations, and the suite wants a clean one
-# once per section, which used to be most of its runtime. It is built once and kept as a
+# once per section, which would be most of its runtime. It is built once and kept as a
 # template; every later call throws the working copy away and restores it from that template,
 # which is a copy of a few MB, and a reflink on a filesystem that has them.
 build_fixture(){
@@ -513,8 +513,8 @@ _build_fixture(){
   e_cob  zrot2 "$(dlg zrot2)" '[gallery](https://b2.rotate.example/x)'
   e_cob  zrot3 "$(dlg zrot3)" '[gallery](https://c3.rotate.example/x)'
 
-  # zspamfresh keeps its 90-day-old root commit but gains a COB authored yesterday, exactly the
-  # shape the real spam has: created long ago, touched constantly. A rule D that clocks LAST
+  # zspamfresh keeps its 90-day-old root commit but gains a COB authored yesterday, the shape
+  # the real spam has: created long ago, touched constantly. A rule D that clocks LAST
   # ACTIVITY spares it forever; one that clocks CREATION prunes it.
   local d="$STORAGE/zspamfresh" w ts
   w=$(mktemp -d -p "$ROOT")
@@ -644,7 +644,7 @@ _build_fixture(){
   torn_tree=$(GIT_DIR="$STORAGE/zmediatorn" git rev-parse 'master^{tree}:docs')
   rm -f "$STORAGE/zmediatorn/objects/${torn_tree:0:2}/${torn_tree:2}"
   # The README alone already holds more text than any verdict allows, so the walk can stop at
-  # it. Everything after it is unreadable, exactly as in zmediatorn: a run that reads on
+  # it. Everything after it is unreadable, as in zmediatorn: a run that reads on
   # regardless tears and reports the repo unjudged, one that stops does not.
   e_tree zmediacut    60 master "README.md:70000" "clip.mp4:40000:mp4" "docs/note.md:4096"
   cut_tree=$(GIT_DIR="$STORAGE/zmediacut" git rev-parse 'master^{tree}:docs')
@@ -654,7 +654,7 @@ _build_fixture(){
   # A project with a README on its branch and a clip attached to its delegate's own issue,
   # which one peer replicates: replicating mirrors the branch, so the README is a blob a
   # stranger's refs hold too. Subtract on that and the README is gone while the un-mirrored
-  # clip stays, leaving a real repo looking exactly like a dump.
+  # clip stays, leaving a real repo looking like a dump.
   e_tree zmediamirr  60 master "README.md:8192"
   e_tree zmediamirr  60 "refs/namespaces/$(dlg zmediamirr)/refs/cobs/xyz.radicle.issue/aaa" \
                         "clip.mp4:40000"
@@ -891,7 +891,8 @@ has "$plan" "zhexid23" && grep -qE "^zhexid23 .*junk-id" <<<"$plan" \
 
 # --- pruning the last copy WE KNOW OF, but only where the evidence is conclusive --- "No other
 # seed has it" is worthlessness for machine-generated bulk and preservation value for anything
-# else, so the two rule-A branches are gated apart and rule C is not in this game at all.
+# else, so the two rule-A branches take separate seed floors and rule C is not in this game
+# at all.
 has "$plan" "zhexzero27" && grep -qE "^zhexzero27 .*junk-id" <<<"$plan" \
   && ok "zero-seed random-id name is pruned (junk-id prunes the last copy)" \
   || no "zero-seed junk-id pruned"
@@ -917,15 +918,12 @@ plan_s=$(SPAM_MIN_SEEDS=1 run)
   && ok "SPAM_MIN_SEEDS=1 spares the zero-seed spam repo, keeps the seeded ones" \
   || no "SPAM_MIN_SEEDS check is vacuous"
 
-# A repo whose description quotes an rid must still be filed under its OWN rid, not the quoted
-# one. Regression: a description may itself quote an rid ("...used for the site in
-# rad:z3U9..."), and taking the LAST rad: token on the row filed the whole repo under the rid
-# it merely mentioned.
+# A repo whose description quotes an rid ("...used for the site in rad:z3U9...") is filed under
+# its OWN rid, the first rad: token on the row, not under the rid it mentions.
 grep -qE "^zridin25 .*ridquoter$" <<<"$plan" \
   && ok "a description quoting an rid still files under the row's own rid" \
   || no "row filed under its own rid"
-# Regression: the name column was read as field 2, so any name with a space was silently
-# truncated ("Blog e64" became "Blog") - and a truncated name is what rule D skeletonises.
+# A name with a space keeps all of it: rule D skeletonises "Blog e64", not "Blog".
 grep -qE "^zspaced26 .*Blog e64$" <<<"$plan" \
   && ok "a name containing spaces survives the parse" \
   || no "spaced name survives the parse"
@@ -1017,8 +1015,8 @@ iddecoy=$(grep -cE "^zdecoy[1-9] " <<<"$plan_id" || true)
   && ok "SPAM_REQUIRE_ID=0 reaches enumeration batches, still not the decoy" \
   || no "SPAM_REQUIRE_ID=0 reaches enum batch (got $idhits/9 enum, $iddecoy/9 decoy)"
 # --- rule D clocks CREATION, not last activity ---
-# The spammer appends a COB to their own repos every few days, which under last-activity gating
-# resets the clock and makes the whole batch permanently immune. Creation only moves forward.
+# The spammer appends a COB to their own repos every few days, which resets a last-activity
+# clock and makes the whole batch permanently immune. Creation only moves forward.
 has "$plan" "zspamfresh" && grep -qE "^zspamfresh .*spam-batch" <<<"$plan" \
   && ok "spam repo created 90d ago but touched yesterday is still pruned" \
   || no "rule D clocks creation"
@@ -1540,7 +1538,7 @@ plan_bud=$(LINK_REPO_BUDGET=100 run)
   || no "the read budget excluded a big repo or reported it as a read failure"
 
 # --- an empty `rad ls` degrades loudly: blank names and a blind rule D would otherwise look
-# exactly like a clean seed ---
+# like a clean seed ---
 out=$(RSP_NO_LS=1 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 run)
 { grep -q "WARN: .*returned no repos" <<<"$out" && ! grep -qE '^zspam[1-9] ' <<<"$out"; } \
   && ok "an empty repo listing is reported, not silently read as 'no spam'" \
@@ -1592,10 +1590,10 @@ out=$(RSP_NO_LS=1 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 run)
   || no "the deny list would block the delegate of a repo kept as private"
 rm -f "$AUDIT_DIR/deny.txt"
 
-# --- RAD_HOME reaches rad as ENVIRONMENT, not just as a shell variable --- Regression: the
-# script resolved RAD_HOME but never exported it, so every rad call queried the default home
-# instead, came back empty, and forced a plan of zero repos. Unset it in the caller so the only
-# way the stub can see it is the script exporting what it resolved from `rad path`.
+# --- RAD_HOME reaches rad as ENVIRONMENT, not just as a shell variable --- A RAD_HOME rad does
+# not see sends every rad call to the default home, which comes back empty and plans zero
+# repos. Unset it in the caller so the only way the stub can see it is the script exporting
+# what it resolved from `rad path`.
 : > "$RSP_HOME/.stub_radhome"
 env -u RAD_HOME DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" >/dev/null 2>&1; rc=$?
 { grep -qxF "$RSP_HOME" "$RSP_HOME/.stub_radhome" && [ "$rc" = 0 ]; } \
@@ -1618,10 +1616,10 @@ out=$(RSP_NO_ROUTING=1 DISK_AWARE=0 "$SCRIPT" 2>&1); rc=$?
   && ok "empty routing table aborts (exit 5, no plan)" \
   || no "empty routing aborts (got exit $rc)"
 
-# --- an unreadable repo survives the scan: reported and excluded, never fatal --- Regression:
-# du hit one unreadable dir, xargs returned 123, and `set -e` killed the whole run with no
-# output at all. The unreadable dir is INSIDE the repo, so its refs stay readable and ztwoyr3
-# still looks prunable on age - only the scan-error exclusion keeps it out of the plan.
+# --- an unreadable repo survives the scan: reported and excluded, never fatal --- du failing
+# on one dir makes xargs return 123, which `set -e` would turn into a silent exit. The
+# unreadable dir is INSIDE the repo, so its refs stay readable and ztwoyr3 still looks prunable
+# on age, and only the scan-error exclusion keeps it out of the plan.
 mkdir -p "$STORAGE/ztwoyr3/unreadable" && chmod 000 "$STORAGE/ztwoyr3/unreadable"
 # creating the subdir bumped mtime; keep it out of the freshness guard so that ONLY the
 # scan-error rule excludes it
@@ -1771,9 +1769,9 @@ for r in zjunk1 zbig2 zbar8; do chmod 755 "$STORAGE/$r"; done
   && ok "blind scan aborts instead of reporting a small plan" \
   || no "blind scan aborts (got exit $rc)"
 
-# --- every walk in the scan can fail mid-flight without taking the run down --- Regression:
-# the repo-counting walk was the one find call left unguarded, so on a busy seed the run died
-# at the very first line of the scan, before printing anything a bug report could use.
+# --- every walk in the scan can fail mid-flight without taking the run down --- A busy seed
+# changes under find, and a find that fails while counting repos must not end the run before it
+# prints anything a bug report could use.
 shimdir="$ROOT/shim"; mkdir -p "$shimdir"
 cp "$HERE/find-shim" "$shimdir/find"; chmod +x "$shimdir/find"
 out=$(PATH="$shimdir:$PATH" DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" 2>&1); rc=$?
@@ -1919,9 +1917,9 @@ uplanned=$(sed -n 's/^# PLAN: prune \([0-9]*\) repos.*/\1/p' <<<"$uout")
   && ok "a quarantine copy that kept its own date is pruned, and its short undo is reported" \
   || no "a copy that kept its own date was reported as recoverable for the full window"
 
-# --- rule G's act, the only thing in the tool that judges a PERSON --- Blocking is permanent
-# and the peer never hears about it, so it needs a human in the room every time: --apply alone
-# must not reach it, and --block-peers must refuse when there is nobody to ask.
+# --- rule G's act, which judges a PERSON --- Blocking is permanent and the peer never hears
+# about it, so it needs a human in the room every time: --apply alone must not reach it, and
+# --block-peers must refuse when there is nobody to ask.
 #
 # Each of the five sections below sets rule G's thresholds again. They are the same three
 # values every time and only the first needs them in a full run, but a section that inherited
@@ -2249,7 +2247,7 @@ DISK_AWARE=0 RULES=E MEDIA_MIN_BYTES=999999999 "${NOTTY[@]}" "$SCRIPT" \
   || no "a rule that sat out a cold run kept keys measured under the settings that changed"
 
 # STORAGE is an operator-supplied path, and the list of already-answered repos is built from
-# it. A '#' in it used to end sed's own delimiter, which both re-walked every repo and pasted
+# it. A '#' in it would end sed's own delimiter, which would both re-walk every repo and paste
 # its cached rows in beside the fresh ones.
 build_fixture; assert_isolated
 odd="$RSP_HOME/st#or&age"
@@ -2920,8 +2918,8 @@ if command -v script >/dev/null 2>&1; then
     || no "the apply prompt promised disk the quarantine is still holding"
 
   # A quarantine is a recovery copy, and at the critical free-space threshold the run empties
-  # it whole rather than wait out the window. That emptying used to happen before the human was
-  # asked anything, so answering no destroyed every recovery copy in a run that pruned nothing.
+  # it whole rather than wait out the window. If it were emptied before the human is asked
+  # anything, answering no would destroy every recovery copy in a run that prunes nothing.
   CRIT="env DISK_AWARE=1 PRESSURE_CRIT_PCT=100 PRESSURE_CRIT_GB=999999 ABS_SIZE_FLOOR_MB=1"
   build_fixture; assert_isolated
   Q="$RSP_HOME/prune-audit/quarantine"; mkdir -p "$Q/zkeepme"
