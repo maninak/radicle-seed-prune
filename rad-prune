@@ -1130,8 +1130,9 @@ add_header() {  # $1 = file, then one argument per line of the header
   return 1
 }
 
-# Returns non-zero rather than dying, so an unwritable keep file costs one warning and the
-# rest of a "restore a, b, c" still runs.
+# Adds repo id $1 to the keep file, with comment $2 after it when given. Returns non-zero
+# rather than dying, so an unwritable keep file costs one warning and the rest of a
+# "restore a, b, c" still runs.
 keep_add() {
   mkdir -p "$(dirname "$KEEP_FILE")" 2>/dev/null || return 1
   # Only a keep file this creates gets the lines saying what it is. One that already exists is
@@ -1144,12 +1145,26 @@ keep_add() {
       "rad prune quarantine restore adds each repo it puts back." \
       || echo "# WARN: could not write the header of a new $KEEP_FILE" >&2
   fi
-  grep -qxF "$1" "$KEEP_FILE" 2>/dev/null && return 0
+  # Read the way a run reads it, so an id already there with a comment or a rad: prefix is not
+  # added twice.
+  sed $'1s/^\xef\xbb\xbf//; s/#.*//; s/rad://' "$KEEP_FILE" 2>/dev/null \
+    | grep -oE '^\s*z[1-9A-HJ-NP-Za-km-z]+' | tr -d ' \t' | grep -xF "$1" >/dev/null && return 0
   # A last line saved without its newline, as some editors do, would run into the new id.
   if [ -s "$KEEP_FILE" ] && [ -n "$(tail -c1 "$KEEP_FILE")" ]; then
     echo >> "$KEEP_FILE" 2>/dev/null || return 1
   fi
-  printf '%s\n' "$1" >> "$KEEP_FILE" 2>/dev/null || return 1
+  printf '%s%s\n' "$1" "${2:+  $2}" >> "$KEEP_FILE" 2>/dev/null || return 1
+}
+# The verdict and name repo id $1 was last pruned under, from the audit logs, for the comment
+# on its keep line: a bare id there leaves a later reader no way to tell why the repo is kept.
+# Prints nothing when no log names it.
+pruned_as() {
+  local f logs=()
+  for f in "$AUDIT_DIR"/prune-*.log; do [ -r "$f" ] && logs+=("$f"); done
+  [ ${#logs[@]} -gt 0 ] || return 0
+  awk -F'\t' -v r="$1" '!/^#/ && $1 == r && $5 != "" { last = $5 " " $6 }
+                       END { if (last != "") print last }' "${logs[@]}" \
+    | LC_ALL=C tr '\001-\011\013-\037\177' ' '   # no control byte reaches keep.txt
 }
 # Everything below builds a path from an argument, so a name that is not a repo id never gets
 # to name one: "quarantine delete ../.." would otherwise be a working command.
@@ -1246,7 +1261,9 @@ if [ "$CMD" = quarantine ]; then
           || echo "#   WARN 'rad unseed rad:$rid' failed; it is still blocked" >&2
         "$RAD" seed "rad:$rid" >/dev/null 2>&1 \
           || echo "#   WARN back on disk but 'rad seed rad:$rid' failed; run it yourself" >&2
-        keep_add "$rid" \
+        # The comment only explains, so a log it cannot read leaves it out.
+        was=$(pruned_as "$rid") || was=""
+        keep_add "$rid" "# restored $(date -u +%Y-%m-%d)${was:+, was $was}" \
           || { echo "#   WARN could not write $KEEP_FILE; the next run may prune $rid" >&2
                continue; }
         echo "# restored $rid; added to $KEEP_FILE so the next run leaves it alone, and so" \

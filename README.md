@@ -317,7 +317,7 @@ rad prune quarantine purge            # delete whatever is past its window
 rad prune quarantine files <rid>      # its images, video, audio and archives, as deny-files.tsv rows
 ```
 
-`restore` moves the repo back into storage, clears the block, re-seeds it, and adds it to the keep list, `$AUDIT_DIR/keep.txt`, so the next run leaves it alone. The keep list is one repo id per line, editable by hand; repos listed there are excluded from every rule, and the malware rule (H) names none of their delegates. A `did:key:` line there only stops the [malware rule (H)](#rule-h-malware-operations) naming that identity and the repos it signed.
+`restore` moves the repo back into storage, clears the block, re-seeds it, and adds it to the keep list, `$AUDIT_DIR/keep.txt`, so the next run leaves it alone. Its line there says when it was restored and what it was pruned as. The keep list is one repo id per line, editable by hand; repos listed there are excluded from every rule, and the malware rule (H) names none of their delegates. A `did:key:` line there only stops the [malware rule (H)](#rule-h-malware-operations) naming that identity and the repos it signed.
 
 ### Undoing a prune
 

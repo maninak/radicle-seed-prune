@@ -2249,7 +2249,8 @@ out=$("$SCRIPT" quarantine restore zjunk1 2>&1)
   && GIT_DIR="$STORAGE/zjunk1" git rev-parse --verify -q master >/dev/null 2>&1 \
   && grep -qx 'rad:zjunk1' "$RSP_HOME/.stub_unseed" \
   && grep -qx 'rad:zjunk1' "$RSP_HOME/.stub_seed" \
-  && grep -qx 'zjunk1' "$RSP_HOME/prune-audit/keep.txt" \
+  && grep -qxE 'zjunk1  # restored [0-9]{4}-[0-9]{2}-[0-9]{2}, was junk-name test-old' \
+       "$RSP_HOME/prune-audit/keep.txt" \
   && grep -qx 'zkeepme' "$RSP_HOME/prune-audit/keep.txt" \
   && [ "$(head -c1 "$RSP_HOME/prune-audit/keep.txt")" = z ]; } \
   && ok "quarantine restore puts the repo back, clears its block and keeps it" \
