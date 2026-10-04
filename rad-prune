@@ -4177,6 +4177,65 @@ nplan=$(wc -l < "$tmp/plan.sorted")
 bytes=$(awk -F'\t' '{s+=$2} END{printf "%.0f", s}' "$tmp/plan.sorted")
 gib=$(awk -v b="$bytes" 'BEGIN{printf "%.2f", b/1073741824}')
 
+# Repos the newest run that planned them blocked and then could not remove ("# prune-failed:").
+# They are still in storage under rad-prune's own block.
+prune_failed_before() {
+  local f logs=()
+  for f in "$AUDIT_DIR"/prune-*.log; do [ -r "$f" ] && logs+=("$f"); done
+  [ ${#logs[@]} -gt 0 ] || return 0
+  awk -F'\t' '
+    /^# prune-failed: rad:z/ { split($0, w, " "); failed[substr(w[3], 5)] = 1; next }
+    /^#/ { next }
+    $1 ~ /^z[1-9A-HJ-NP-Za-km-z]+$/ && $5 != "" { failed[$1] = 0 }
+    END { for (r in failed) if (failed[r]) print r }' "${logs[@]}"
+}
+prune_failed_before > "$tmp/prune-failed-before"
+# A run that plans such a repo again retries the removal under the block it has. Once the
+# repo is kept, pinned, private, your own or pardoned, the block is lifted, or nothing would
+# ever lift it: the undo's other reasons are for repos that left storage. Missing from the plan
+# alone is no reason, since a rule left out of RULES or a repo this run could not read is
+# missing too. The deny list keeps it blocked, as on the other lifts, and so does a lift made
+# once already. No fetch, so no budget and no disk check.
+: > "$tmp/undo-failed"
+if [ "$UNDO" = 1 ] && [ -s "$tmp/prune-failed-before" ]; then
+  awk -F'\t' '
+      FILENAME == ARGV[1] { failed[$1] = 1; next }
+      FILENAME == ARGV[2] { blocked[$1] = 1; next }
+      FILENAME == ARGV[3] { spared[$1] = 1; next }
+      FILENAME == ARGV[4] { spared[$1] = 1; next }
+      FILENAME == ARGV[5] { planned[$1] = 1; next }
+      FILENAME == ARGV[6] { denied[$1] = 1; next }
+      FILENAME == ARGV[7] { deniednid[$1] = 1; next }
+      ($1 in failed) && ($1 in blocked) && ($1 in spared) && !($1 in planned) \
+        && !($1 in denied) && $2 !~ /^denied/ && $7 == 0 {
+        n = split($6, pairs, ",")
+        for (i = 1; i <= n; i++) { split(pairs[i], kv, ":"); if (kv[1] in deniednid) next }
+        print $1 "\tunblock\tprune-failed\t" $2 "\t" $3 "\t" $4 "\t" $5 "\t" $6 \
+              "\tin-storage" }' \
+    "$tmp/prune-failed-before" "$tmp/undo-blocked" "$tmp/excluded" "$tmp/undo-pardoned" \
+    "$tmp/plan.sorted" "$tmp/deny-rids" "$tmp/deny-nids" "$tmp/undo-fold" \
+    | while IFS=$'\t' read -r rid state why reason size at ver dl copy; do
+        [ -d "$STORAGE/$rid" ] || continue
+        # A log that recorded no delegates leaves the repo itself to name them.
+        denied_delegate=0
+        if [ "$dl" = "-" ]; then
+          read_delegates "$STORAGE/$rid"
+          for did in $dids; do grep -qxF "$did" "$tmp/deny-nids" && denied_delegate=1; done
+        fi
+        if [ "$denied_delegate" = 0 ]; then
+          printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+                 "$rid" "$state" "$why" "$reason" "$size" "$at" "$ver" "$copy"
+        fi
+      done > "$tmp/undo-failed"
+fi
+nfailedlift=$(wc -l < "$tmp/undo-failed")
+if [ "$nfailedlift" -gt 0 ]; then
+  cat "$tmp/undo-failed" >> "$tmp/undo-states"
+  nunblock=$((nunblock + nfailedlift))
+  echo "# undo: unblock $nfailedlift repo(s) still in storage, blocked by a run that could" \
+       "not remove them, and now kept, pinned, private, your own or pardoned"
+fi
+
 # ------------------------------------------------------------------------- the history ratchet
 # Each rule's share of the plan is measured against the median of what that rule pruned in the
 # last RATCHET_RUNS applied runs, and a rule over RATCHET_FACTOR times that is held back. It is
@@ -4746,7 +4805,7 @@ if [ "$nplan" = 0 ]; then
   # no stops the run here, purging nothing, since a run somebody turned down is the one they
   # will look into.
   if [ "$YES" = 0 ] && [ "$nunblock" -gt 0 ] \
-     && ask "# Apply now? unblock $nunblock repo(s) pruned before [y/N] "; then
+     && ask "# Apply now? unblock $nunblock repo(s) an earlier run blocked [y/N] "; then
     case "$reply" in
       [yY]|[yY][eE][sS]) echo "# confirmed." ;;
       *)                 echo "# aborted; no block was lifted, and the quarantine was left as it is."
@@ -4773,7 +4832,7 @@ if [ "$YES" = 0 ]; then
   else
     prompt="# Apply now? unseed + block + DELETE $nplan repos, reclaiming ${gib} GiB"
   fi
-  [ "$nunblock" = 0 ] || prompt="$prompt, and unblock $nunblock repo(s) pruned before"
+  [ "$nunblock" = 0 ] || prompt="$prompt, and unblock $nunblock repo(s) an earlier run blocked"
   prompt="$prompt [y/N] "
   if ask "$prompt"; then
     case "$reply" in
@@ -4852,20 +4911,9 @@ fi
 # wrong on.
 was_blocked_ok=1
 blocked_now > "$tmp/blocked-before" || was_blocked_ok=0
-# Repos the newest run that planned them blocked and then could not remove ("# prune-failed:").
-# They are still in storage under rad-prune's own block, which this run must not record as
-# somebody else's. A person who lifted that block and set their own since is not told apart.
-prune_failed_before() {
-  local f logs=()
-  for f in "$AUDIT_DIR"/prune-*.log; do [ -r "$f" ] && logs+=("$f"); done
-  [ ${#logs[@]} -gt 0 ] || return 0
-  awk -F'\t' '
-    /^# prune-failed: rad:z/ { split($0, w, " "); failed[substr(w[3], 5)] = 1; next }
-    /^#/ { next }
-    $1 ~ /^z[1-9A-HJ-NP-Za-km-z]+$/ && $5 != "" { failed[$1] = 0 }
-    END { for (r in failed) if (failed[r]) print r }' "${logs[@]}"
-}
-prune_failed_before > "$tmp/prune-failed-before"
+# A repo a failed removal left in storage is under rad-prune's own block (see
+# prune_failed_before), which this run must not record as somebody else's. A person who lifted
+# that block and set their own since is not told apart.
 [ "$was_blocked_ok" = 1 ] \
   || echo "# WARN: '$RAD seed' failed, so every repo this run prunes is recorded as blocked by" \
           "somebody else, which no later run lifts, unless an earlier failed prune left that" \

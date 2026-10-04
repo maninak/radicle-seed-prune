@@ -352,6 +352,7 @@ An `--apply` run lifts a block rad-prune made when:
 - A later rad-prune release no longer trusts the verdict that pruned the repo (`UNDO_CHANGED` in the script). A deleted repo bigger than the size limit in that entry stays blocked.
 - A node announced refs for the repo after it was pruned for inactivity (`junk-name`, `junk-id`, `size-outlier`, `stale`). The announcing node has to be one of the repo's delegates, announcing new refs. When the audit log of the run that last pruned the repo names no delegates for it, any node is enough, announcing refs of its own. A node that `deny.txt` names never counts. This node keeps each node's latest announcement for two weeks by default, so a run more than two weeks after the previous run can miss some. Needs `sqlite3`.
 - The repo is a known mistake (`UNDO_PARDON` in the script). Every rule also spares such a repo while the script lists it, unless `deny.txt` names it.
+- rad-prune blocked the repo but could not remove it, and the repo is now kept, pinned, private, your own or a known mistake. It is still in storage and stays there, so this lift counts against neither limit below and goes ahead at any free space.
 
 The run lifts these blocks only once it goes ahead, past the `[y/N]` prompt and the runaway caps. A repo still in the quarantine goes back into storage, and a later run judges it. A deleted one is judged once this node fetches it again. rad-prune seeds neither. Under a default seeding policy of `allow`, the node seeds both and fetches a deleted one by itself. Under any other policy, run `rad seed` on each repo named on a `# unblocked:` line in the run's audit log.
 
@@ -360,7 +361,7 @@ A run lifts a block at most once per repo. It never lifts the block on a repo:
 - that the audit log records as blocked before the prune;
 - that the deny list pruned, or that `deny.txt` names by its id;
 - one of whose delegates `deny.txt` names, when the audit log or the quarantined copy names the delegates;
-- that is pinned, private, your own or kept.
+- that is pinned, private, your own or kept, unless a failed removal left it in storage.
 
 A run lifts the block on at most `UNDO_MAX_COUNT` (200) deleted repos, and `UNDO_MAX_GB` (10) GiB of them as measured when they were pruned. While free space is at or under the critical threshold ([more](#disk-pressure)), it lifts none, unless `DISK_AWARE=0`. `last-run/undo.tsv` lists each block a run plans to lift, and why. `UNDO=0` turns the lifting off.
 
@@ -518,7 +519,7 @@ Anything this tool does is written to `$RAD_HOME/prune-audit/` (default `~/.radi
 - **`last-run/`**: what the last run decided and what it decided it on, untrimmed and tab-separated, whether or not that run acted. The terminal folds repetitive rows and cuts each evidence table to its top few; these files hold all of it, for reading later or piping elsewhere. A file named after a rule starts with that rule's letter, so a rule's files sit together. Replaced whole by the next run that gets far enough to write them. A run that aborts earlier leaves the previous run's files, and of the `#` lines at the top of each file, the one that starts with a time names the run that wrote it (time, version, dry or applying, rules, storage path).
   - `plan.tsv`: every repo the run planned to prune, one row each, same columns as the audit log above. It is the plan, not the outcome; what an applying run actually removed is in that run's `prune-*.log`.
   - `held.tsv`: every rule an unattended run would hold back for planning far more than usual, with its planned count, its usual and its limit. Its repos are still listed in `plan.tsv`, since `--force` or a yes would prune them.
-  - `undo.tsv`: each block the run plans to [lift](#blocks-the-tool-lifts-on-its-own), holds for a later run, or leaves blocked, with why and whether the repo's copy is quarantined or deleted. It is the plan, not the outcome; the audit log's `# unblocked:` lines record each lift.
+  - `undo.tsv`: each block the run plans to [lift](#blocks-the-tool-lifts-on-its-own), holds for a later run, or leaves blocked, with why and whether the repo is quarantined, deleted or still in storage. It is the plan, not the outcome; the audit log's `# unblocked:` lines record each lift.
   - `scan-errors.txt`: everything the run could not read.
   - `A-junk-name-kept-imports.tsv`: every junk-named repo the junk-name rule (A) kept because its history starts more than 14 days before its `rad init`.
   - `D-spam-batch-templates.tsv`: every template of the spam-batch rule (D), with how many repos matched it.

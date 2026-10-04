@@ -2130,6 +2130,44 @@ pout=$(PARASITE_MIN_REPOS=3 PARASITE_MIN_BYTES=65536 PARASITE_TEXT_MAX_BYTES=409
   && ok "an audit dir that cannot be written stops --apply and --block-peers before any block" \
   || no "an unwritable audit dir let a run block or prune (rc=$rc, --block-peers rc=$prc)"
 
+# --- a block a failed removal left is lifted once the repo is spared --- The repo never left
+# storage, and keep.txt spares a repo without unblocking it, so nothing else lifts it.
+build_fixture; assert_isolated
+undo_log 20000101T000000Z '2026-01-01T00:00:00Z  version=0.9.0  pressure=0%' <<EOF
+$(undo_row zjunk1 1048576 junk-name)
+$(undo_row zbar8 1048576 junk-name)
+$(undo_row zbig2 1048576 size-outlier)
+$(undo_row zpin6 1048576 denied)
+$(undo_row zpriv7 1048576 junk-name)
+# prune-failed: rad:zjunk1
+# prune-failed: rad:zbar8
+# prune-failed: rad:zbig2
+# prune-failed: rad:zpin6
+# prune-failed: rad:zpriv7
+EOF
+undo_block zjunk1 zbar8 zbig2 zpin6 zpriv7
+echo zjunk1 > "$AUDIT_DIR/keep.txt"
+# The log names no delegates for zpriv7, so the repo's own identity document has to.
+echo "did:key:$(dlg zpriv7)" > "$AUDIT_DIR/deny.txt"
+# RULES=A leaves zbig2's rule out, so this run does not plan it either.
+out=$(RULES=A DISK_AWARE=0 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
+log=$(ls "$AUDIT_DIR"/prune-2*Z.log | tail -1)
+{ [ "$rc" = 0 ] && [ -d "$STORAGE/zjunk1" ] \
+    && grep -q '^# unblocked: rad:zjunk1 why=prune-failed reason=junk-name ' "$log" \
+    && grep -qx 'unseed rad:zjunk1' "$RSP_HOME/.stub_policy"; } \
+  && ok "a kept repo a failed removal left blocked has the block lifted" \
+  || no "a failed removal's block outlived the verdict (rc=$rc)"
+# A repo this run plans again keeps the block, and the removal is retried under it.
+{ [ ! -e "$STORAGE/zbar8" ] && ! grep -q 'unblocked: rad:zbar8' "$log"; } \
+  && ok "a failed removal planned again keeps its block" \
+  || no "the block was lifted on a repo this run prunes"
+# Missing from the plan is not a withdrawn verdict, and a spared repo the deny list pruned, or
+# one of whose delegates it names, is the deny list's to keep blocked.
+{ [ -d "$STORAGE/zbig2" ] && ! grep -q 'unblocked: rad:zbig2' "$log" \
+    && ! grep -q 'unblocked: rad:zpin6' "$log" && ! grep -q 'unblocked: rad:zpriv7' "$log"; } \
+  && ok "a failed removal nothing spares, or that the deny list made, keeps its block" \
+  || no "a block was lifted on a repo merely missing from the plan, or denied"
+
 # --- a quarantine the run cannot write stops it before the scan --- Every repo is unseeded and
 # blocked before it moves, so carrying on would leave the whole plan blocked and still in
 # storage, and an audit log of a plan that never ran would count as pruned on the next run. A
