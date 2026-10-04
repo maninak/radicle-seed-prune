@@ -35,6 +35,7 @@ A run that holds back a rule exits `4`. A monitor that alerts on exit `3` should
 - **When one rule plans far more repos than usual, an unattended run holds back only that rule.** The other repos in the plan are pruned, and the run exits `4` ([details](./README.md#safety-and-recovery)). It used to prune nothing and exit `3`.
 - **Changing `MAX_PRUNE_*`, `MAX_SCAN_FAIL_PCT`, a `RATCHET_*`, `UNDO*` or `QUARANTINE*` setting, or `NEAR_PCT` no longer clears the run cache**, so the next run doesn't re-read every repo. None of them changes what a run reads.
 - **`quarantine restore` writes when it restored the repo and what it was pruned as beside its id in `keep.txt`.**
+- **An `--apply` or `--block-peers` run that gets past its settings check prints its exit code last and records it in its audit log.**
 
 ### Fixed
 

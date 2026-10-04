@@ -2070,7 +2070,9 @@ chmod 755 "$STORAGE"/z*
 after=$(ls "$STORAGE" | wc -l)
 { [ "$rc" = 1 ] && [ "$before" = "$after" ] && grep -q 'WARN quarantine failed' <<<"$out" \
     && grep -qE 'WARN: [0-9]+ of [0-9]+ deletions failed' <<<"$out" \
-    && grep -q 'DONE: quarantined 0 repos' <<<"$out"; } \
+    && grep -q 'DONE: quarantined 0 repos' <<<"$out" \
+    && [ "$(tail -1 <<<"$out")" = '# exit 1' ] \
+    && [ "$(tail -1 "$(ls "$AUDIT_DIR"/prune-*.log | tail -1)")" = '# exit 1' ]; } \
   && ok "a failed quarantine move is reported, not counted as reclaimed, and exits 1" \
   || no "failed quarantine reported (rc=$rc)"
 # The blocks that run left are its own, so the run that does remove those repos must not

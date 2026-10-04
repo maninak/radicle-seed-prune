@@ -1664,8 +1664,16 @@ progress_stop() {
 
 tmp=$(mktemp -d)
 on_exit() {
+  local rc=$?
   progress_kill
   rm -rf "$tmp"
+  # The exit code says whether a run held a rule back, failed a removal or refused to guess,
+  # and a cron job keeps only what the run printed. The audit log keeps it beside what the run
+  # did.
+  if [ "$APPLY" = 1 ] || [ "$BLOCK_PEERS" = 1 ]; then
+    echo "# exit $rc" >&2
+    [ -z "${audit:-}" ] || { printf '# exit %s\n' "$rc" >> "$audit"; } 2>/dev/null || true
+  fi
 }
 trap on_exit EXIT
 
@@ -1818,20 +1826,23 @@ audit=""
 open_audit() {
   [ -z "$audit" ] || return 0
   mkdir -p "$AUDIT_DIR"
-  audit="$AUDIT_DIR/prune-$(date -u +%Y%m%dT%H%M%SZ).log"
+  local name
+  name="$AUDIT_DIR/prune-$(date -u +%Y%m%dT%H%M%SZ).log"
   # Named by the second, so a run that opens its log in the same second as another waits for
   # the next one, since writing here would truncate that run's record of what it pruned.
   # noclobber makes taking the name one step, so two runs at once cannot both take it. Any
   # other failure stops the run, since retrying a directory it cannot write would wait forever.
-  until ( set -C; : > "$audit" ) 2> "$tmp/audit-err"; do
-    if [ ! -e "$audit" ] && [ ! -L "$audit" ]; then
-      echo "# ERROR: cannot create the audit log $audit:" \
+  # $audit is set only once the name is taken: the exit trap appends to it.
+  until ( set -C; : > "$name" ) 2> "$tmp/audit-err"; do
+    if [ ! -e "$name" ] && [ ! -L "$name" ]; then
+      echo "# ERROR: cannot create the audit log $name:" \
            "$(head -c 200 "$tmp/audit-err" | LC_ALL=C tr -c '[:print:]' ' ')" >&2
       exit 1
     fi
     sleep 1
-    audit="$AUDIT_DIR/prune-$(date -u +%Y%m%dT%H%M%SZ).log"
+    name="$AUDIT_DIR/prune-$(date -u +%Y%m%dT%H%M%SZ).log"
   done
+  audit=$name
   { printf '# %s\n' \
       "What one rad prune run removed from storage or blocked, one repo per row, and the" \
       "blocks it lifted, on # unblocked: lines." \
