@@ -8,7 +8,7 @@ All notable changes to this project are documented here. The format is based on 
 
 Replace the script, then do a dry run. The media rule (F) now needs `gzip` and OpenSSL 3, and the dry run stops and says so if either is missing.
 
-The first `--apply` may lift the block on repos earlier releases pruned, including repos pruned for inactivity that a node has announced refs for since. A dry run lists them in `last-run/undo.tsv`. Those releases recorded neither a repo's delegates nor a block that stood before the prune, so to keep one blocked, add its repo id to `deny.txt` first. To lift none, set `UNDO=0`.
+The first `--apply` may lift the block on repos earlier releases pruned, including repos pruned for inactivity that a node has announced refs for since. A dry run lists them in `last-run/undo.tsv`. Those releases recorded neither a repo's delegates nor a block that stood before the prune, so to keep one of those repos blocked, add its repo id to `deny.txt` first. To lift none, set `UNDO=0`.
 
 The files rad-prune writes in the audit directory now open with a few `#` lines saying what they hold, so the line naming the run is no longer the first ([details](./README.md#audit-trail)). A script that reads them must skip lines starting with `#`. Five files in `last-run/` are renamed:
 
