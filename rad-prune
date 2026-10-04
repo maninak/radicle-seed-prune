@@ -669,8 +669,9 @@ UNDO_MAX_GB="${UNDO_MAX_GB:-10}"                 # GiB those repos held when pru
 UNDO_CHANGED="0.8.0:media-dump:32M 0.8.0:media-batch:32M"
 # Repos known to be wrongly pruned that the current rules still flag, as rid:version. Lifted
 # whatever the budget, and spared by the rules, until the release named, which is the one that
-# has to change the rule that flags it or drop the entry. More than a handful here is a rule
-# to fix, not a list to grow.
+# has to change the rule that flags it or drop the entry. A dev build of that release already
+# counts as past it, so the warning that the entry ended comes while that release is being
+# made. More than a handful here is a rule to fix, not a list to grow.
 #   z3przuV9nGYpx5hmgPG65miGhS68Q: a docs repo of screenshots, media-dump.
 UNDO_PARDON="z3przuV9nGYpx5hmgPG65miGhS68Q:0.9.0"
 # Verdicts that rest on a repo being left alone: no new commit for some number of days. A push
@@ -4775,9 +4776,24 @@ fi
 # wrong on.
 was_blocked_ok=1
 blocked_now > "$tmp/blocked-before" || was_blocked_ok=0
+# Repos the newest run that planned them blocked and then could not remove ("# prune-failed:").
+# They are still in storage under rad-prune's own block, which this run must not record as
+# somebody else's. A person who lifted that block and set their own since is not told apart.
+prune_failed_before() {
+  local f logs=()
+  for f in "$AUDIT_DIR"/prune-*.log; do [ -r "$f" ] && logs+=("$f"); done
+  [ ${#logs[@]} -gt 0 ] || return 0
+  awk -F'\t' '
+    /^# prune-failed: rad:z/ { split($0, w, " "); failed[substr(w[3], 5)] = 1; next }
+    /^#/ { next }
+    $1 ~ /^z[1-9A-HJ-NP-Za-km-z]+$/ && $5 != "" { failed[$1] = 0 }
+    END { for (r in failed) if (failed[r]) print r }' "${logs[@]}"
+}
+prune_failed_before > "$tmp/prune-failed-before"
 [ "$was_blocked_ok" = 1 ] \
-  || echo "# WARN: '$RAD seed' failed, so every repo this run prunes is recorded as blocked" \
-          "already, and no later run lifts its block:" \
+  || echo "# WARN: '$RAD seed' failed, so every repo this run prunes is recorded as blocked by" \
+          "somebody else, which no later run lifts, unless an earlier failed prune left that" \
+          "block:" \
           "$(head -c 200 "$tmp/seed-err" | LC_ALL=C tr -c '[:print:]' ' ')" >&2
 
 open_audit
@@ -4804,8 +4820,10 @@ open_audit
   # this tool's own block later, and a failed write here stops the run first.
   awk -F'\t' -v ok="$was_blocked_ok" '
       FILENAME == ARGV[1] { blocked[$1] = 1; next }
+      FILENAME == ARGV[2] { ours[$1] = 1; next }
+      $1 in ours { next }
       ok == 0 || ($1 in blocked) { print "# was-blocked: rad:" $1 }' \
-    "$tmp/blocked-before" "$tmp/plan.sorted"
+    "$tmp/blocked-before" "$tmp/prune-failed-before" "$tmp/plan.sorted"
   plan_header
   cat "$tmp/plan.sorted"; } >> "$audit"
 
@@ -4816,6 +4834,14 @@ if [ "$QUARANTINE" = 1 ]; then
 else
   echo "# unseed + block + delete $nplan repos..."
 fi
+# Said of a repo left under rad-prune's own block and still in storage. The next run reads this
+# line to know the block is rad-prune's; without it, that block reads as somebody else's, and
+# no undo ever lifts it.
+mark_prune_failed() {
+  { printf '# prune-failed: rad:%s\n' "$1" >> "$audit"; } 2>/dev/null \
+    || progress_warn "#   WARN could not record in $audit that $1 was not removed, so a" \
+                     "later run will read its block as somebody else's"
+}
 deleted=0
 undated=0
 # One line per repo that is really gone from storage, which is what the ticker counts and what
@@ -4838,7 +4864,10 @@ while IFS=$'\t' read -r rid _; do
          continue; }
   "$RAD" unseed "rad:$rid" >/dev/null 2>&1 || true     # clear any policy FIRST
   "$RAD" block  "rad:$rid" >/dev/null 2>&1 \
-    || { progress_warn "#   WARN block failed, skipping delete: $rid"; continue; }
+    || { progress_warn "#   WARN block failed, skipping delete: $rid"
+         # This run made no block, but one an earlier failed prune left may still stand.
+         grep -qxF "$rid" "$tmp/prune-failed-before" && mark_prune_failed "$rid"
+         continue; }
   d="$STORAGE/$rid"
   case "$d" in
     "$STORAGE"/z*)
@@ -4864,6 +4893,7 @@ while IFS=$'\t' read -r rid _; do
           # failure that said nothing.
           err=$(head -1 "$tmp/prune-err" 2>/dev/null) || true
           progress_warn "#   WARN quarantine failed: ${err:-$rid}"
+          mark_prune_failed "$rid"
         fi
       else
         if rm -rf -- "$d" 2>"$tmp/prune-err"; then
@@ -4872,6 +4902,7 @@ while IFS=$'\t' read -r rid _; do
         else
           err=$(head -1 "$tmp/prune-err" 2>/dev/null) || true
           progress_warn "#   WARN delete failed: ${err:-$rid}"
+          mark_prune_failed "$rid"
         fi
       fi ;;
     *) progress_warn "#   SKIP unsafe path: $d" ;;
@@ -4938,9 +4969,11 @@ fi
 [ "$RESTART" = 1 ] \
   || echo "# tip: run 'sudo systemctl restart $SERVICE' once to clear the stale" \
           "inventory-announce log warning."
+[ "$nheld" = 0 ] \
+  || echo "# $nheld repo(s) held back are still in storage; see HELD BACK above." >&2
+# A repo whose removal failed is blocked and still in storage, which wants a person sooner than
+# a held-back rule does, so it wins over exit 4.
+[ "$deleted" = "$nplan" ] || exit 1
 # Non-zero so whatever runs this unattended sees that verdicts are waiting on a human. Not 3,
 # which says the caps stopped the whole run and nothing was pruned.
-if [ "$nheld" -gt 0 ]; then
-  echo "# $nheld repo(s) held back are still in storage; see HELD BACK above." >&2
-  exit 4
-fi
+[ "$nheld" = 0 ] || exit 4

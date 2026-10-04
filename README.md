@@ -171,7 +171,7 @@ A phase counts the repos it has to read this run, not everything in storage, so 
 | Code | Meaning                                                                                                                              |
 | ---- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | `0`  | Success, including a dry run and an `--apply` you declined at the prompt                                                             |
-| `1`  | Storage missing or unreadable, storage or the quarantine not writable by `--apply`, or an unexpected failure (the run prints the line, the command and its status) |
+| `1`  | Storage missing or unreadable, storage or the quarantine not writable by `--apply`, a repo that could not be removed (the run names it), or an unexpected failure (the run prints the line, the command and its status) |
 | `2`  | Bad argument, or a setting with a bad value (the run names it)                                                                       |
 | `3`  | The plan tripped a runaway cap; nothing was pruned. Read it, then re-run with `--force`                                              |
 | `4`  | A rule planned far more than usual, so its repos were held back; the other repos in the plan were pruned. Read it, then `--force`    |
@@ -506,7 +506,7 @@ To have the same job act on the parasite-peer rule (G) as well, add `--block-pee
 
 Anything this tool does is written to `$RAD_HOME/prune-audit/` (default `~/.radicle/prune-audit/`). A dry run writes the last run's evidence, the creation-date ledger and the scan cache; the rest is written only by a run that acts:
 
-- **`prune-<UTC-timestamp>.log`**: one file per acting run: every repo removed, tab-separated (rid, size, other-seed count, last activity, reason, name, the date the matching rule measured, any threshold that repo only just cleared), plus peer blocks made under `--block-peers` with the evidence behind each. `#` lines record each pruned repo's delegates (`# delegates:`), each pruned repo that was already blocked (`# was-blocked:`), and each block the run lifted (`# unblocked:`).
+- **`prune-<UTC-timestamp>.log`**: one file per acting run: every repo removed, tab-separated (rid, size, other-seed count, last activity, reason, name, the date the matching rule measured, any threshold that repo only just cleared), plus peer blocks made under `--block-peers` with the evidence behind each. `#` lines record each pruned repo's delegates (`# delegates:`), each pruned repo that was already blocked (`# was-blocked:`), each repo the run blocked but could not remove (`# prune-failed:`), and each block the run lifted (`# unblocked:`).
 - **`quarantine/<rid>`**: every pruned repo, held for `QUARANTINE_DAYS` ([more](#quarantine)).
 - **`keep.txt`**: repos excluded from every rule, one id per line, or a `did:key:` identity, which only the malware rule (H) reads; editable by hand; `quarantine restore` appends to it.
 - **`deny.txt`**: repos and identities to prune and block on sight ([more](#deny-list)). The tool only reads it. The audit log names the entry each repo was pruned for on a `# denied:` line, and records each new block of an identity, or of a repo not yet fetched, on a `blocked-denied` line.
