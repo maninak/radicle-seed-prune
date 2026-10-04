@@ -228,7 +228,8 @@
 #   those peers hold would erase the repo's own README and issue payloads and leave a real
 #   project looking like a dump. What the delegates hold is this repo's content whoever else
 #   has a copy. A repo we cannot read is left out of rule F, as is one over MEDIA_MAX_REFS
-#   refs: walking them all costs minutes to learn that a widely replicated repo is not a dump.
+#   refs or MEDIA_MAX_OPS issue and patch ops: walking them all costs minutes to learn that a
+#   widely replicated repo is not a dump.
 #   So is one whose listing dies part-way, since the fragment reads as a repo holding less
 #   text, and less text is what condemns. A branch or tag is read at its TIP, so media
 #   committed and then deleted is missed; walking every branch's history would cost far more
@@ -484,6 +485,11 @@ MEDIA_SNIFF_MAX_FILES=200                        # most files read in any one re
 # that a repo half the network replicates is not a dump. Four repos there are over this cap,
 # and the next one down has 2942 refs, so it sits in a wide gap rather than near real repos.
 MEDIA_MAX_REFS="${MEDIA_MAX_REFS:-10000}"
+# Most issue and patch ops a repo can have and still be judged, counting a patch's commits that
+# no delegate branch holds as ops too. Each op naming a delegate's key costs a signature check,
+# and anybody can push ops naming any key. On a real 13k-repo seed the busiest projects have
+# about 11k, and one automated inventory repo 93k.
+MEDIA_MAX_OPS="${MEDIA_MAX_OPS:-20000}"
 # A tree can name one subtree twice, and that one the next twice, so a repo of a few hundred
 # bytes can list as millions of paths, or as long ones, each held in memory while the tips are
 # read. A repo whose tips list as more bytes than this, names and object ids, is left unjudged.
@@ -830,7 +836,13 @@ did_key_hex() {
 }
 
 # Prints the tree of every issue and patch op the given COB refs reach that one of the repo's
-# delegates signed, one per line, and "torn" if the refs could not be walked whole.
+# delegates signed, one per line, and "torn" if the refs could not be walked whole or reach
+# more than MEDIA_MAX_OPS ops. A patch op's parents include the patch's own commits, which
+# reach the code's history, so commits the delegates' branches and tags reach are not walked:
+# they are code, not ops. A stranger's branch is no such limit, since one pointed at an op
+# would hide that op and everything before it.
+# Nothing is verified until the walk is known to be under the cap, so a repo over it costs one
+# walk and no signature checks.
 # Reads $dids as read_delegates sets it, and writes scratch files under $2.
 # An op's parents are the newest ops already there, whoever wrote them, and a patch op's are
 # also the patch's own commits, so a delegate's COB ref reaches strangers' files. The author
@@ -841,18 +853,25 @@ did_key_hex() {
 delegate_ops() {
   local d=$1 w=$2 nid key tree sig; shift 2
   [ $# -gt 0 ] || return 0
+  # Globs, since git skips a tag on a tree or a blob when it expands one, and fails the whole
+  # walk on such a tag named outright.
+  local code=(--branches --tags)
   local -A der=()
   for nid in $dids; do
+    code+=(--glob="refs/namespaces/$nid/refs/heads/*")
+    code+=(--glob="refs/namespaces/$nid/refs/tags/*")
     key=$(did_key_hex "$nid")
     [ ${#key} = 64 ] || continue
     # The DER form openssl reads an ed25519 public key in: a fixed 12-byte header, the key.
     unhex "302a300506032b6570032100$key" > "$w/$nid.der"
     der[$nid]=$w/$nid.der
   done
+  # The ops are held back until the walk ends, and none is printed if there were too many.
   printf '%s\n' "$@" \
-    | GIT_DIR="$d" git rev-list --stdin --pretty=raw 2>/dev/null \
-    | awk '
-        /^commit / { if (tree != "" && sig != "") print tree, nid, sig
+    | GIT_DIR="$d" git rev-list --stdin --pretty=raw --not "${code[@]}" 2>/dev/null \
+    | awk -v max="$MEDIA_MAX_OPS" '
+        /^commit / { if (++n > max) { over = 1; exit 1 }
+                     if (tree != "" && sig != "") ops[++k] = tree " " nid " " sig
                      tree = ""; nid = ""; sig = ""; insig = 0; next }
         /^tree /   { tree = $2; next }
         /^author / { if (match($0, /@z[1-9A-HJ-NP-Za-km-z]+>/))
@@ -861,7 +880,9 @@ delegate_ops() {
         /^gpgsig -----BEGIN SSH SIGNATURE-----$/ { insig = 1; next }
         insig && /^ -----END SSH SIGNATURE-----$/ { insig = 0; next }
         insig { sig = sig substr($0, 2) }
-        END { if (tree != "" && sig != "") print tree, nid, sig }' \
+        END { if (over) exit 1
+              if (tree != "" && sig != "") ops[++k] = tree " " nid " " sig
+              for (i = 1; i <= k; i++) print ops[i] }' \
     | while read -r tree nid sig; do
         [ -n "${der[$nid]:-}" ] || continue
         printf '%s' "$sig" | base64 -d 2>/dev/null | tail -c 64 > "$w/sig"
@@ -871,7 +892,7 @@ delegate_ops() {
         openssl pkeyutl -verify -pubin -keyform DER -inkey "${der[$nid]}" -rawin \
           -in "$w/msg" -sigfile "$w/sig" >/dev/null 2>&1 && echo "$tree"
       done
-  case ${PIPESTATUS[1]} in 0) ;; *) echo torn ;; esac
+  case "${PIPESTATUS[1]} ${PIPESTATUS[2]}" in "0 0") ;; *) echo torn ;; esac
 }
 
 # What the first 16 bytes say a file is, as lowercase hex, whatever its name says. Most
@@ -1345,12 +1366,12 @@ if [ "$CMD" = quarantine ]; then
   exit 0
 fi
 
-# A brake, or the ratio path's floor, that is not a whole number stops the run. Read as a
-# number, a typo turns every test against it false, which lets everything through without a
-# word, and a leading zero reads as octal. Checked here, after the quarantine verbs, which use
-# none of them.
+# A brake, the ratio path's floor, or a cap on what rule F walks, that is not a whole number
+# stops the run. Read as a number, a typo turns every test against it false, which lets
+# everything through without a word, and a leading zero reads as octal. Checked here, after the
+# quarantine verbs, which use none of them.
 for knob in MAX_PRUNE_COUNT MAX_PRUNE_GB RATCHET_FACTOR RATCHET_RUNS RATCHET_FLOOR \
-            MEDIA_RATIO_MIN_BYTES UNDO_MAX_COUNT UNDO_MAX_GB; do
+            MEDIA_RATIO_MIN_BYTES MEDIA_MAX_REFS MEDIA_MAX_OPS UNDO_MAX_COUNT UNDO_MAX_GB; do
   case "${!knob}" in
     0) ;;
     ''|0*|*[!0-9]*) echo "# $knob must be a whole number, not '${!knob}'." >&2; exit 2 ;;
@@ -2632,6 +2653,7 @@ sniff_big=$MEDIA_SNIFF_TEXT_BYTES
 sniff_max=$MEDIA_SNIFF_MAX_FILES
 text_max=$MEDIA_TEXT_MAX_BYTES
 max_refs=$MEDIA_MAX_REFS
+MEDIA_MAX_OPS=$MEDIA_MAX_OPS
 tip_bytes=$MEDIA_TIP_BYTES
 archive_exts='$MEDIA_ARCHIVE_EXTS'
 source_exts='$MEDIA_SOURCE_EXTS'
@@ -2923,13 +2945,33 @@ MEDIA
   cut -f1 "$tmp/media" "$tmp/media-fail" | sort -u > "$tmp/answered-media"
   cache_save_keys media "$tmp/answered-media"
   nmediafail=$(sort -u "$tmp/media-fail" | wc -l)
-  # Which repos these are is said where the file holding them is written, near the end of the
-  # run. Naming it here would name a path that a run aborting in between never creates.
-  [ "$nmediafail" = 0 ] \
-    || echo "# WARN: the media rule (F) left $nmediafail repo(s) unjudged: unreadable, over" \
-            "MEDIA_MAX_REFS ($MEDIA_MAX_REFS) refs, listing over MEDIA_TIP_BYTES" \
-            "($MEDIA_TIP_BYTES) bytes at their tips, or with more files of unknown type than" \
-            "MEDIA_SNIFF_MAX_FILES ($MEDIA_SNIFF_MAX_FILES) and too many unread bytes to judge." >&2
+  # A repo too big or too busy to judge one week is usually the same repo the next, and a
+  # warning that repeats every week stops being read. Only repos the last run did not list
+  # make it a warning. The last run's file is still in place: it is replaced at the end. Up to
+  # 0.7.0 it was called media-unjudged.tsv, and without it the first run after an upgrade
+  # would call every repo it lists new.
+  sort -u "$tmp/media-fail" \
+    | grep -vxFf <(cat "$AUDIT_DIR/last-run/F-media-unjudged.tsv" \
+                       "$AUDIT_DIR/last-run/media-unjudged.tsv" 2>/dev/null \
+                     | grep -v '^#' | cut -f1) \
+    > "$tmp/media-fail-new" || true
+  nmedianew=$(wc -l < "$tmp/media-fail-new")
+  # The file holding all of them is named where it is written, near the end of the run.
+  # Naming it here would name a path that a run aborting in between never creates.
+  if [ "$nmedianew" -gt 0 ]; then
+    echo "# WARN: the media rule (F) left $nmediafail repo(s) unjudged, $nmedianew of them" \
+         "new since the last run: unreadable, over MEDIA_MAX_REFS ($MEDIA_MAX_REFS) refs" \
+         "or MEDIA_MAX_OPS ($MEDIA_MAX_OPS) issue and patch ops," \
+         "listing over MEDIA_TIP_BYTES ($MEDIA_TIP_BYTES) bytes at their tips, or with more" \
+         "files of unknown type than MEDIA_SNIFF_MAX_FILES ($MEDIA_SNIFF_MAX_FILES) and too" \
+         "many unread bytes to judge. The new ones:" >&2
+    head -n "$top_evidence" "$tmp/media-fail-new" | sed 's/^/#   /' >&2
+    [ "$nmedianew" -le "$top_evidence" ] \
+      || echo "#   ...and $((nmedianew - top_evidence)) more" >&2
+  elif [ "$nmediafail" -gt 0 ]; then
+    echo "# the media rule (F) left $nmediafail repo(s) unjudged, all of them listed by the" \
+         "last run too." >&2
+  fi
 
 fi
 
@@ -4623,11 +4665,13 @@ if [ "$lr_ok" = 1 ]; then
     cat "$tmp/malware-repos"; } > "$staging/H-malware-repos.tsv" 2>/dev/null || lr_ok=0
   # The repos rule F could not read. Without them the run's own warning names a count and
   # nothing to go and look at.
-  { lr_head "Repos the media rule (F) could not check: unreadable, over MEDIA_MAX_REFS refs," \
-            "or with too many files of unknown type to read. It did not prune them. The" \
-            "other rules still judged them."
-    printf '# rid\n'
-    sort -u "$tmp/media-fail"; } > "$staging/F-media-unjudged.tsv" 2>/dev/null || lr_ok=0
+  { lr_head "Repos the media rule (F) could not check: unreadable, over MEDIA_MAX_REFS refs" \
+            "or MEDIA_MAX_OPS ops, or with too many files of unknown type to read. It did not" \
+            "prune them. The other rules still judged them."
+    printf '# rid\tsize_bytes\n'
+    sort -u "$tmp/media-fail" | while IFS= read -r rid; do
+      printf '%s\t%s\n' "$rid" "${SIZE[$rid]:-}"
+    done; } > "$staging/F-media-unjudged.tsv" 2>/dev/null || lr_ok=0
   # plan.tsv still lists a held rule's repos, because without --force or a yes at the prompt
   # nobody knows yet whether they will be pruned. This says which rules are waiting on that.
   { lr_head "Rules an unattended run holds back for planning far more repos than usual." \

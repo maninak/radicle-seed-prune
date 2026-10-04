@@ -430,6 +430,7 @@ Every knob is an environment variable. Defaults shown.
 | F    | `MEDIA_TEXT_CEIL_BYTES`| `65536`  | The batch path's wider budget for everything that is not media          |
 | F    | `MEDIA_RATIO_MIN_BYTES`| `6291456` | Images, video and audio the ratio path needs (6 MiB); `999999999999` turns it off |
 | F    | `MEDIA_MAX_REFS`      | `10000`   | Refs above which a repo is too costly to read, so it goes unjudged      |
+| F    | `MEDIA_MAX_OPS`       | `20000`   | Issue and patch ops above which a repo goes unjudged, a patch's own commits included: each one naming a delegate costs a signature check |
 | F    | `MEDIA_EXTS`          | images, video, audio, archives | `\|`-separated extensions judged as media; one you add counts as image, video or audio, never as an archive, on the ratio path |
 | G    | `PARASITE_MIN_REPOS`  | `10`      | Non-delegated repos one file of a peer's must reach, byte for byte      |
 | G    | `PARASITE_MIN_BYTES`  | `1048576` | Media bytes required across those repos (1 MiB)                         |
@@ -526,7 +527,7 @@ Anything this tool does is written to `$RAD_HOME/prune-audit/` (default `~/.radi
   - `E-link-farm-domains.tsv`: every domain the link-farm rule (E) condemned, with how many repos link to it.
   - `E-link-unwalked.tsv`: every repo the link-farm rule (E) left out because a branch or tag reaches an object the repo does not have. The other rules still judged them.
   - `F-media-kept-few-seeds.tsv`: every dump the media rule (F) found and kept because fewer than `MEDIA_MIN_SEEDS` other nodes seed it. Empty at the default of 0.
-  - `F-media-unjudged.tsv`: every repo the media rule (F) could not read, gave up on for holding more than `MEDIA_MAX_REFS` refs, or could not judge from the files it read. These are the repos its warning counts.
+  - `F-media-unjudged.tsv`: every repo the media rule (F) could not read, gave up on for holding more than `MEDIA_MAX_REFS` refs or `MEDIA_MAX_OPS` ops, or could not judge from the files it read, with each one's size. These are the repos its warning counts. The warning comes only when one of them was not on the last run's list, and names those.
   - `G-parasite-peers.tsv`: every peer the parasite-peer rule (G) accused, with the evidence each accusation rests on.
   - `H-malware-identities.tsv`: every matching repo of every identity the malware rule (H) named, with the words it matched.
   - `H-malware-repos.tsv`: every single repo the malware rule (H) named, with the words and the path or commit subject it matched.
@@ -601,7 +602,7 @@ Extensions (`MEDIA_EXTS`, `MEDIA_TEXT_EXTS`, `MEDIA_TEXT_NAMES`) are only a fast
 
 Only the repo's own content counts: the canonical branches and tags, plus the namespaces of the delegates named in `refs/rad/id`, including every issue and patch comment a delegate signed, older ones too. Every other peer's namespace is ignored, and so is a stranger's patch or comment a delegate replied to, so a stranger pushing a video onto somebody's repo cannot put that repo in the plan. A repo with a branch whose commit is missing from storage is not judged.
 
-A branch or tag is read at its tip, so media committed and then deleted in a later commit is missed. A repo whose listing dies part-way, with more than `MEDIA_MAX_REFS` (10000) refs, or whose tips list as more than `MEDIA_TIP_BYTES` (16 MiB) of file names, is left unjudged, and so is one whose files past the `MEDIA_SNIFF_MAX_FILES` cap could change the verdict.
+A branch or tag is read at its tip, so media committed and then deleted in a later commit is missed. A repo whose listing dies part-way, with more than `MEDIA_MAX_REFS` (10000) refs or `MEDIA_MAX_OPS` (20000) issue and patch ops, or whose tips list as more than `MEDIA_TIP_BYTES` (16 MiB) of file names, is left unjudged, and so is one whose files past the `MEDIA_SNIFF_MAX_FILES` cap could change the verdict.
 
 The **batch path** reaches repos the other two miss, such as one with a script, or with a README too long for the dump path, as long as everything besides the media stays under the wider budget below. A repo is flagged `media-batch` when it meets conditions 1, 4 and 5 above, *and*:
 

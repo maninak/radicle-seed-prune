@@ -34,6 +34,7 @@ A run that holds back a rule exits `4`. A monitor that alerts on exit `3` should
 
 - **When one rule plans far more repos than usual, an unattended run holds back only that rule.** The other repos in the plan are pruned, and the run exits `4` ([details](./README.md#safety-and-recovery)). It used to prune nothing and exit `3`.
 - **Changing `MAX_PRUNE_*`, `MAX_SCAN_FAIL_PCT`, a `RATCHET_*`, `UNDO*` or `QUARANTINE*` setting, or `NEAR_PCT` no longer clears the run cache**, so the next run doesn't re-read every repo. None of them changes what a run reads.
+- **The media rule (F)'s warning about repos it could not judge comes only when one of them is new since the last run, and names the new ones.** The same busy repos are left unjudged every week, and a warning that repeats weekly stops being read. `last-run/F-media-unjudged.tsv` gains each repo's size.
 - **`quarantine restore` writes when it restored the repo and what it was pruned as beside its id in `keep.txt`.**
 - **An `--apply` or `--block-peers` run that gets past its settings check prints its exit code last and records it in its audit log.**
 
@@ -51,10 +52,11 @@ A run that holds back a rule exits `4`. A monitor that alerts on exit `3` should
 - **A run no longer writes over the audit log of a run that opened its own in the same second.** It waits for the next second.
 - **A repo with a branch or tag git cannot walk sits out the link-farm rule (E).** It used to count with fewer of its own links, which could make a host its code depends on look like spam. The other rules still judge it.
 - **A repo pruned again after its block was lifted no longer raises its rule's usual count.** If it counted, an undo wave pruned again could let the next real wave past the hold-back.
+- **The media rule (F) leaves a repo with more than `MEDIA_MAX_OPS` (20000) issue and patch ops unjudged.** Anybody can push ops naming a delegate's key, and each one cost a signature check. The busiest real project on a 13k-repo seed has about 11k. It also no longer walks the code history a patch's commits reach.
 - **A weekly cron deletes a quarantined repo after 7 days, not 14.** Each copy was dated when it moved, minutes into its run, so the run a week later found it a few minutes short of `QUARANTINE_DAYS` and kept it another week. A copy is now due three hours early.
 - **A stopped run no longer deletes expired repos from the quarantine.** A run stopped by the runaway caps or by an `n` at the prompt used to delete them first.
 - **A disk at or under the critical free-space threshold counts as full pressure even when `PRESSURE_CRIT_*` is set above `PRESSURE_RELAX_*`.**
-- **A typo in `MAX_PRUNE_COUNT`, `MAX_PRUNE_GB`, a `RATCHET_*` setting, `DISK_AWARE` or `QUARANTINE` stops the run with exit `2`.** It used to turn a check off without a word, and a `QUARANTINE` typo deleted repos outright.
+- **A typo in `MAX_PRUNE_COUNT`, `MAX_PRUNE_GB`, a `RATCHET_*` setting, `MEDIA_MAX_REFS`, `MEDIA_MAX_OPS`, `DISK_AWARE` or `QUARANTINE` stops the run with exit `2`.** It used to turn a check off without a word, and a `QUARANTINE` typo deleted repos outright.
 - **rad-prune finds `keep.txt`, `deny.txt` and the quarantine when `AUDIT_DIR` or `RAD_HOME` is a relative path.** It used to look for them under `/`, so the keep list read as empty and repos on it could be pruned.
 - **A run by hand and a run from cron no longer drop each other's cache when they start bash from different paths or run with a different `HOME`.** Each used to read every repo again, as on a first run.
 - **An unexpected failure always exits `1`.** It used to pass on the failed command's exit code, which could look like exit `3` or `5`.

@@ -1192,6 +1192,14 @@ grep -qE "^zmediazip .*media-dump" <<<"$plan" \
 grep -qE "^zmediapast .*media-dump" <<<"$plan" \
   && ok "an attachment from an earlier comment counts, not just the newest one" \
   || no "rule F walks COB history"
+# zmediapast's issue holds two ops and zmediacob's one, so a cap of one leaves only the first
+# unjudged. Judged on its newest op alone, zmediapast would also leave the plan, so the list of
+# unjudged repos is what shows the cap.
+plan_fo=$(MEDIA_MAX_OPS=1 run)
+{ ! has "$plan_fo" "zmediapast" && grep -qE "^zmediacob .*media-dump" <<<"$plan_fo" \
+  && cut -f1 "$RSP_HOME/prune-audit/last-run/F-media-unjudged.tsv" | grep -qx zmediapast; } \
+  && ok "a repo over MEDIA_MAX_OPS issue and patch ops is left unjudged, the rest judged" \
+  || no "MEDIA_MAX_OPS is vacuous"
 ! has "$plan" "zmediagz" \
   && ok "compressed data is judged by what it unpacks to: text" \
   || no "a .csv.gz of text counted as media"
@@ -1283,6 +1291,8 @@ grep -qE "^zmediaspc .*media-dump" <<<"$plan" \
 # made, copied from the reply: only a signature over the commit's own tree ties the two
 # together. zmediacob's dump gains a branch whose tip commit is gone from the object
 # store; what it held is unknown, so the repo cannot be judged on the branch that is left.
+# A stranger points a branch at the newest op of zmediapast's issue, which must not hide the
+# clip in the older one.
 build_fixture; assert_isolated
 d="$STORAGE/zmediapeer"
 ts=$(date -u -d "60 days ago" +%s)
@@ -1307,6 +1317,10 @@ touch -d "10 days ago" "$d"
 e_tree zmediacob 60 extra "README.md:4096"
 gone=$(GIT_DIR="$STORAGE/zmediacob" git rev-parse extra)
 rm -f "$STORAGE/zmediacob/objects/${gone:0:2}/${gone:2}"
+d="$STORAGE/zmediapast"
+GIT_DIR="$d" git update-ref "refs/namespaces/$STRANGER_NID/refs/heads/hide" \
+  "refs/namespaces/$COB_NID/refs/cobs/xyz.radicle.issue/ccc"
+touch -d "10 days ago" "$d"
 # zmediaone's dump gains a directory of a few small trees that lists as only 2^11 paths, but
 # ones 11 KB long, more than MEDIA_TIP_BYTES in all.
 d="$STORAGE/zmediaone"
@@ -1322,6 +1336,9 @@ plan=$(run)
 { ! has "$plan" "zmediacob" && grep -q 'left 3 repo(s) unjudged' <<<"$plan"; } \
   && ok "a branch whose tip is gone leaves the repo unjudged, not judged on the rest" \
   || no "rule F judged a repo on the branches it could still read"
+grep -qE "^zmediapast .*media-dump" <<<"$plan" \
+  && ok "a stranger's branch cannot hide a delegate's issue ops from rule F" \
+  || no "a stranger's branch on an op hid the clip in the issue's history"
 ! has "$plan" "zmediaone" \
   && ok "a repo whose tips list as too many paths is left unjudged" \
   || no "rule F judged a repo whose tree repeats itself into 22 MB of paths"
@@ -1727,9 +1744,23 @@ nunj=$(sed -n 's/^# WARN: the media rule (F) left \([0-9]*\) repo(s) unjudged.*/
 { [ "${nunj:-0}" -gt 0 ] \
   && grep -q "^#   the $nunj repo(s) the media rule (F) left unjudged: $L/F-media-unjudged.tsv$" <<<"$unj" \
   && [ "$(grep -vc '^#' "$L/F-media-unjudged.tsv")" = "$nunj" ] \
-  && grep -qx 'zmediamd' "$L/F-media-unjudged.tsv"; } \
+  && grep -qE "^zmediamd"$'\t'"[0-9]+$" "$L/F-media-unjudged.tsv" \
+  && grep -qx '#   zmediamd' <<<"$unj"; } \
   && ok "the repos rule F gave up on are named, not only counted" \
   || no "rule F warned about $nunj unjudged repos and named none of them"
+# The same repos next run are the ones the warning already named, so they get a note instead.
+again=$(DISK_AWARE=0 MEDIA_MAX_REFS=0 CACHE=0 run)
+{ ! grep -q 'WARN: the media rule (F)' <<<"$again" \
+  && grep -q "^# the media rule (F) left $nunj repo(s) unjudged, all of them listed" <<<"$again"; } \
+  && ok "repos rule F could not judge last run either are a note, not a warning" \
+  || no "rule F warned again about the same unjudged repos"
+# 0.7.0 wrote that list under another name, and the first run after an upgrade reads it.
+grep -v '^#' "$L/F-media-unjudged.tsv" | cut -f1 > "$L/media-unjudged.tsv"
+rm "$L/F-media-unjudged.tsv"
+upgraded=$(DISK_AWARE=0 MEDIA_MAX_REFS=0 CACHE=0 run)
+! grep -q 'WARN: the media rule (F)' <<<"$upgraded" \
+  && ok "the first run after an upgrade reads 0.7.0's list of unjudged repos" \
+  || no "the first run after an upgrade called every unjudged repo new"
 
 # A recording saved as .ts shares its extension with TypeScript, so only its bytes say it is
 # video. Over MEDIA_SNIFF_TEXT_BYTES a file named like text is read, and this one must not
@@ -1757,13 +1788,13 @@ plan=$(DISK_AWARE=0 CACHE=0 run)
 grep -qE "^zmediats .*media-dump" <<<"$plan" \
   && ok "an MPEG recording named .ts is read as video, not trusted as TypeScript" \
   || no "an MPEG transport stream named .ts passed for text"
-{ ! has "$plan" "zmediacap" && grep -qx 'zmediacap' "$L/F-media-unjudged.tsv"; } \
+{ ! has "$plan" "zmediacap" && cut -f1 "$L/F-media-unjudged.tsv" | grep -qx 'zmediacap'; } \
   && ok "files past the read cap that could change the verdict leave the repo unjudged" \
   || no "a repo was judged on the 200 files read when the rest could have changed it"
 grep -qE "^zmediacap2 .*media-dump" <<<"$plan" \
   && ok "a few unread bytes that cannot change the verdict do not block it" \
   || no "a repo with a tiny unread file was left unjudged"
-{ ! has "$plan" "zmediamany" && ! grep -qx 'zmediamany' "$L/F-media-unjudged.tsv"; } \
+{ ! has "$plan" "zmediamany" && ! cut -f1 "$L/F-media-unjudged.tsv" | grep -qx 'zmediamany'; } \
   && ok "a repo no verdict can reach is spared without being reported as unjudged" \
   || no "unread files were reported as able to change a verdict nothing could reach"
 
