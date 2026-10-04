@@ -2346,8 +2346,8 @@ repos_to_read() {                 # $1 = file listing rids the cache already ans
 { printf '#!/usr/bin/env bash\n'; declare -f read_delegates
   printf 'our_nid=%q\n' "$OUR_NID"; cat <<'LIFE'
 # The ref listing is written to a file rather than a shell variable because one repo on a real
-# seed has 152k refs. It is read once for the dates, once for the fingerprint the run cache
-# keys on, and once for this node's signed refs.
+# seed has 152k refs. It is read once for the dates and the signed refs, and once for the
+# fingerprint the run cache keys on.
 t=$(mktemp) || exit 1
 trap 'rm -f "$t"' EXIT
 re_private='"visibility":\{("allow":\[[^]]*\],)?"type":"private"\}\}$'
@@ -2362,38 +2362,45 @@ for d; do
   # keeps what is left in date order, so the first is still the oldest and the last the newest.
   # The length bound is what makes the digit test enough: an all-decimal object id would pass
   # /^[0-9]+$/ and become a date 30 digits long. Eleven digits reach the year 5138.
-  bl=$(awk '$1 ~ /^[0-9]+$/ && length($1) <= 11 { if (b == "") b = $1; l = $1 }
-            END { if (b == "") printf "0\t0"; else printf "%s\t%s", b, l }' "$t")
-  refhash=$(sha1sum < "$t" | cut -c1-40)
+  #
+  # The same pass lists every node that signed refs of its own here, which only that node
+  # can do. The ref name is the last field and holds no space, whatever the date field holds.
+  # One awk for both, because this walk reads every repo on every run, warm cache or not, and
+  # each process per repo costs about a millisecond of CPU.
+  read -r birth last signed < <(awk '
+      $1 ~ /^[0-9]+$/ && length($1) <= 11 { if (b == "") b = $1; l = $1 }
+      $NF ~ /^refs\/namespaces\/[^\/]+\/refs\/rad\/sigrefs$/ {
+        split($NF, p, "/"); signed = signed " " p[3] }
+      END { if (b == "") printf "0 0%s\n", signed; else printf "%s %s%s\n", b, l, signed }' \
+    "$t")
+  refhash=$(sha1sum < "$t"); refhash=${refhash%% *}
   # The repo's delegates, comma-separated, for the deny list.
   read_delegates "$d"
   # The delegates who signed refs of their own here, for rule H. An identity document can name
-  # anybody as a delegate, but only that delegate can sign refs under their own namespace. The
-  # ref name is the last field and holds no space, whatever the date field before it holds.
-  signers=$(awk -v dids="$dids" '
-      BEGIN { n = split(dids, d, " ")
-              for (i = 1; i <= n; i++)
-                want["refs/namespaces/" d[i] "/refs/rad/sigrefs"] = d[i] }
-      $NF in want { printf "%s%s", sep, want[$NF]; sep = "," }' "$t")
+  # anybody as a delegate, but only that delegate can sign refs under their own namespace.
+  signers=""
+  for nid in $signed; do
+    case " $dids " in (*" $nid "*) signers="$signers${signers:+,}$nid" ;; esac
+  done
   # Whether the repo is ours or private, read from the repo itself, so that a `rad ls` this
   # run misreads is not the only thing keeping it from the rules. Ours when this node has
-  # signed refs in it, which nobody else can sign; a ref name holds no space, so the match is
-  # the whole name. A delegate list naming us is not enough, since anybody can publish one.
+  # signed refs in it, which nobody else can sign. A delegate list naming us is not enough,
+  # since anybody can publish one.
   # Private when the document ends on a private visibility, written the way rad writes it.
   # Only the top-level object's last member can end right before the document's final "}",
   # because a JSON string cannot hold an unescaped quote, so a payload cannot say it instead.
   # A document written some other way is asked of jq, when it can say private at all: it has
   # to spell the word, or escape it.
   vis=-
-  if grep -q " refs/namespaces/$our_nid/refs/rad/sigrefs\$" "$t"; then vis=ours
+  if [[ " $signed " == *" $our_nid "* ]]; then vis=ours
   elif [[ $iddoc =~ $re_private ]]; then vis=private
   elif [[ $iddoc == *private* || $iddoc == *\\* ]] \
        && jq -e '.visibility.type == "private"' <<<"$iddoc" >/dev/null 2>&1; then vis=private
   fi
   # The delegates go last: they may be empty, and `read` with a tab IFS folds an empty field
   # into the next one.
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${d##*/}" "${bl:-0	0}" "$refhash" "$vis" "${signers:--}" \
-         "${dids// /,}"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${d##*/}" "${birth:-0}" "${last:-0}" "$refhash" \
+         "$vis" "${signers:--}" "${dids// /,}"
 done
 LIFE
 } > "$tmp/life.sh"
@@ -2430,8 +2437,9 @@ awk -F'\t' -v du="$tmp/du" \
 # on every start, so a hand run and a cron run invalidated each other's cache in both
 # directions, which on an 11k-repo seed is a full uncached run every time. The names below are
 # left out because none of them can change a verdict: they say how the work is done, how it is
-# printed, and which service gets restarted.
-skip='JOBS|CACHE|PLAN_FULL|PLAN_COLLAPSE_ROWS|SERVICE|PROGRESS_SECS'
+# printed, which service gets restarted, and which bash runs the workers (a hand run and cron
+# may resolve different paths to the same shell).
+skip='JOBS|CACHE|PLAN_FULL|PLAN_COLLAPSE_ROWS|SERVICE|PROGRESS_SECS|BASH'
 knobs=$(grep -oE '\$\{[A-Z_][A-Z0-9_]*[:-]' "$SELF" 2>/dev/null \
         | tr -d '${:-' | grep -vxE "$skip" | sort -u)
 fingerprint=$( { sha1sum < "$SELF"
@@ -2893,7 +2901,7 @@ for d; do
   # whose store holds less than the bar is no copy, and is not walked. A stock icon shared with
   # a denied repo would otherwise send every repo holding it through a walk on each change.
   if [ "$stored" -lt "$min_bytes" ]; then
-    cat "$t.n"; printf '=\t%s\t0\n' "$rid"; echo "$rid" >&3; continue
+    [ ! -s "$t.n" ] || cat "$t.n"; printf '=\t%s\t0\n' "$rid"; echo "$rid" >&3; continue
   fi
   # --count stops the listing one past rule F's cap, so a repo with 152k refs never reaches a
   # variable. Over it the repo goes unjudged, as it does for rule F.
@@ -3060,7 +3068,7 @@ PEER
 # the two sides share, so a peer who only mirrors the repo costs almost nothing to rule out.
 only_in() {
   local d=$1 want=$2 exclude=$3
-  { printf '%s\n' $want; printf '%s\n' $exclude | sed 's/^/^/'; } \
+  { printf '%s\n' $want; printf '^%s\n' $exclude; } \
     | GIT_DIR="$d" git rev-list --objects --ignore-missing --stdin \
         --filter=object:type=blob 2>/dev/null \
     | GIT_DIR="$d" git cat-file \
@@ -3110,7 +3118,7 @@ walk_repo() {
   [ "${#refs[@]}" -le "$max_refs" ] || return 0
   # OWN is everything the delegates control, and it is the exclusion set. Whole histories go in
   # here rather than tips, because a wider exclusion can only ever spare a peer.
-  own=""; strangers=""
+  own=""; strangers=""; combined=""
   for ref in "${refs[@]}"; do
     case $ref in
       refs/heads/*|refs/tags/*|refs/cobs/*|refs/rad/*) own="$own"$'\n'"$ref"; continue ;;
@@ -3119,14 +3127,16 @@ walk_repo() {
     esac
     case " $dids " in
       (*" $nid "*) own="$own"$'\n'"$ref" ;;
-      (*)          strangers="$strangers"$'\n'"$nid"$'\t'"$ref" ;;
+      (*)          strangers="$strangers"$'\n'"$nid"$'\t'"$ref"
+                   combined="$combined"$'\n'"$ref" ;;
     esac
   done
   [ -n "$strangers" ] || return 0
   # The cheap tier: one listing for every stranger at once. Most repos stop here. Each listing
-  # lands in a file rather than a pipe, so its exit status is still there to be read.
-  combined=$(cut -f2 <<<"${strangers#$'\n'}")
+  # lands in a file rather than a pipe, so its exit status is still there to be read. A peer
+  # who only mirrors the repo lists nothing, and an empty listing holds no media to weigh.
   only_in "$d" "$combined" "$own" > "$blobs" || return 1
+  [ -s "$blobs" ] || return 0
   media_here=$(split_bytes < "$blobs" | awk '$1 == "=" { print $2 }')
   [ "${media_here:-0}" -gt 0 ] || return 0
   # Something is there, so pay to learn whose. One listing per peer, and the peers with
@@ -3188,14 +3198,15 @@ ceiling=$LINK_BLOB_PREFIX
 budget=$LINK_REPO_BUDGET
 HOSTS
   cat >> "$tmp/hosts.sh" <<'HOSTS'
-# Reads blob ids on stdin. Prints the hostnames those blobs mention, one per line, without
-# repeats.
+# Reads blob ids on stdin. Prints "<rid>\t<hostname>" for each hostname those blobs mention,
+# without repeats. $1 = the repo's git dir, $2 = its rid. One sed lowercases the line and swaps
+# the scheme for the rid: every line carries the same rid, so sorting after it changes neither
+# which lines are repeats nor their order, and it saves two processes per pass per repo.
 hosts_of() {
   GIT_DIR="$1" git cat-file --batch 2>/dev/null \
     | head -c "$budget" \
     | grep -aoE 'https?://[A-Za-z0-9._-]+' \
-    | sed -E 's#^https?://##' \
-    | tr '[:upper:]' '[:lower:]' \
+    | sed -E "y/ABCDEFGHIJKLMNOPQRSTUVWXYZ/abcdefghijklmnopqrstuvwxyz/; s#^https?://#$2\t#" \
     | sort -u
 }
 for d; do
@@ -3210,7 +3221,7 @@ for d; do
   GIT_DIR="$d" git cat-file --batch-all-objects \
        --batch-check='%(objectname) %(objecttype) %(objectsize)' 2>/dev/null \
     | awk -v c="$ceiling" '$2=="blob" && $3+0<=c {print $1}' \
-    | hosts_of "$d" | sed "s#^#$rid\t#"
+    | hosts_of "$d" "$rid"
   # A repo bigger than the budget closes the pipe early, which kills the lister with SIGPIPE
   # (141). That is the cap doing its job. Any other failure means we could not read the repo.
   st=${PIPESTATUS[0]}
@@ -3228,7 +3239,7 @@ for d; do
     | GIT_DIR="$d" git cat-file \
         --batch-check='%(objectname) %(objecttype) %(objectsize)' 2>/dev/null \
     | awk -v c="$ceiling" '$2=="blob" && $3+0<=c {print $1}' \
-    | hosts_of "$d" | sed "s#^#$rid\t#" >&3
+    | hosts_of "$d" "$rid" >&3
   # This repo has been read to the end. A repo that links to nothing writes no host line at
   # all, so without this the run cache could not tell that from a repo nobody ever read.
   printf '%s\n' "$rid" >&5
