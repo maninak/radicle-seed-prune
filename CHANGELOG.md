@@ -42,7 +42,9 @@ A run that holds back a rule exits `4`. A monitor that alerts on exit `3` should
 - **`keep.txt` is read correctly however it was saved.** A byte-order mark from some Windows editors, or a `quarantine restore` onto a file with no final line break, could make a run ignore a listed repo and prune it.
 - **Repos that `rad ls` lists as `local` are no longer pruned as `spam-batch`.** Their head commit was read as their description.
 - **`--apply` stops with exit `1` before it touches any repo when it cannot write storage or the quarantine.** It used to block every repo in the plan and leave them all in storage.
+- **`--apply` and `--block-peers` stop with exit `1` before the scan when they cannot write the audit directory.** They could block a peer or a `deny.txt` entry and then fail to record it.
 - **A run that could not remove a repo in its plan exits `1`.** It used to exit as if nothing had failed, with only a warning. The run that does remove it later no longer records the block left behind as somebody else's, which kept the undo from ever lifting it.
+- **A run no longer writes over the audit log of a run that opened its own in the same second.** It waits for the next second.
 - **A stopped run no longer deletes expired repos from the quarantine.** A run stopped by the runaway caps or by an `n` at the prompt used to delete them first.
 - **A disk at or under the critical free-space threshold counts as full pressure even when `PRESSURE_CRIT_*` is set above `PRESSURE_RELAX_*`.**
 - **A typo in `MAX_PRUNE_COUNT`, `MAX_PRUNE_GB`, a `RATCHET_*` setting, `DISK_AWARE` or `QUARANTINE` stops the run with exit `2`.** It used to turn a check off without a word, and a `QUARANTINE` typo deleted repos outright.

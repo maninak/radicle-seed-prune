@@ -1065,6 +1065,15 @@ if [ "$CMD" != quarantine ] && [ "$APPLY" = 1 ]; then
   [ -w "$STORAGE" ] \
     || { echo "cannot write storage dir $STORAGE (wrong user?)" >&2; exit 1; }
 fi
+# Every block a run makes is recorded in its audit log, and a block with no record is one the
+# undo can never tell from somebody else's.
+if [ "$CMD" != quarantine ] && { [ "$APPLY" = 1 ] || [ "$BLOCK_PEERS" = 1 ]; }; then
+  audit_err=$(mkdir -p "$AUDIT_DIR" 2>&1) || true
+  { [ -d "$AUDIT_DIR" ] && [ -w "$AUDIT_DIR" ] && [ -x "$AUDIT_DIR" ]; } \
+    || { echo "cannot write the audit dir $AUDIT_DIR (wrong user?)" >&2
+         [ -z "$audit_err" ] || echo "$audit_err" >&2
+         exit 1; }
+fi
 if [ "$CMD" != quarantine ] && [ "$APPLY" = 1 ] && [ "$QUARANTINE" = 1 ]; then
   quar_err=$(mkdir -p "$quar" 2>&1) || true
   { [ -d "$quar" ] && [ -w "$quar" ] && [ -x "$quar" ]; } \
@@ -1788,6 +1797,19 @@ open_audit() {
   [ -z "$audit" ] || return 0
   mkdir -p "$AUDIT_DIR"
   audit="$AUDIT_DIR/prune-$(date -u +%Y%m%dT%H%M%SZ).log"
+  # Named by the second, so a run that opens its log in the same second as another waits for
+  # the next one, since writing here would truncate that run's record of what it pruned.
+  # noclobber makes taking the name one step, so two runs at once cannot both take it. Any
+  # other failure stops the run, since retrying a directory it cannot write would wait forever.
+  until ( set -C; : > "$audit" ) 2> "$tmp/audit-err"; do
+    if [ ! -e "$audit" ] && [ ! -L "$audit" ]; then
+      echo "# ERROR: cannot create the audit log $audit:" \
+           "$(head -c 200 "$tmp/audit-err" | LC_ALL=C tr -c '[:print:]' ' ')" >&2
+      exit 1
+    fi
+    sleep 1
+    audit="$AUDIT_DIR/prune-$(date -u +%Y%m%dT%H%M%SZ).log"
+  done
   { printf '# %s\n' \
       "What one rad prune run removed from storage or blocked, one repo per row, and the" \
       "blocks it lifted, on # unblocked: lines." \

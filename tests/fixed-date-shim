@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Test double for `date`: answers the audit log's name format with the stamps in $RSP_STAMPS,
+# one per call in order, and forwards everything else. Put its dir first on PATH to make a run
+# ask for a log name that is already taken, however long the run takes to get there.
+set -uo pipefail
+real=$(PATH="$(getconf PATH)" command -v date)
+if [ "$*" = "-u +%Y%m%dT%H%M%SZ" ]; then
+  n=$(( $(cat "$RSP_STAMPS.n" 2>/dev/null || echo 0) + 1 ))
+  echo "$n" > "$RSP_STAMPS.n"
+  stamp=$(sed -n "${n}p" "$RSP_STAMPS")
+  [ -n "$stamp" ] || exit 1
+  echo "$stamp"
+  exit 0
+fi
+exec "$real" "$@"

@@ -2068,17 +2068,47 @@ after=$(ls "$STORAGE" | wc -l)
 # record them as blocked by somebody else, which would keep the undo from ever lifting them.
 grep -q '^# prune-failed: rad:zjunk1$' "$AUDIT_DIR"/prune-*.log 2>/dev/null; failed_logged=$?
 # A run whose blocks fail in between plans zjunk1 again and must keep that line going.
-sleep 1   # a log is named by the second it starts in
 mid=$(RSP_UNSEED_FAIL=1 RSP_BLOCK_FAIL=1 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" \
         "$SCRIPT" --apply </dev/null 2>&1); midrc=$?
 grep -q 'WARN block failed, skipping delete: zjunk1' <<<"$mid" || midrc=bad
-sleep 1
 out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
 last=$(ls "$AUDIT_DIR"/prune-*.log | tail -1)
 { [ "$failed_logged" = 0 ] && [ "$midrc" = 1 ] && [ "$rc" = 0 ] && [ ! -e "$STORAGE/zjunk1" ] \
     && grep -q '^zjunk1' "$last" && ! grep -q '^# was-blocked: rad:zjunk1$' "$last"; } \
   && ok "a block left by a failed prune stays rad-prune's own" \
   || no "a failed prune's block was recorded as somebody else's (rc=$rc, middle run $midrc)"
+
+# --- an audit log is never overwritten --- Logs are named by the second, and another run's log
+# is that run's only record of what it pruned. The first name the run asks for is taken.
+build_fixture; assert_isolated
+mkdir -p "$AUDIT_DIR"
+echo "# another run" > "$AUDIT_DIR/prune-20300101T000000Z.log"
+printf '%s\n' 20300101T000000Z 20300101T000001Z > "$ROOT/stamps"
+fixdate="$ROOT/fixdate"; mkdir -p "$fixdate"
+cp "$HERE/fixed-date-shim" "$fixdate/date"; chmod +x "$fixdate/date"
+out=$(PATH="$fixdate:$PATH" RSP_STAMPS="$ROOT/stamps" DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 \
+        "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
+{ [ "$rc" = 0 ] && [ "$(cat "$AUDIT_DIR/prune-20300101T000000Z.log")" = "# another run" ] \
+    && grep -q '^# plan=' "$AUDIT_DIR/prune-20300101T000001Z.log"; } \
+  && ok "a run whose log name is taken waits for a free one" \
+  || no "a run wrote over another run's audit log (rc=$rc)"
+
+# --- an audit dir the run cannot write stops it before the scan --- Every block is recorded in
+# the audit log, and a block with no record is one the undo cannot tell from somebody else's.
+# A file where the dir should be defeats mkdir -p even for root.
+build_fixture; assert_isolated
+: > "$RSP_HOME/.stub_block"
+rm -rf "$AUDIT_DIR"; : > "$AUDIT_DIR"
+out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 timeout 120 "${NOTTY[@]}" "$SCRIPT" \
+        --apply </dev/null 2>&1); rc=$?
+pout=$(PARASITE_MIN_REPOS=3 PARASITE_MIN_BYTES=65536 PARASITE_TEXT_MAX_BYTES=4096 \
+         DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 timeout 120 "${NOTTY[@]}" "$SCRIPT" --block-peers --yes \
+         </dev/null 2>&1); prc=$?
+{ [ "$rc" = 1 ] && grep -q 'cannot write the audit dir' <<<"$out" && [ -d "$STORAGE/zjunk1" ] \
+    && [ "$prc" = 1 ] && grep -q 'cannot write the audit dir' <<<"$pout" \
+    && [ ! -s "$RSP_HOME/.stub_block" ]; } \
+  && ok "an audit dir that cannot be written stops --apply and --block-peers before any block" \
+  || no "an unwritable audit dir let a run block or prune (rc=$rc, --block-peers rc=$prc)"
 
 # --- a quarantine the run cannot write stops it before the scan --- Every repo is unseeded and
 # blocked before it moves, so carrying on would leave the whole plan blocked and still in

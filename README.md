@@ -168,14 +168,14 @@ A phase counts the repos it has to read this run, not everything in storage, so 
 
 ### Exit codes
 
-| Code | Meaning                                                                                                                              |
-| ---- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `0`  | Success, including a dry run and an `--apply` you declined at the prompt                                                             |
-| `1`  | Storage missing or unreadable, storage or the quarantine not writable by `--apply`, a repo that could not be removed (the run names it), or an unexpected failure (the run prints the line, the command and its status) |
-| `2`  | Bad argument, or a setting with a bad value (the run names it)                                                                       |
-| `3`  | The plan tripped a runaway cap; nothing was pruned. Read it, then re-run with `--force`                                              |
-| `4`  | A rule planned far more than usual, so its repos were held back; the other repos in the plan were pruned. Read it, then `--force`    |
-| `5`  | Refused to guess: node unreachable, NID unknown or malformed, `rad ls` failed, routing table empty, exclusions unreadable, or too much of storage could not be read |
+| Code | Meaning                                                                                                                                                                                                                                                                                 |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`  | Success, including a dry run and an `--apply` you declined at the prompt                                                                                                                                                                                                                |
+| `1`  | Storage missing or unreadable; storage, the quarantine or the audit directory not writable by `--apply`, or the audit directory by `--block-peers`; a repo that could not be removed (the run names it); or an unexpected failure (the run prints the line, the command and its status) |
+| `2`  | Bad argument, or a setting with a bad value (the run names it)                                                                                                                                                                                                                          |
+| `3`  | The plan tripped a runaway cap; nothing was pruned. Read it, then re-run with `--force`                                                                                                                                                                                                 |
+| `4`  | A rule planned far more than usual, so its repos were held back; the other repos in the plan were pruned. Read it, then `--force`                                                                                                                                                       |
+| `5`  | Refused to guess: node unreachable, NID unknown or malformed, `rad ls` failed, routing table empty, exclusions unreadable, or too much of storage could not be read                                                                                                                     |
 
 Exit 5 means the tool could not see enough to be trusted. Nothing was touched.
 
