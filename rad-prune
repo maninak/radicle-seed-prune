@@ -2297,6 +2297,23 @@ awk -F'\t' 'FILENAME == ARGV[1] { stored[$1] = 1; next } !($1 in stored) { print
 awk -F'\t' 'FILENAME == ARGV[1] { stored[$1] = 1; next } ($1 in stored)' \
   "$tmp/stored" "$tmp/meta" > "$tmp/meta-stored"
 mv "$tmp/meta-stored" "$tmp/meta"
+# A repo with no identity ref of its own has no document this node verified, so nothing here
+# can tell its real row from a forged one, and the rows naming it go. Without a name, the rules
+# that read one leave it alone. The ref is a loose file, or a line in packed-refs once git has
+# packed it.
+while IFS= read -r rid; do
+  if [ -e "$STORAGE/$rid/refs/rad/id" ] \
+     || grep -qm1 ' refs/rad/id$' "$STORAGE/$rid/packed-refs" 2>/dev/null; then
+    printf '%s\n' "$rid"
+  fi
+done < "$tmp/stored" > "$tmp/stored-with-id"
+awk -F'\t' 'FILENAME == ARGV[1] { hasid[$1] = 1; next } ($1 in hasid)' \
+  "$tmp/stored-with-id" "$tmp/meta" > "$tmp/meta-with-id"
+nnoid=$(( $(wc -l < "$tmp/meta") - $(wc -l < "$tmp/meta-with-id") ))
+[ "$nnoid" = 0 ] \
+  || echo "# $nnoid row(s) of '$RAD ls' name a repo with no refs/rad/id of its own;" \
+          "those repos are judged without a name." >&2
+mv "$tmp/meta-with-id" "$tmp/meta"
 cut -f1 "$tmp/meta" | sort | uniq -d > "$tmp/meta-twice"
 awk -F'\t' 'FILENAME == ARGV[1] { twice[$1] = 1; next } !($1 in twice)' \
   "$tmp/meta-twice" "$tmp/meta" > "$tmp/meta-named"

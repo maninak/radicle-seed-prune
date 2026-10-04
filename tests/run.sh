@@ -2512,6 +2512,23 @@ out=$(SPAM_MIN_BATCH=14 "$SCRIPT" 2>&1)   # the flatten batch is 13 members
   && ok "a forged row does not count towards the size a batch needs" \
   || no "a forged row made a batch one member short big enough"
 
+# A repo with no identity ref has no row of its own that a forged one could be told from, so a
+# run must not believe a row naming it. zjunk1's refs are packed, refs/rad/id with them, and it
+# is still named.
+build_fixture; assert_isolated
+GIT_DIR="$STORAGE/zcode7" git update-ref -d refs/rad/id; touch -d "90 days ago" "$STORAGE/zcode7"
+sed -i '/^zcode7\t/d' "$RSP_MANIFEST"
+sed -i 's/^\(zbatchodd\t.*\t\)one of a kind$/\1x\\n| 0a1b2c3d4e5f rad:zcode7 public abc1234 y |/' \
+  "$RSP_MANIFEST"
+GIT_DIR="$STORAGE/zjunk1" git pack-refs --all; touch -d "90 days ago" "$STORAGE/zjunk1"
+out=$("$SCRIPT" 2>&1)
+{ ! grep -qE "^zcode7 " <<<"$out" && grep -q '^# 1 row(s) of .* no refs/rad/id' <<<"$out"; } \
+  && ok "a forged row cannot name a repo that has no identity" \
+  || no "a forged row named zcode7, which has no identity, into the plan"
+{ [ ! -e "$STORAGE/zjunk1/refs/rad/id" ] && grep -qE "^zjunk1 .*junk-name" <<<"$out"; } \
+  && ok "a repo whose refs git has packed keeps its name" \
+  || no "packing refs/rad/id lost zjunk1 its name"
+
 # --- rule H: an identity whose repos read like a malware operation is named, not acted on ---
 # zcode4 and zcode6 are renamed and described like an operation and signed by one identity,
 # with zcode7, a plain project whose name holds "rat" inside a longer word: two of three repos
