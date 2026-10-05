@@ -496,7 +496,7 @@ The malware rule (H) names identities and single repos that read like a malware 
 
 It looks for strong words (`MALWARE_STRONG_WORDS`: `hvnc`, `stealer`, `crypter`, `drainer`, `keylogger`, `ransomware`, `botnet`, `scam`) and weak ones (`MALWARE_WEAK_WORDS`: `c2`, `payload`, `panel`, `loader`, `zombie`, `rat`, `exploit`), as whole words, with or without a trailing `s`.
 
-- **An identity** is named when at least 2 of the repos it signed as a delegate, and at least half of them, use a word in their name or description, and those names and descriptions hold 3 different words, one of them strong. A repo with a word counts toward an identity only if that identity created it.
+- **An identity** is named when at least 2 of the repos it signed as a delegate, and at least half of them, use a word in their name or description, and those names and descriptions hold 3 different words, one of them strong. A repo matches only on the words its name or description held both when it was created and now. A matching repo counts toward an identity only if that identity created it, and any other repo counts as a plain one toward each delegate who signed it.
 - **A single repo** is named when its name or description holds a strong word, a file path or commit subject in it holds one too, and its first commit is at most 7 days older than its `rad init`, which leaves out a mirror of somebody else's tool. The rule never prunes it.
 
 Each finding comes with the `did:key:` or `rad:` line to add to the [deny list](#deny-list) or to `keep.txt`. In `keep.txt`, either line stops the finding being named again, and a `rad:` line also keeps that repo out of every rule and stops the malware rule (H) naming any delegate of that repo.

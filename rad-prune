@@ -4403,10 +4403,10 @@ nparasite=$(wc -l < "$tmp/parasites")
 # Rows, one per repo hit, sorted: nid, repos hit, repos it signed, rid, words matched, name.
 : > "$tmp/malware"
 if rule_on H; then
-  # Per repo whose name or description uses a malware word: rid, the words, whether one is
-  # strong, and the name. Words match whole after splitting on non-alphanumerics, since "rat"
+  # Per row of rid, name and description that uses a malware word: rid, the words, whether one
+  # is strong, and the name. Words match whole after splitting on non-alphanumerics, since "rat"
   # as a substring sits in a thousand names. A miss is retried without one trailing "s".
-  awk -F'\t' -v strong="$MALWARE_STRONG_WORDS" -v weak="$MALWARE_WEAK_WORDS" '
+  malware_match='
     function known(list, key) { return index("|" list "|", "|" key "|") > 0 }
     function malware(word) { return word != "" && (known(strong, word) || known(weak, word)) }
     {
@@ -4420,7 +4420,9 @@ if rule_on H; then
         if (known(strong, word)) isstrong = 1
       }
       if (found != "") printf "%s\t%s\t%d\t%s\n", $1, found, isstrong, $2
-    }' "$tmp/meta-named" > "$tmp/malware-words"
+    }'
+  awk -F'\t' -v strong="$MALWARE_STRONG_WORDS" -v weak="$MALWARE_WEAK_WORDS" "$malware_match" \
+    "$tmp/meta-named" > "$tmp/malware-words"
   # Identities rule H leaves out. A delegate of a pinned, kept or own repo is vouched for by
   # this seed, even one who never signed there, as the deny list would not block them either.
   # A private repo vouches for nobody: its delegates chose this seed. A keep-list identity was
@@ -4450,15 +4452,23 @@ if rule_on H; then
   # An identity that only joins repos others created is never named, the price of not naming
   # whoever was added to an operation's repos after cloning them.
   : > "$tmp/malware-founders"
+  : > "$tmp/malware-root-meta"
   mkdir -p "$tmp/founder"
   nforeign=0; foreign=""
-  nchecked=0; nfounded=0
+  nchecked=0; nfounded=0; nnoname=0; noname=""
   while IFS=$'\t' read -r rid _; do
     d="$STORAGE/$rid"
     root=$(GIT_DIR="$d" git rev-list --max-parents=0 refs/rad/id 2>/dev/null | tail -n 1) \
       || root=""
     [ -n "$root" ] || continue
     read_delegates "$d" "$root"
+    # The name and description the repo was created with, which only its founder chose.
+    rootrow=$(jq -r --arg rid "$rid" '.payload["xyz.radicle.project"] // {}
+                                      | [$rid, (.name // ""), (.description // "")]
+                                      | map(tostring | gsub("\u0000"; "") | gsub("[\t\n\r]"; " "))
+                                      | join("\t")' <<<"$iddoc" 2>/dev/null) || rootrow=""
+    [ -z "$rootrow" ] || printf '%s\n' "$rootrow" >> "$tmp/malware-root-meta"
+    rootname=${rootrow#*$'\t'}; rootname=${rootname%%$'\t'*}
     docblob=$(GIT_DIR="$d" git rev-parse "$root:embeds/radicle.json" 2>/dev/null) || docblob=""
     # A first revision with no document credits nobody either, but is no copy to report.
     if [ -z "$docblob" ]; then
@@ -4499,6 +4509,7 @@ if rule_on H; then
            -in "$tmp/founder/msg" -sigfile "$tmp/founder/sig" >/dev/null 2>&1; then
         founder=$signer
         nfounded=$((nfounded+1))
+        [ -n "$rootname" ] || { nnoname=$((nnoname+1)); noname=${noname:-$rid}; }
       fi
     fi
     printf '%s\t%s\n' "$rid" "$founder" >> "$tmp/malware-founders"
@@ -4512,25 +4523,49 @@ if rule_on H; then
     || echo "# WARN no signature on the first identity revision of $nchecked repo(s) the" \
             "malware rule (H) matched checks out for a listed delegate. Radicle may sign" \
             "them differently now, so the rule names nobody this run." >&2
+  # The words in each matching repo's first name and description, cleaned as rad ls output is.
+  LC_ALL=C tr -d '\000-\010\013-\037\177' < "$tmp/malware-root-meta" \
+    | { iconv -f UTF-8 -t UTF-8 -c 2>/dev/null || true; } \
+    | LC_ALL=C sed "$HIDDEN_CHARS_SED" \
+    | awk -F'\t' -v strong="$MALWARE_STRONG_WORDS" -v weak="$MALWARE_WEAK_WORDS" "$malware_match" \
+    > "$tmp/malware-root-words"
+  # rad init always writes a name, so one missing was left out by hand or moved by Radicle.
+  [ "$nnoname" = 0 ] \
+    || echo "# WARN $nnoname of the $nfounded repo(s) the malware rule (H) credits to their" \
+            "creator hold no project name in their first identity revision, such as" \
+            "rad:$noname. Their creator left it out, or Radicle stores it differently now, so" \
+            "their creators are judged as if those repos used no word." >&2
+  # Any delegate can rename a repo, so a repo matches only on the words it used when created
+  # and uses still, and one created plain and renamed into a word counts as a plain repo. An
+  # operation that creates plain repos and renames them later goes unnamed, the price of never
+  # naming a founder for words a co-delegate added.
   # Each identity's repos, counted only where it is a delegate and signed refs, so being named
   # co-delegate of a malware repo does not count. A matching repo counts only for its founder,
   # and one it did not found leaves its share untouched. Then the bars.
   awk -F'\t' -v minwords="$MALWARE_MIN_WORDS" -v minrepos="$MALWARE_MIN_REPOS" \
-      -v share="$MALWARE_MIN_SHARE_PCT" '
+      -v share="$MALWARE_MIN_SHARE_PCT" -v strongwords="$MALWARE_STRONG_WORDS" '
     FILENAME == ARGV[1] { skip[$1] = 1; next }
-    FILENAME == ARGV[2] { words[$1] = $2; strong[$1] = $3; name[$1] = $4; next }
+    FILENAME == ARGV[2] { words[$1] = $2; name[$1] = $4; next }
     FILENAME == ARGV[3] { founder[$1] = $2; next }
+    FILENAME == ARGV[4] { born[$1] = $2; next }
     $6 != "-" {
+      both = ""; isstrong = 0
+      nw = split(words[$1], w, ",")
+      for (j = 1; j <= nw; j++) {
+        if (!index("," born[$1] ",", "," w[j] ",")) continue
+        both = both (both == "" ? "" : ",") w[j]
+        if (index("|" strongwords "|", "|" w[j] "|")) isstrong = 1
+      }
       n = split($6, signer, ",")
       for (i = 1; i <= n; i++) {
         d = signer[i]
         if (d in skip) continue
-        if (($1 in words) && founder[$1] != d) continue
+        if (both != "" && founder[$1] != d) continue
         repos[d]++
-        if (!($1 in words)) continue
-        hits[d]++; row[d, hits[d]] = $1 "\t" words[$1] "\t" name[$1]
-        if (strong[$1]) anystrong[d] = 1
-        nw = split(words[$1], w, ",")
+        if (both == "") continue
+        hits[d]++; row[d, hits[d]] = $1 "\t" both "\t" name[$1]
+        if (isstrong) anystrong[d] = 1
+        nw = split(both, w, ",")
         for (j = 1; j <= nw; j++)
           if (!((d, w[j]) in counted)) { counted[d, w[j]] = 1; distinct[d]++ }
       }
@@ -4542,7 +4577,8 @@ if rule_on H; then
         for (i = 1; i <= hits[d]; i++)
           printf "%s\t%d\t%d\t%s\n", d, hits[d], repos[d], row[d, i]
       }
-    }' "$tmp/malware-skip" "$tmp/malware-words" "$tmp/malware-founders" "$tmp/lives" \
+    }' "$tmp/malware-skip" "$tmp/malware-words" "$tmp/malware-founders" \
+      "$tmp/malware-root-words" "$tmp/lives" \
     | sort -t$'\t' -k1,1 -k4,4 > "$tmp/malware"
 fi
 nmalware=$(cut -f1 "$tmp/malware" | sort -u | wc -l)

@@ -2589,7 +2589,7 @@ out=$("$SCRIPT" 2>&1)
   || no "packing refs/rad/id lost zjunk1 its name"
 
 # --- rule H: an identity whose repos read like a malware operation is named, not acted on ---
-# zcode4 and zcode6 are renamed and described like an operation and signed by one identity, as
+# zcode4 and zcode6 are named and described like an operation and signed by one identity, as
 # is zcode7, a plain project with "rat" inside a longer word: two of three hit, and the one
 # strong word is a plural. Their documents also name a victim, first, who signed refs there, as
 # a clone would, but did not sign the commit creating either repo. zrot1 and zrot2 carry only
@@ -2601,17 +2601,18 @@ out=$("$SCRIPT" 2>&1)
 # as a mirror's is. zcode6, the operation's, is left to the identity review.
 build_fixture; assert_isolated
 # The signer, the first nid or else $SIGNER, also signs the commit that creates the document
-# when new_key made its key, and has signed refs there. Each document names its repo, so no two
-# are the same blob, which a repo id is named after.
+# when new_key made its key, and has signed refs there. The document is named $NAME, the name
+# the repo was created with, and its description is the repo's fixture id, so no two are the
+# same blob, which a repo id is named after.
 set_delegate(){   # $1 = rid, then the nids its identity document names
-  local rid=$1 w dids="" nid c signer=${SIGNER:-$2}; shift
+  local rid=$1 w dids="" nid c signer=${SIGNER:-$2} name=${NAME:-$1}; shift
   w=$(mktemp -d -p "$ROOT")
   git -C "$w" -c init.defaultBranch=master init -q
   git -C "$w" config user.email a@b; git -C "$w" config user.name a
   mkdir -p "$w/embeds"
   for nid; do dids="$dids${dids:+,}\"did:key:$nid\""; done
-  printf '{"delegates":[%s],"payload":{"name":"%s"},"threshold":1}\n' "$dids" "$rid" \
-    > "$w/embeds/radicle.json"
+  printf '{"delegates":[%s],"payload":{"xyz.radicle.project":%s},"threshold":1}\n' "$dids" \
+    "{\"name\":\"$name\",\"description\":\"$rid\"}" > "$w/embeds/radicle.json"
   git -C "$w" add -A; git -C "$w" commit -q -m id
   if [ -f "$ROOT/keys/$signer.pem" ]; then
     c=$(GIT_DIR="$w/.git" sign_op HEAD "$ROOT/keys/$signer.pem" "$signer")
@@ -2636,17 +2637,22 @@ add_delegate(){
 }
 OPS=$(new_key); VIC=$(new_key); RES=$(new_key)
 FEW=$(new_key); THIN=$(new_key); ONE=$(new_key)
+NAME=c2-panel SIGNER=$OPS set_delegate zcode4 "$VIC" "$OPS"
+NAME=wallet_drainers SIGNER=$OPS set_delegate zcode6 "$VIC" "$OPS"
 for r in zcode4 zcode6; do
-  SIGNER=$OPS set_delegate "$r" "$VIC" "$OPS"
   GIT_DIR="$STORAGE/$r" git update-ref "refs/namespaces/$VIC/refs/rad/sigrefs" refs/rad/id
   touch -d "10 days ago" "$STORAGE/$r"
 done
 set_delegate zcode7 "$OPS"
-for r in zrot1 zrot2; do set_delegate "$r" "$RES"; done
-for r in zfarm1 zfarm2; do set_delegate "$r" "$FEW"; done
-for r in zbatch1 zbatch2 zbatch3 zpoison5 zpoison9; do set_delegate "$r" "$THIN"; done
+NAME=exploit-loader set_delegate zrot1 "$RES"
+NAME=payload-panel set_delegate zrot2 "$RES"
+NAME=stealer-panel set_delegate zfarm1 "$FEW"
+NAME=stealer set_delegate zfarm2 "$FEW"
+NAME=hvnc-panel set_delegate zbatch1 "$THIN"
+NAME=botnet set_delegate zbatch2 "$THIN"
+for r in zbatch3 zpoison5 zpoison9; do set_delegate "$r" "$THIN"; done
 # zrot3's document also names this node, which never signs there.
-set_delegate zrot3 "$ONE" "$RSP_NID"
+NAME=hvnc-panel set_delegate zrot3 "$ONE" "$RSP_NID"
 # Radicle names a repo after its first identity document's blob, and rule H credits a founder
 # only where the id names that blob. So each repo whose founder matters moves to that id,
 # spelled $CODE4 for zcode4 and so on.
@@ -2724,9 +2730,10 @@ rc=$?
 { [ "$rc" = 0 ] \
   && grep -q 'REVIEW 1 identity the malware rule (H) named. Nothing' <<<"$out" \
   && grep -q "#        $OPS: 2 of its 3 repos match:" <<<"$out" \
-  && grep -q "#          rad:$CODE4  # c2-panel (c2,panel,loader)" <<<"$out" \
+  && grep -q "#          rad:$CODE4  # c2-panel (c2,panel)" <<<"$out" \
   && grep -qx "#          did:key:$OPS" <<<"$out" \
-  && ! grep -q 'WARN no signature on the first identity revision' <<<"$out"; } \
+  && ! grep -q 'WARN no signature on the first identity revision' <<<"$out" \
+  && ! grep -q 'credits to their creator hold no project name' <<<"$out"; } \
   && ok "an identity whose repos read like a malware operation is named for review" \
   || no "rule H missed the operation's identity"
 ! grep -q "$VIC" <<<"$out" \
@@ -2752,7 +2759,7 @@ grep -qxF "$FARM2"$'\t'"stealer"$'\t'"subject: feat(stealers): save[2J2J results
   "$AUDIT_DIR/last-run/H-malware-repos.tsv" \
   && ok "last-run/H-malware-repos.tsv holds every single repo named" \
   || no "rule H's single repos did not reach last-run"
-row=$(printf '%s\t2\t3\t%s\tdrainer,payload\twallet_drainers' "$OPS" "$CODE6")
+row=$(printf '%s\t2\t3\t%s\tdrainer\twallet_drainers' "$OPS" "$CODE6")
 grep -qxF "$row" "$AUDIT_DIR/last-run/H-malware-identities.tsv" \
   && ok "last-run/H-malware-identities.tsv holds every repo that matched" \
   || no "rule H's evidence did not reach last-run"
@@ -2774,6 +2781,17 @@ nosig=$(PATH="$ROOT/nosig:$PATH" "$SCRIPT" 2>&1)
   && ! grep -q 'REVIEW [0-9]* identit' <<<"$nosig"; } \
   && ok "no founder signature checking out at all is called out" \
   || no "rule H went quiet without saying no signature checked out"
+# When no first revision holds a project name, Radicle may have moved it.
+mkdir -p "$ROOT/noname"
+printf '#!/bin/sh\ncase "$*" in *xyz.radicle.project*) cat >/dev/null; exit 0 ;; esac\n' \
+  > "$ROOT/noname/jq"
+printf 'exec %s "$@"\n' "$(command -v jq)" >> "$ROOT/noname/jq"
+chmod +x "$ROOT/noname/jq"
+noname=$(PATH="$ROOT/noname:$PATH" "$SCRIPT" 2>&1)
+{ grep -qE 'WARN ([0-9]+) of the \1 repo\(s\) the malware rule \(H\) credits' <<<"$noname" \
+  && ! grep -q 'REVIEW [0-9]* identit' <<<"$noname"; } \
+  && ok "no first revision holding a project name is called out" \
+  || no "rule H went quiet without saying no first revision holds a name"
 # Under MALWARE_PRUNE=1 every repo the operation's identity is a delegate of is planned,
 # zcode7 too, whose name matched nothing. A single repo stays a review, an undatable one a
 # warning.
@@ -2868,6 +2886,52 @@ out=$("$SCRIPT" 2>&1); rc=$?
 GIT_DIR="$d" git update-ref -d "refs/namespaces/$OPS/refs/rad/sigrefs"
 GIT_DIR="$d" git update-ref refs/rad/id "$first"
 touch -d "10 days ago" "$d"
+# Any delegate can rename a repo, so a repo matches only on the words it used both when
+# created and now. REN created an admin panel and a c2 image loader, which a co-delegate
+# renamed to read like an operation's: three weak words survive, but no strong one. OP2
+# created two operation repos and two plain ones, renamed later with weak words: those still
+# count toward OP2's repos, so 2 of 4 match.
+REN=$(new_key); OP2=$(new_key)
+copy_plain(){   # $1 = rid, $2 = the nid that creates it, $3 = the name it is created with
+  cp -a "$STORAGE/zcode7" "$STORAGE/$1"
+  GIT_DIR="$STORAGE/$1" git update-ref -d "refs/namespaces/$OPS/refs/rad/sigrefs"
+  printf '%s\n' "$(sed -n "s/^zcode7\t/$1\t/p" "$RSP_MANIFEST")" >> "$RSP_MANIFEST"
+  NAME=$3 set_delegate "$1" "$2"
+  rehome "$1"
+}
+renamed=()
+renamed+=("$(copy_plain zren1 "$REN" admin-panel)")
+renamed+=("$(copy_plain zren2 "$REN" c2-image-loader)")
+renamed+=("$(copy_plain zop21 "$OP2" stealer-panel)")
+renamed+=("$(copy_plain zop22 "$OP2" keylogger-c2)")
+renamed+=("$(copy_plain zop23 "$OP2" notes)")
+renamed+=("$(copy_plain zop24 "$OP2" tool)")
+renamed+=("$(copy_plain zren3 "$REN" notes)")
+renamed+=("$(copy_plain zren4 "$REN" tool)")
+mapfile -t edits < <(rename "${renamed[0]}" stealer-panel 'the loader'
+                     rename "${renamed[1]}" keylogger-loader-c2 'the payload'
+                     rename "${renamed[2]}" stealer-panel 'a tool'
+                     rename "${renamed[3]}" keylogger-c2 'a tool'
+                     rename "${renamed[4]}" loader-notes 'a tool'
+                     rename "${renamed[5]}" payload-tool 'a tool'
+                     rename "${renamed[6]}" loader-notes 'a tool'
+                     rename "${renamed[7]}" payload-tool 'a tool')
+sed -i "${edits[@]}" "$RSP_MANIFEST"
+out=$("$SCRIPT" 2>&1); rc=$?
+{ [ "$rc" = 0 ] && ! grep -q "$REN" <<<"$out" \
+  && grep -q "#        $OP2: 2 of its 4 repos match:" <<<"$out"; } \
+  && ok "words a co-delegate renamed a repo to do not count against its founder" \
+  || no "rule H judged a founder on words only a later rename added (rc=$rc)"
+# OP2 also signs two plain repos of REN's as a co-delegate. They matched only after a rename,
+# so they count as plain repos of OP2's, and 2 of 6 is under the share.
+for r in "${renamed[6]}" "${renamed[7]}"; do add_delegate "$r" "$OP2"; done
+out=$("$SCRIPT" 2>&1); rc=$?
+for r in "${renamed[@]}"; do
+  rm -rf "${STORAGE:?}/$r"; sed -i "/^$r"$'\t'"/d" "$RSP_MANIFEST"
+done
+{ [ "$rc" = 0 ] && ! grep -q "$OP2" <<<"$out"; } \
+  && ok "a repo renamed into matching counts as plain for its co-delegates too" \
+  || no "a co-delegate's share rose when a founder renamed their own repo (rc=$rc)"
 # A kept repo vouches for every delegate it names, one who never signed there included, since
 # the deny list would not block them either.
 add_delegate "$FARM1" "$OPS"
