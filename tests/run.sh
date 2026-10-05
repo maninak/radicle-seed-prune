@@ -172,22 +172,23 @@ dlg(){
 }
 # Rewrites commit $1 of the repo at $GIT_DIR as an op COB_KEY signed, the way Radicle signs
 # one: ed25519 over the 20 bytes of the tree id, in an SSH signature block under the "gpgsig"
-# header, with the author's node id as the email. Prints the new commit's id.
+# header, with the author's node id as the email. Prints the new commit's id. $2 and $3 sign
+# with another key, and the node id it spells.
 hex(){ od -An -tx1 -v | tr -d ' \n'; }
 u32(){ printf '%08x' "$1"; }
 sshstr(){ local h; h=$(printf '%s' "$1" | hex); printf '%s%s' "$(u32 $(( ${#h} / 2 )))" "$h"; }
 sign_op(){
-  local c=$1 w tree pub sig kblob sblob blob
+  local c=$1 keyfile=${2:-$COB_KEY} nid=${3:-$COB_NID} w tree pub sig kblob sblob blob
   w=$(mktemp -d -p "$ROOT")
   tree=$(git rev-parse "$c^{tree}")
   printf '%s' "$tree" | sed 's/../\\x&/g' | xargs -0 printf > "$w/msg"
-  openssl pkeyutl -sign -inkey "$COB_KEY" -rawin -in "$w/msg" -out "$w/sig"
-  pub=$(openssl pkey -in "$COB_KEY" -pubout -outform DER | hex); pub=${pub:24}
+  openssl pkeyutl -sign -inkey "$keyfile" -rawin -in "$w/msg" -out "$w/sig"
+  pub=$(openssl pkey -in "$keyfile" -pubout -outform DER | hex); pub=${pub:24}
   sig=$(hex < "$w/sig")
   kblob="$(sshstr ssh-ed25519)$(u32 32)$pub"; sblob="$(sshstr ssh-ed25519)$(u32 64)$sig"
   blob="$(printf SSHSIG | hex)$(u32 1)$(u32 $(( ${#kblob} / 2 )))$kblob$(sshstr radicle)"
   blob="$blob$(u32 0)$(sshstr sha256)$(u32 $(( ${#sblob} / 2 )))$sblob"
-  { git cat-file commit "$c" | sed -n '/^$/q; s/ <[^>]*> / <op@'"$COB_NID"'> /; p'
+  { git cat-file commit "$c" | sed -n '/^$/q; s/ <[^>]*> / <op@'"$nid"'> /; p'
     echo "gpgsig -----BEGIN SSH SIGNATURE-----"
     printf '%s' "$blob" | sed 's/../\\x&/g' | xargs -0 printf | base64 -w 70 | sed 's/^/ /'
     echo " -----END SSH SIGNATURE-----"
@@ -195,6 +196,30 @@ sign_op(){
   } > "$w/commit"
   git hash-object -t commit -w "$w/commit"
   rm -rf "$w"
+}
+# Prints the hex bytes $1 in base58, a "1" for each leading zero byte.
+base58(){
+  awk -v h="$1" 'BEGIN {
+    a = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"; x = "0123456789abcdef"
+    for (i = 1; i < length(h); i += 2) {
+      c = (index(x, substr(h, i, 1)) - 1) * 16 + index(x, substr(h, i + 1, 1)) - 1
+      if (c == 0 && n == 0) { zeros = zeros "1"; continue }
+      for (j = 0; j < n; j++) { c += b[j] * 256; b[j] = c % 58; c = int(c / 58) }
+      while (c > 0) { b[n++] = c % 58; c = int(c / 58) }
+    }
+    printf "%s", zeros
+    for (j = n - 1; j >= 0; j--) printf "%s", substr(a, b[j] + 1, 1) }'
+}
+# Makes a throwaway ed25519 key at $ROOT/keys/<node id>.pem and prints the node id it spells:
+# "z", then base58 of the bytes ed 01 followed by the public key.
+new_key(){
+  local pem pub nid
+  mkdir -p "$ROOT/keys"; pem=$(mktemp -p "$ROOT/keys")
+  openssl genpkey -algorithm ed25519 -out "$pem" 2>/dev/null
+  pub=$(openssl pkey -in "$pem" -pubout -outform DER | hex); pub=${pub:24}
+  nid=z$(base58 "ed01$pub")
+  mv "$pem" "$ROOT/keys/$nid.pem"
+  printf '%s' "$nid"
 }
 # Prints a tree that names one subtree twice, and that one the next twice, $2 levels down:
 # 2^$2 paths from $2 small trees, written into git dir $1. Each name is $3 bytes long.
@@ -1381,7 +1406,7 @@ touch -d "10 days ago" "$STORAGE/zmediaone"
 touch -d "+1 hour" "$STORAGE/zown22"
 mkdir -p "$AUDIT_DIR"; echo zpin6 > "$AUDIT_DIR/deny.txt"
 audit_before=$(find "$AUDIT_DIR" -type f -exec sha1sum {} + | sort)
-out=$("$SCRIPT" check 2>"$ROOT/check.err"); rc=$?
+out=$("$SCRIPT" check-mine 2>"$ROOT/check.err"); rc=$?
 { [ "$rc" = 6 ] && ! grep -q 'WARN' "$ROOT/check.err" \
   && grep -qxE 'would-prune +clipdump +rad:zmediaone +as media-dump' <<<"$out" \
   && grep -qxE ' +39 KiB  master  clip\.mp4' <<<"$out" \
@@ -1400,12 +1425,12 @@ out=$("$SCRIPT" check 2>"$ROOT/check.err"); rc=$?
   && ok "check writes nothing to the audit dir and changes no policy" \
   || no "check left something in the audit dir or changed a policy"
 # A repo the media rule (F) cannot read in full is not one the check can call ok.
-out=$(MEDIA_MAX_REFS=1 "$SCRIPT" check 2>/dev/null); rc=$?
+out=$(MEDIA_MAX_REFS=1 "$SCRIPT" check-mine 2>/dev/null); rc=$?
 { [ "$rc" = 6 ] && grep -qxE 'unjudged +clipdump +rad:zmediaone' <<<"$out" \
   && grep -q '^  The media rule (F) could not judge it' <<<"$out"; } \
   && ok "check calls a repo the media rule (F) could not read unjudged" \
   || no "check judged, or called ok, a repo the media rule (F) could not read (rc=$rc)"
-out=$("$SCRIPT" check --apply 2>&1); rc=$?
+out=$("$SCRIPT" check-mine --apply 2>&1); rc=$?
 [ "$rc" = 2 ] \
   && ok "check refuses --apply" || no "check took --apply (rc=$rc)"
 # With the media dumps and the batch member no longer listed by `rad ls`, nothing of ours is
@@ -1414,7 +1439,7 @@ out=$("$SCRIPT" check --apply 2>&1); rc=$?
 # not this node's, nor a stopped node, since rad reads all a check needs from disk.
 awk -F'\t' -v OFS='\t' '$1 ~ /^(zmediaone|zmediafresh|zspam1|zjunk1)$/ { $5 = 0 } 1' \
   "$RSP_MANIFEST" > "$ROOT/manifest.new" && mv "$ROOT/manifest.new" "$RSP_MANIFEST"
-out=$(RSP_NO_ROUTING=1 RSP_NODE_DOWN=1 "$SCRIPT" check 2>/dev/null); rc=$?
+out=$(RSP_NO_ROUTING=1 RSP_NODE_DOWN=1 "$SCRIPT" check-mine 2>/dev/null); rc=$?
 { [ "$rc" = 0 ] && grep -qxE 'ok +pinnedproj +rad:zpin6' <<<"$out"; } \
   && ok "check exits 0 when no repo of yours would be pruned" \
   || no "check flagged a clean set of repos (rc=$rc)"
@@ -1797,6 +1822,20 @@ out=$(PATH="$nodirname" "$SCRIPT" quarantine restore zjunk1 2>&1); rc=$?
 { [ "$rc" = 1 ] && grep -q 'missing required command(s): dirname$' <<<"$out"; } \
   && ok "a quarantine verb names the command it needs and does not half-run" \
   || no "quarantine restore ran without dirname (got exit $rc)"
+noiconv="$ROOT/noiconv"; path_without "$noiconv" iconv
+out=$(PATH="$noiconv" DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" 2>&1); rc=$?
+{ [ "$rc" = 1 ] && grep -q 'missing required command(s): iconv$' <<<"$out"; } \
+  && ok "a scan without iconv stops and names it" \
+  || no "a scan ran without iconv, or did not name it (got exit $rc)"
+# An iconv that stops at the first byte that is not UTF-8, as BSD's does, keeps only what came
+# before it.
+mkdir -p "$ROOT/stopiconv"
+printf '#!/bin/sh\nLC_ALL=C sed "s/[^ -~].*//"\nexit 1\n' > "$ROOT/stopiconv/iconv"
+chmod +x "$ROOT/stopiconv/iconv"
+out=$(PATH="$ROOT/stopiconv:$PATH" DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" 2>&1); rc=$?
+{ [ "$rc" = 1 ] && grep -q '^iconv here stops at text that is not UTF-8' <<<"$out"; } \
+  && ok "a scan with an iconv that stops at bad bytes stops and says so" \
+  || no "a scan ran with an iconv that cuts text short (got exit $rc)"
 
 # --- the per-repo workers do not need bash on PATH --- A run started as
 # `/nix/store/.../bash rad-prune` has the shell by absolute path and not through PATH.
@@ -1972,6 +2011,12 @@ DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply --block-peers \
 build_fixture; assert_isolated
 export PARASITE_MIN_REPOS=3 PARASITE_MIN_BYTES=65536 PARASITE_TEXT_MAX_BYTES=4096
 echo zpara3 > "$RSP_HOME/keep.txt"
+# A block that fails leaves the peer and its refs as they were, for the run after.
+out=$(RSP_BLOCK_NODE_FAIL=1 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 KEEP_FILE="$RSP_HOME/keep.txt" \
+        "${NOTTY[@]}" "$SCRIPT" --block-peers --yes </dev/null 2>&1); rc=$?
+{ [ "$rc" = 1 ] && grep -q "WARN block failed, leaving refs alone: $PARA" <<<"$out"; } \
+  && ok "a peer block that fails makes the run exit 1" \
+  || no "a failed peer block went unreported in the exit code (rc=$rc)"
 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 KEEP_FILE="$RSP_HOME/keep.txt" "${NOTTY[@]}" \
   "$SCRIPT" --block-peers --yes </dev/null >"$ROOT/bk.out" 2>&1
 { grep -q "$PARA" "$RSP_HOME/.stub_block" 2>/dev/null \
@@ -2652,38 +2697,79 @@ out=$("$SCRIPT" 2>&1)
 # --- rule H: an identity whose repos read like a malware operation is named, not acted on ---
 # zcode4 and zcode6 are renamed and described like an operation and signed by one identity,
 # with zcode7, a plain project whose name holds "rat" inside a longer word: two of three repos
-# hit, and the one strong word among them is a plural. Their documents also name a victim, who
-# signed nothing there. zrot1 and zrot2 carry only weak words, as a security researcher's repos
-# would. Three more identities each miss one bar: two words, two of five repos, one repo.
-# Single repos are judged next. zrot3 has the strong word in a path too, and zfarm2 in a commit
-# subject, both with a history as new as the repo; zrot3's sits on a tag, and zfarm2's subject
-# carries an escape sequence. zrot1 has one in a path but none in its name, and zbatch1 one
-# in its name alone, and in a stranger's branch. zbatch2's path holds one as well, but its
-# history is a year older than the repo, as a mirror's is, and zcode6, the operation's, is left
-# to the identity review.
+# hit, and the one strong word among them is a plural. Their documents also name a victim,
+# first, who has signed refs there, as a clone or a copy of old signed refs would, but did not
+# sign the commit that created either repo. zrot1 and zrot2 carry only weak words, as a
+# security researcher's repos would. Three more identities each miss one bar: two words, two of
+# five repos, one repo. Single repos are judged next. zrot3 has the strong word in a path too,
+# and zfarm2 in a commit subject, both with a history as new as the repo; zrot3's sits on a
+# tag, and zfarm2's subject carries an escape sequence. zrot1 has one in a path but none in its
+# name, and zbatch1 one in its name alone, and in a stranger's branch. zbatch2's path holds one
+# as well, but its history is a year older than the repo, as a mirror's is, and zcode6, the
+# operation's, is left to the identity review.
 build_fixture; assert_isolated
-set_delegate(){   # $1 = rid, then the nids its identity document names; the first one signs
-  local rid=$1 w dids="" nid; shift
+# The signer, the first nid or else $SIGNER, also signs the commit that creates the document,
+# when new_key made its key, and has signed refs there. The document names its repo, as a
+# project's does, so no two documents are the same blob, which a repo id is named after.
+set_delegate(){   # $1 = rid, then the nids its identity document names
+  local rid=$1 w dids="" nid c signer=${SIGNER:-$2}; shift
   w=$(mktemp -d -p "$ROOT")
   git -C "$w" -c init.defaultBranch=master init -q
   git -C "$w" config user.email a@b; git -C "$w" config user.name a
   mkdir -p "$w/embeds"
   for nid; do dids="$dids${dids:+,}\"did:key:$nid\""; done
-  printf '{"delegates":[%s],"payload":{},"threshold":1}\n' "$dids" > "$w/embeds/radicle.json"
+  printf '{"delegates":[%s],"payload":{"name":"%s"},"threshold":1}\n' "$dids" "$rid" \
+    > "$w/embeds/radicle.json"
   git -C "$w" add -A; git -C "$w" commit -q -m id
+  if [ -f "$ROOT/keys/$signer.pem" ]; then
+    c=$(GIT_DIR="$w/.git" sign_op HEAD "$ROOT/keys/$signer.pem" "$signer")
+    git -C "$w" update-ref refs/heads/master "$c"
+  fi
   git -C "$w" push -q --force "$STORAGE/$rid" master:refs/rad/id \
-    "master:refs/namespaces/$1/refs/rad/sigrefs"
+    "master:refs/namespaces/$signer/refs/rad/sigrefs"
   rm -rf "$w"; touch -d "10 days ago" "$STORAGE/$rid"
 }
-OPS=$(dlg zops); VIC=$(dlg zvic); RES=$(dlg zres)
-FEW=$(dlg zfew); THIN=$(dlg zthin); ONE=$(dlg zone)
-for r in zcode4 zcode6; do set_delegate "$r" "$OPS" "$VIC"; done
+# A later revision of $1's document that also names $2, who signs refs there, as a delegate
+# adding somebody who cloned the repo would. The first revision, and so the repo id, stay.
+add_delegate(){
+  local d="$STORAGE/$1" w; w=$(mktemp -d -p "$ROOT")
+  git -C "$w" init -q -b master
+  git -C "$w" fetch -q "$d" refs/rad/id && git -C "$w" reset -q --hard FETCH_HEAD
+  jq -c --arg n "did:key:$2" '.delegates += [$n]' "$w/embeds/radicle.json" > "$w/doc"
+  mv "$w/doc" "$w/embeds/radicle.json"
+  git -C "$w" -c user.email=a@b -c user.name=a commit -qam 'add a delegate'
+  git -C "$w" push -q --force "$d" master:refs/rad/id \
+    "master:refs/namespaces/$2/refs/rad/sigrefs"
+  rm -rf "$w"; touch -d "10 days ago" "$d"
+}
+OPS=$(new_key); VIC=$(new_key); RES=$(new_key)
+FEW=$(new_key); THIN=$(new_key); ONE=$(new_key)
+for r in zcode4 zcode6; do
+  SIGNER=$OPS set_delegate "$r" "$VIC" "$OPS"
+  GIT_DIR="$STORAGE/$r" git update-ref "refs/namespaces/$VIC/refs/rad/sigrefs" refs/rad/id
+  touch -d "10 days ago" "$STORAGE/$r"
+done
 set_delegate zcode7 "$OPS"
 for r in zrot1 zrot2; do set_delegate "$r" "$RES"; done
 for r in zfarm1 zfarm2; do set_delegate "$r" "$FEW"; done
 for r in zbatch1 zbatch2 zbatch3 zpoison5 zpoison9; do set_delegate "$r" "$THIN"; done
 # zrot3's document also names this node, which never signs there.
 set_delegate zrot3 "$ONE" "$RSP_NID"
+# Radicle names a repo after the blob of its first identity document, and rule H credits a
+# founder only in a repo whose id names that blob. So each repo whose founder matters moves to
+# that id here, and is spelled $CODE4 for zcode4 and so on below.
+rehome(){   # $1 = rid; prints the id it moves to
+  local blob new
+  blob=$(GIT_DIR="$STORAGE/$1" git rev-parse "refs/rad/id:embeds/radicle.json")
+  new=z$(base58 "$blob")
+  mv "$STORAGE/$1" "$STORAGE/$new"
+  sed -i "s/^$1\t/$new\t/" "$RSP_MANIFEST"
+  printf '%s' "$new"
+}
+CODE4=$(rehome zcode4); CODE6=$(rehome zcode6)
+ROT1=$(rehome zrot1); ROT2=$(rehome zrot2); ROT3=$(rehome zrot3)
+FARM1=$(rehome zfarm1); FARM2=$(rehome zfarm2)
+BATCH1=$(rehome zbatch1); BATCH2=$(rehome zbatch2)
 fresh_master(){   # $1 = rid, $2 = age in days, $3 = a path, $4 = the subject, $5 = a ref
   local w ref=${5:-refs/heads/master}; w=$(mktemp -d -p "$ROOT")
   git -C "$w" init -q -b master
@@ -2693,21 +2779,27 @@ fresh_master(){   # $1 = rid, $2 = age in days, $3 = a path, $4 = the subject, $
   git -C "$w" push -q --force "$STORAGE/$1" "master:$ref"
   rm -rf "$w"; touch -d "10 days ago" "$STORAGE/$1"
 }
-fresh_master zrot3 0 src/client.py 'add client'
-fresh_master zrot3 0 src/hvnc/client.py 'add client' refs/tags/v1
-fresh_master zfarm2 0 main.py 'feat(stealers): save results'
+fresh_master "$ROT3" 0 src/client.py 'add client'
+fresh_master "$ROT3" 0 src/hvnc/client.py 'add client' refs/tags/v1
+fresh_master "$FARM2" 0 main.py 'feat(stealers): save results'
 # The subject's escapes include a C1 pair nested in another, written raw, since `git commit`
 # would re-encode the stray bytes.
-d="$STORAGE/zfarm2"
+d="$STORAGE/$FARM2"
 c=$({ GIT_DIR="$d" git cat-file commit master | sed '/^$/q'
-      printf 'feat(stealers): save\033[2J\302\302\233\2332J results\n'; } \
+      printf 'feat(stealers): save\033[2J\302\302\233\2332J\302\342\200\213\233 results'
+      printf '\342\200\256'
+      # Each lead byte here meets its continuation byte only once the one inside it is gone,
+      # so a strip that repeats until nothing changes takes one pass per pair.
+      head -c 100000 /dev/zero | tr '\0' '\302'; head -c 100000 /dev/zero | tr '\0' '\233'
+      echo; } \
     | GIT_DIR="$d" git hash-object -t commit -w --stdin)
 GIT_DIR="$d" git update-ref refs/heads/master "$c"; touch -d "10 days ago" "$d"
-fresh_master zrot1 0 notes/stealer.md 'notes'
-fresh_master zbatch2 400 botnet/main.go 'import'
-fresh_master zcode6 0 drainer.py 'add drainer'
-fresh_master zbatch1 0 main.py 'add main'
-fresh_master zbatch1 0 stealer.py 'add stealer' "refs/namespaces/$STRANGER_NID/refs/heads/master"
+fresh_master "$ROT1" 0 notes/stealer.md 'notes'
+fresh_master "$BATCH2" 400 botnet/main.go 'import'
+fresh_master "$CODE6" 0 drainer.py 'add drainer'
+fresh_master "$BATCH1" 0 main.py 'add main'
+fresh_master "$BATCH1" 0 stealer.py 'add stealer' \
+  "refs/namespaces/$STRANGER_NID/refs/heads/master"
 # zheavy and zdigit24 are named with a strong word but have no branch, so no commit dates to
 # judge them by. zheavy has a strong word in a tag's files too; zdigit24 has none anywhere.
 for r in zheavy zdigit24; do
@@ -2720,25 +2812,29 @@ rename(){
   printf -- '-e\ns/^%s\\t[^\\t]*\\(\\t.*\\)\\t[^\\t]*$/%s\\t%s\\1\\t%s/\n' "$1" "$1" "$2" "$3"
 }
 mapfile -t edits < <(
-  rename zcode4 c2-panel 'the loader'
-  rename zcode6 wallet_drainers 'the payload'
+  rename "$CODE4" $'c2-\342\200\256panel' 'the loader'
+  rename "$CODE6" wallet_drainers 'the payload'
   rename zcode7 pirate-separator 'a text tool'
-  rename zrot1 exploit-loader 'research notes'
-  rename zrot2 payload-panel 'research notes'
-  rename zfarm1 stealer-panel 'a tool'
-  rename zfarm2 stealer 'a tool'
-  rename zbatch1 hvnc-panel 'the loader'
-  rename zbatch2 botnet 'a tool'
-  rename zrot3 hvnc-panel 'the loader'
+  rename "$ROT1" exploit-loader 'research notes'
+  rename "$ROT2" payload-panel 'research notes'
+  rename "$FARM1" stealer-panel 'a tool'
+  rename "$FARM2" stealer 'a tool'
+  rename "$BATCH1" hvnc-panel 'the loader'
+  rename "$BATCH2" botnet 'a tool'
+  rename "$ROT3" hvnc-panel 'the loader'
   rename zheavy keylogger 'a tool'
   rename zdigit24 ransomware 'a tool')
 sed -i "${edits[@]}" "$RSP_MANIFEST"
-out=$("$SCRIPT" 2>&1); rc=$?
+# An applying run with only rule H on, so nothing else is pruned: it reports, and blocks nobody.
+# Under a time limit, because zfarm2's subject would stall a strip that runs in passes.
+out=$(RULES=H "${NOTTY[@]}" timeout 60 "$SCRIPT" --apply --block-peers --yes </dev/null 2>&1)
+rc=$?
 { [ "$rc" = 0 ] \
   && grep -q 'REVIEW, MALWARE OPERATIONS: 1 identity(s), from the malware rule (H)' <<<"$out" \
   && grep -q "#   $OPS: 2 of its 3 repos match:" <<<"$out" \
-  && grep -q "#       rad:zcode4  # c2-panel (c2,panel,loader)" <<<"$out" \
-  && grep -qx "#     did:key:$OPS" <<<"$out"; } \
+  && grep -q "#       rad:$CODE4  # c2-panel (c2,panel,loader)" <<<"$out" \
+  && grep -qx "#     did:key:$OPS" <<<"$out" \
+  && ! grep -q 'WARN: no signature on the first identity revision' <<<"$out"; } \
   && ok "an identity whose repos read like a malware operation is named for review" \
   || no "rule H missed the operation's identity"
 ! grep -q "$VIC" <<<"$out" \
@@ -2747,10 +2843,11 @@ out=$("$SCRIPT" 2>&1); rc=$?
 ! grep -qE "$RES|$FEW|$THIN|$ONE" <<<"$out" \
   && ok "no strong word, two words, two repos of five, or one repo: nobody else is named" \
   || no "rule H named an identity under one of its bars"
-{ grep -q 'REVIEW, MALWARE REPOS: 2 repo(s), from the malware rule (H)' <<<"$out" \
-  && grep -qxF "#     rad:zrot3  # hvnc-panel (hvnc,panel,loader; path: src/hvnc/client.py)" \
+{ grep -q 'REVIEW, MALWARE REPOS: 2 repo(s) the malware rule (H) named' <<<"$out" \
+  && grep -qxF "#     rad:$ROT3  # hvnc-panel (hvnc,panel,loader; path: src/hvnc/client.py)" \
        <<<"$out" \
-  && grep -qxF "#     rad:zfarm2  # stealer (stealer; subject: feat(stealers): save[2J2J results)" \
+  && grep -qxF \
+       "#     rad:$FARM2  # stealer (stealer; subject: feat(stealers): save[2J2J results)" \
        <<<"$out" \
   && ! grep -q $'\033' <<<"$out" && ! grep -q $'\302\233' <<<"$out"; } \
   && ok "one repo with a strong word in its name and its files or commits is named" \
@@ -2759,45 +2856,135 @@ out=$("$SCRIPT" 2>&1); rc=$?
   && grep -qxF '#   rad:zheavy  # keylogger (keylogger; path: keylogger.c)' <<<"$out"; } \
   && ok "a repo with words and evidence but no commit dates to judge by is called out" \
   || no "rule H passed over a repo it could not date without a word, or warned with no evidence"
-grep -qxF "zfarm2"$'\t'"stealer"$'\t'"subject: feat(stealers): save[2J2J results"$'\t'"stealer" \
+grep -qxF "$FARM2"$'\t'"stealer"$'\t'"subject: feat(stealers): save[2J2J results"$'\t'"stealer" \
   "$AUDIT_DIR/last-run/H-malware-repos.tsv" \
   && ok "last-run/H-malware-repos.tsv holds every single repo named" \
   || no "rule H's single repos did not reach last-run"
-row=$(printf '%s\t2\t3\tzcode6\tdrainer,payload\twallet_drainers' "$OPS")
+row=$(printf '%s\t2\t3\t%s\tdrainer,payload\twallet_drainers' "$OPS" "$CODE6")
 grep -qxF "$row" "$AUDIT_DIR/last-run/H-malware-identities.tsv" \
   && ok "last-run/H-malware-identities.tsv holds every repo that matched" \
   || no "rule H's evidence did not reach last-run"
+# The malware verdicts in the last plan, as "rid verdict" pairs.
+plan_h(){ awk -F'\t' '$5 ~ /^malware-/ { print $1, $5 }' "$AUDIT_DIR/last-run/plan.tsv" \
+            | sort | tr '\n' ' '; }
+# A run where rule H only reports is no sample of what it prunes, so it is not among the rules.
+{ [ -z "$(plan_h)" ] && [ ! -e "$RSP_HOME/.stub_block" ] \
+  && grep -q '  rules=-  ' "$AUDIT_DIR/last-run/plan.tsv"; } \
+  && ok "by default the malware rule (H) puts nothing in the plan, and blocks nobody" \
+  || no "rule H planned or blocked without MALWARE_PRUNE=1: $(plan_h)"
+# When no first revision's signature checks out, Radicle may have changed how it signs them.
+mkdir -p "$ROOT/nosig"
+printf '#!/bin/sh\ncase "$*" in *founder/sig*) exit 1 ;; esac\nexec %s "$@"\n' \
+  "$(command -v openssl)" > "$ROOT/nosig/openssl"
+chmod +x "$ROOT/nosig/openssl"
+nosig=$(PATH="$ROOT/nosig:$PATH" "$SCRIPT" 2>&1)
+{ grep -q 'WARN: no signature on the first identity revision of' <<<"$nosig" \
+  && ! grep -q 'REVIEW, MALWARE OPERATIONS' <<<"$nosig"; } \
+  && ok "no founder signature checking out at all is called out" \
+  || no "rule H went quiet without saying no signature checked out"
+# Under MALWARE_PRUNE=1 every repo the operation's identity is a delegate of is planned,
+# zcode7 too, whose name matched nothing. A single repo stays a review, and the repo it cannot
+# date stays a warning.
+out=$(MALWARE_PRUNE=1 "$SCRIPT" 2>&1); rc=$?
+want=$(printf '%s %s\n' "$CODE4" malware-op "$CODE6" malware-op zcode7 malware-op \
+         | sort | tr '\n' ' ')
+{ [ "$rc" = 0 ] && [ "$(plan_h)" = "$want" ] \
+  && grep -qx "#     rad block $OPS" <<<"$out" \
+  && grep -q 'REVIEW, MALWARE REPOS: 2 repo(s)' <<<"$out" \
+  && grep -qxF "#     rad:$ROT3  # hvnc-panel (hvnc,panel,loader; path: src/hvnc/client.py)" \
+       <<<"$out" \
+  && grep -q 'WARN: 1 repo(s) hold a strong malware word' <<<"$out"; } \
+  && ok "MALWARE_PRUNE=1 plans an operation's repos and only reports single repos" \
+  || no "MALWARE_PRUNE=1 planned the wrong repos (rc=$rc): $(plan_h)"
+# The deny list blocks an identity, it does not vouch for one, so a co-delegate it lists who
+# signed refs in an operation's repo does not keep the operation's identity from a block.
+DENIED=$(new_key)
+first=$(GIT_DIR="$STORAGE/$CODE4" git rev-parse refs/rad/id)
+add_delegate "$CODE4" "$DENIED"
+echo "did:key:$DENIED" > "$AUDIT_DIR/deny.txt"
+out=$(MALWARE_PRUNE=1 "$SCRIPT" 2>&1); rc=$?
+rm -f "$AUDIT_DIR/deny.txt"
+GIT_DIR="$STORAGE/$CODE4" git update-ref -d "refs/namespaces/$DENIED/refs/rad/sigrefs"
+GIT_DIR="$STORAGE/$CODE4" git update-ref refs/rad/id "$first"
+touch -d "10 days ago" "$STORAGE/$CODE4"
+{ [ "$rc" = 0 ] && grep -qx "#     rad block $OPS" <<<"$out"; } \
+  && ok "a deny-listed co-delegate does not spare the operation's identity a block" \
+  || no "a deny-listed identity's signed refs kept the operation's identity unblocked (rc=$rc)"
+# A repo an identity this seed vouches for signed, here the pinned repo's delegate, is spared,
+# and the operation's identity, a delegate of it, is not blocked. Blocked by hand already, the
+# block is the operator's, so no run advises lifting it.
+PIN=$(dlg zpin6)
+set_delegate zcode7 "$OPS" "$PIN"
+GIT_DIR="$STORAGE/zcode7" git update-ref "refs/namespaces/$PIN/refs/rad/sigrefs" refs/rad/id
+touch -d "10 days ago" "$STORAGE/zcode7"
+"$RAD" block "$OPS" >/dev/null
+out=$(MALWARE_PRUNE=1 "${NOTTY[@]}" "$SCRIPT" --block-peers --yes </dev/null 2>&1); rc=$?
+rm -f "$RSP_HOME/.stub_block"; sed -i "/ $OPS\$/d" "$RSP_HOME/.stub_policy"
+{ [ "$rc" = 0 ] && [ "$(plan_h)" = "${want/zcode7 malware-op /}" ] \
+  && ! grep -qx "#     rad block $OPS" <<<"$out" \
+  && ! grep -q "rad unfollow $OPS" <<<"$out"; } \
+  && ok "a repo a vouched identity signed is spared, and its named delegate is not blocked" \
+  || no "rule H planned a repo a vouched identity signed, or blocked its delegate (rc=$rc)"
+GIT_DIR="$STORAGE/zcode7" git update-ref -d "refs/namespaces/$PIN/refs/rad/sigrefs"
+set_delegate zcode7 "$OPS"
+# A publisher's check names a repo of theirs that seeds list for review as possible malware.
+sed -i "s/^\($ROT3\t[^\t]*\t[^\t]*\t[^\t]*\t\)0/\11/" "$RSP_MANIFEST"
+out=$("$SCRIPT" check-mine 2>/dev/null); rc=$?
+sed -i "s/^\($ROT3\t[^\t]*\t[^\t]*\t[^\t]*\t\)1/\10/" "$RSP_MANIFEST"
+{ [ "$rc" = 6 ] && grep -qxE "flagged +hvnc-panel +rad:$ROT3 +as possible malware" <<<"$out" \
+  && grep -q 'A seed lists it for its operator to read' <<<"$out"; } \
+  && ok "check names a repo of yours that seeds list for review as possible malware" \
+  || no "check missed a single malware repo of yours (rc=$rc)"
+mkdir -p "$ROOT/noed"; printf '#!/bin/sh\nexit 1\n' > "$ROOT/noed/openssl"
+chmod +x "$ROOT/noed/openssl"
+out=$(PATH="$ROOT/noed:$PATH" "$SCRIPT" check-mine 2>&1); rc=$?
+{ [ "$rc" = 1 ] && grep -q 'install OpenSSL 3' <<<"$out" \
+  && ! grep -q 'out of RULES' <<<"$out"; } \
+  && ok "check asks for OpenSSL 3, since it cannot leave rules out" \
+  || no "check gave advice it cannot follow when openssl cannot check ed25519 (rc=$rc)"
 # A delegate can add anybody who cloned a repo as a co-delegate, and a clone signs refs of its
 # own. FRAMED is added that way to the operation's two repos, in a later revision of each
 # document.
 FRAMED=$(dlg zframed)
-for r in zcode4 zcode6; do
-  d="$STORAGE/$r"; w=$(mktemp -d -p "$ROOT")
-  git -C "$w" init -q -b master
-  git -C "$w" fetch -q "$d" refs/rad/id && git -C "$w" reset -q --hard FETCH_HEAD
-  printf '{"delegates":["did:key:%s","did:key:%s","did:key:%s"],"payload":{},"threshold":1}\n' \
-    "$OPS" "$VIC" "$FRAMED" > "$w/embeds/radicle.json"
-  git -C "$w" -c user.email=a@b -c user.name=a commit -qam 'add a delegate'
-  git -C "$w" push -q --force "$d" master:refs/rad/id \
-    "master:refs/namespaces/$FRAMED/refs/rad/sigrefs"
-  rm -rf "$w"; touch -d "10 days ago" "$d"
-done
+for r in "$CODE4" "$CODE6"; do add_delegate "$r" "$FRAMED"; done
 out=$("$SCRIPT" 2>&1); rc=$?
 { [ "$rc" = 0 ] && ! grep -q "$FRAMED" <<<"$out" \
   && grep -q "#   $OPS: 2 of its 3 repos match:" <<<"$out"; } \
   && ok "an identity added as a co-delegate after a repo was created is not named for it" \
   || no "rule H named an identity only added as a co-delegate later"
-for r in zcode4 zcode6; do
-  set_delegate "$r" "$OPS" "$VIC"
+# The fixture's own repos have made-up ids, so some start from a document their id does not
+# name already.
+foreign=$(sed -n 's/^# WARN: \([0-9]*\) repo(s) start from another repo.s first.*/\1/p' \
+            <<<"$out")
+for r in "$CODE4" "$CODE6"; do
+  GIT_DIR="$STORAGE/$r" git update-ref refs/rad/id refs/rad/id~1
   GIT_DIR="$STORAGE/$r" git update-ref -d "refs/namespaces/$FRAMED/refs/rad/sigrefs"
+  touch -d "10 days ago" "$STORAGE/$r"
 done
+# The signature covers only the first revision's tree, so zcode4's, with OPS's signed refs, can
+# be copied into another repo. Its id names another document, so the copy is not OPS's.
+d="$STORAGE/$ROT2"
+first=$(GIT_DIR="$d" git rev-parse refs/rad/id)
+GIT_DIR="$d" git fetch -q "$STORAGE/$CODE4" +refs/rad/id:refs/rad/id
+GIT_DIR="$d" git update-ref "refs/namespaces/$OPS/refs/rad/sigrefs" refs/rad/id
+touch -d "10 days ago" "$d"
+out=$("$SCRIPT" 2>&1); rc=$?
+{ [ "$rc" = 0 ] && grep -q "#   $OPS: 2 of its 3 repos match:" <<<"$out" \
+  && grep -q "WARN: $((foreign + 1)) repo(s) start from another repo's first identity" \
+       <<<"$out"; } \
+  && ok "a first revision copied into a repo with another id counts for nobody, and is named" \
+  || no "a copied first revision counted for its signer, or went unmentioned"
+GIT_DIR="$d" git update-ref -d "refs/namespaces/$OPS/refs/rad/sigrefs"
+GIT_DIR="$d" git update-ref refs/rad/id "$first"
+touch -d "10 days ago" "$d"
 # A kept repo vouches for every delegate it names, one who never signed there included, since
 # the deny list would not block them either.
-set_delegate zfarm1 "$FEW" "$OPS"
-echo zfarm1 > "$RSP_HOME/keep.txt"
+add_delegate "$FARM1" "$OPS"
+GIT_DIR="$STORAGE/$FARM1" git update-ref -d "refs/namespaces/$OPS/refs/rad/sigrefs"
+echo "$FARM1" > "$RSP_HOME/keep.txt"
 out=$(KEEP_FILE="$RSP_HOME/keep.txt" "$SCRIPT" 2>&1); rc=$?
 rm -f "$RSP_HOME/keep.txt"
-{ [ "$rc" = 0 ] && ! grep -q "$OPS" <<<"$out" && ! grep -q "rad:zfarm2" <<<"$out"; } \
+{ [ "$rc" = 0 ] && ! grep -q "$OPS" <<<"$out" && ! grep -q "rad:$FARM2" <<<"$out"; } \
   && ok "an identity delegating a kept repo, signed or not, is not named, nor its repos" \
   || no "rule H named an identity that delegates a repo in keep.txt"
 echo "did:key:$OPS  # cleared" > "$RSP_HOME/keep.txt"
@@ -2807,24 +2994,25 @@ rm -f "$RSP_HOME/keep.txt"
   && ok "an identity the keep list clears is not named" \
   || no "rule H named an identity whose did:key: line is in keep.txt"
 # zfarm2 also names VIC, who never signed it; listing VIC has the deny list prune it.
-set_delegate zfarm2 "$FEW" "$VIC"
-printf '%s\n' "did:key:$OPS" "rad:zrot3" "did:key:$VIC" > "$AUDIT_DIR/deny.txt"
+add_delegate "$FARM2" "$VIC"
+GIT_DIR="$STORAGE/$FARM2" git update-ref -d "refs/namespaces/$VIC/refs/rad/sigrefs"
+printf '%s\n' "did:key:$OPS" "rad:$ROT3" "did:key:$VIC" > "$AUDIT_DIR/deny.txt"
 out=$("$SCRIPT" 2>&1); rc=$?
 rm -f "$AUDIT_DIR/deny.txt"
 { [ "$rc" = 0 ] && ! grep -q 'REVIEW, MALWARE OPERATIONS' <<<"$out" \
-  && ! grep -q '^#     rad:zrot3 ' <<<"$out" && ! grep -q '^#     rad:zfarm2 ' <<<"$out"; } \
+  && ! grep -q "^#     rad:$ROT3 " <<<"$out" && ! grep -q "^#     rad:$FARM2 " <<<"$out"; } \
   && ok "an identity or a repo the deny list names or prunes is not named again" \
   || no "rule H named an identity or repo the deny list names, or a repo it prunes"
 # A private repo is its delegates' choice, so it vouches for nobody and counts like any other.
 # It is never named on its own, since the deny list does not prune one.
 set_delegate zpriv7 "$OPS"
-sed -i 's/^\(zrot3\t[^\t]*\t[^\t]*\t\)public/\1private/' "$RSP_MANIFEST"
+sed -i "s/^\($ROT3\t[^\t]*\t[^\t]*\t\)public/\1private/" "$RSP_MANIFEST"
 out=$("$SCRIPT" 2>&1); rc=$?
 { [ "$rc" = 0 ] \
   && grep -q "#   $OPS: 2 of its 4 repos match:" <<<"$out"; } \
   && ok "an identity delegating a private repo is still named" \
   || no "a private repo kept its delegate from rule H"
-! grep -q '^#     rad:zrot3 ' <<<"$out" \
+! grep -q "^#     rad:$ROT3 " <<<"$out" \
   && ok "a private repo is not named on its own" \
   || no "rule H named a private repo, which the deny list would not prune"
 out=$(MALWARE_STRONG_WORDS='stealer|' "$SCRIPT" 2>&1); rc=$?
@@ -2859,6 +3047,108 @@ trees=$(GIT_DIR="$STORAGE/zhexid23" git rev-parse 'refs/tags/v1^{tree}' 'master^
 ! grep -q '^#     rad:zspaced26 ' <<<"$out" \
   && ok "rule H reads a repo's paths only so far" \
   || no "rule H read past MALWARE_BYTES into a tree that repeats itself"
+# Under MALWARE_PRUNE=1 a private repo of a named identity is spared on its own: its delegate
+# keeps every other repo in the plan, and is not blocked, which would stop the private repo's
+# updates. Dropping a ref above may have rewritten packed-refs, which reads as a fetch in flight.
+touch -d "10 days ago" "$STORAGE/$CODE4" "$STORAGE/$CODE6"
+out=$(MALWARE_PRUNE=1 "${NOTTY[@]}" "$SCRIPT" --block-peers --yes </dev/null 2>&1)
+{ grep -q "$CODE4 malware-op" <<<"$(plan_h)" && ! grep -q 'zpriv7' <<<"$(plan_h)" \
+  && ! grep -qx "#     rad block $OPS" <<<"$out" && ! grep -q "WARN: $OPS" <<<"$out"; } \
+  && ok "a private repo of a named identity is spared, and the identity is not blocked" \
+  || no "rule H planned a private repo, or meant to block a delegate of one"
+set_delegate zpriv7 "$(dlg zpriv7)"
+# Blocking an identity goes with pruning its repos, so a run where the ratchet holds rule H
+# back blocks nobody. Four past runs in which rule H pruned nothing set its limit at 0.
+for i in 1 2 3 4; do past_run "$i"; done
+out=$(RULES=H MALWARE_PRUNE=1 RATCHET_FLOOR=0 "${NOTTY[@]}" "$SCRIPT" --apply --block-peers \
+        --yes </dev/null 2>&1); rc=$?
+rm -f "$AUDIT_DIR"/prune-*.log "$AUDIT_DIR/history.log"
+{ [ "$rc" = 4 ] && grep -q '^# HELD BACK the malware rule (H): ' <<<"$out" \
+  && [ -e "$STORAGE/$CODE4" ] && [ ! -e "$RSP_HOME/.stub_block" ]; } \
+  && ok "a run that holds the malware rule (H) back blocks none of its identities" \
+  || no "rule H blocked an identity while held back (rc=$rc)"
+# Without --block-peers an applying run prunes the operation's repos and blocks nobody. Every
+# repo it pruned is put back, and taken out of keep.txt again, for the run after.
+MALWARE_PRUNE=1 RULES=H "${NOTTY[@]}" "$SCRIPT" --apply --yes </dev/null >/dev/null 2>&1
+{ [ ! -e "$STORAGE/$CODE4" ] && ! grep -qxF "$OPS" "$RSP_HOME/.stub_block"; } \
+  && ok "without --block-peers no identity the malware rule (H) names is blocked" \
+  || no "rule H blocked an identity without --block-peers, or pruned nothing"
+mapfile -t held < <(ls "$AUDIT_DIR/quarantine")
+"$SCRIPT" quarantine restore "${held[@]}" >/dev/null 2>&1
+rm -f "$AUDIT_DIR/keep.txt"
+touch -d "10 days ago" "$STORAGE"/z*
+# A block on the identity that fails still prunes its repos, and makes the run exit 1.
+out=$(RSP_BLOCK_NODE_FAIL=1 MALWARE_PRUNE=1 RULES=H "${NOTTY[@]}" "$SCRIPT" --apply \
+        --block-peers --yes </dev/null 2>&1); rc=$?
+{ [ "$rc" = 1 ] \
+  && grep -q "WARN: could not block $OPS, and no later run will try again.* rad block $OPS" \
+       <<<"$out" \
+  && [ -d "$AUDIT_DIR/quarantine/$CODE4" ] \
+  && ! grep -q '^blocked-malware' "$AUDIT_DIR"/prune-*.log; } \
+  && ok "a malware block that fails makes the run exit 1" \
+  || no "a failed malware block went unreported in the exit code (rc=$rc)"
+mapfile -t held < <(ls "$AUDIT_DIR/quarantine")
+"$SCRIPT" quarantine restore "${held[@]}" >/dev/null 2>&1
+rm -f "$AUDIT_DIR/keep.txt" "$AUDIT_DIR"/prune-*.log "$AUDIT_DIR/history.log"
+rm -f "$RSP_HOME/.stub_block"; sed -i "/ $OPS\$/d" "$RSP_HOME/.stub_policy"
+touch -d "10 days ago" "$STORAGE"/z*
+# A node blocked already, here by hand, stays the operator's block: no blocked-malware row.
+"$RAD" block "$OPS" >/dev/null
+out=$(MALWARE_PRUNE=1 RULES=H "${NOTTY[@]}" "$SCRIPT" --apply --block-peers --yes \
+        </dev/null 2>&1); rc=$?
+{ [ "$rc" = 0 ] && [ -d "$AUDIT_DIR/quarantine/$CODE4" ] \
+  && grep -q "blocked 0 of 1 identity(s) .*; 1 of them already blocked" <<<"$out" \
+  && ! grep -q '^blocked-malware' "$AUDIT_DIR"/prune-*.log; } \
+  && ok "a block already standing on the identity is not recorded as the malware rule's" \
+  || no "rule H recorded a block it did not make (rc=$rc)"
+mapfile -t held < <(ls "$AUDIT_DIR/quarantine")
+"$SCRIPT" quarantine restore "${held[@]}" >/dev/null 2>&1
+rm -f "$AUDIT_DIR/keep.txt" "$AUDIT_DIR"/prune-*.log "$AUDIT_DIR/history.log"
+rm -f "$RSP_HOME/.stub_block"; sed -i "/ $OPS\$/d" "$RSP_HOME/.stub_policy"
+touch -d "10 days ago" "$STORAGE"/z*
+out=$(MALWARE_PRUNE=1 "${NOTTY[@]}" "$SCRIPT" --apply --block-peers --yes </dev/null 2>&1); rc=$?
+{ [ "$rc" = 0 ] && grep -qxF "$OPS" "$RSP_HOME/.stub_block" \
+  && grep -q "^blocked-malware"$'\t'"$OPS"$'\t'"repos_hit=2" "$AUDIT_DIR"/prune-*.log \
+  && [ -d "$AUDIT_DIR/quarantine/$CODE4" ] && [ ! -e "$STORAGE/$CODE4" ] \
+  && [ -d "$STORAGE/$FARM2" ] && [ ! -e "$AUDIT_DIR/quarantine/$FARM2" ] \
+  && grep -q $'^zcode7\t.*\tmalware-op\t' "$AUDIT_DIR"/prune-*.log; } \
+  && ok "--apply --block-peers --yes quarantines the operation's repos and blocks its identity" \
+  || no "MALWARE_PRUNE=1 did not prune and block what rule H named (rc=$rc)"
+{ grep -qx "# malware-op: zcode7 $OPS" "$AUDIT_DIR"/prune-*.log \
+  && grep -qx "zcode7"$'\t'"$OPS" "$AUDIT_DIR/last-run/H-malware-op-repos.tsv"; } \
+  && ok "the audit log names what each malware-op verdict rests on" \
+  || no "a malware verdict left no record of what it rests on"
+# Putting one of its repos back clears the identity of rule H but leaves it blocked, so the
+# restore, and every run after it, gives the command that lifts the block.
+out=$("$SCRIPT" quarantine restore "$CODE4" 2>&1)
+touch -d "10 days ago" "$STORAGE/$CODE4"
+{ grep -q "the malware rule (H) named its delegate $OPS, and no longer does" <<<"$out" \
+  && grep -q "rad unfollow $OPS" <<<"$out" && ! grep -q "$VIC" <<<"$out"; } \
+  && ok "restoring a malware-op repo names the identity it clears, and how to lift its block" \
+  || no "quarantine restore left the identity's block unmentioned"
+out=$(MALWARE_PRUNE=1 "$SCRIPT" 2>&1)
+n=$(grep -c "WARN: an earlier run blocked $OPS as malware.*rad unfollow $OPS" <<<"$out")
+[ "$n" = 1 ] \
+  && ok "a run warns about an identity an earlier run blocked as malware and that is cleared" \
+  || no "a run said nothing about the block on an identity rule H now clears"
+# Once the block is lifted the warning stops, unless the node's blocks cannot be listed.
+"$RAD" unfollow "$OPS"
+out=$(MALWARE_PRUNE=1 "$SCRIPT" 2>&1)
+failed=$(RSP_FOLLOW_FAIL=1 MALWARE_PRUNE=1 "$SCRIPT" 2>&1)
+{ ! grep -q "rad unfollow $OPS" <<<"$out" \
+  && grep -q "WARN: '.*follow' failed" <<<"$failed" \
+  && grep -q "rad unfollow $OPS" <<<"$failed"; } \
+  && ok "the warning stops once the block is lifted, and says why when blocks cannot be listed" \
+  || no "a lifted block was still reported, or an unreadable block list was silent"
+# --- a deny-list block that fails --- The listed identity stays unblocked, which wants a
+# person, so the run exits 1. Rule H alone plans nothing here, so the block is all it does.
+build_fixture; assert_isolated
+printf 'did:key:%s\n' "$STRANGER_NID" > "$AUDIT_DIR/deny.txt"
+out=$(RSP_BLOCK_NODE_FAIL=1 RULES=H "${NOTTY[@]}" "$SCRIPT" --apply --yes </dev/null 2>&1)
+rc=$?
+{ [ "$rc" = 1 ] && grep -q "WARN: could not block denied identity $STRANGER_NID" <<<"$out"; } \
+  && ok "a deny-list block that fails makes the run exit 1" \
+  || no "a failed deny-list block went unreported in the exit code (rc=$rc)"
 
 # --- the deny list: a person's verdict, acted on wherever it turns up ---
 # zcode4 is listed by id. zfarm1 is listed through its delegate. The stranger who pushed into
@@ -3251,7 +3541,7 @@ grep -q 'cannot read 2 of the 4 most recent audit logs' <<<"$out" \
 bad=""
 for setting in RATCHET_FLOOR=twenty MAX_PRUNE_GB=80G MAX_SCAN_FAIL_PCT=2.5 NEAR_PCT=08 \
                STALE_YEARS_DAYS=2y QUARANTINE_DAYS=010 JUNK_STALE_DAYS=9999999999999 \
-               SPAM_REQUIRE_ID=yes RULES=abc MEDIA_EXTS="mp4|'x" UNDO_MAX_GB=9999999999; do
+               SPAM_REQUIRE_ID=yes MALWARE_PRUNE=yes RULES=abc MEDIA_EXTS="mp4|'x" UNDO_MAX_GB=9999999999; do
   out=$(env "$setting" "$SCRIPT" quarantine purge 2>&1); rc=$?
   { [ "$rc" = 2 ] && grep -q "^# ${setting%%=*} " <<<"$out"; } || bad="$bad $setting:$rc"
 done

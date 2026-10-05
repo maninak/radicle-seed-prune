@@ -24,7 +24,7 @@
 #   commands: rad seed on its own rewrites only an existing policy row's scope, so on a
 #   blocked repo it prints success and leaves the block standing. That re-fetch is why the
 #   size/age rules keep a minimum other-seed count. Rule A's junk-id and the verdicts of
-#   rules D and F ship with a floor of 0 and may prune the last copy the network is known
+#   rules D, F and H ship with a floor of 0 and may prune the last copy the network is known
 #   to hold, which is what the quarantine is for. Every prune is recorded in an audit log.
 #
 # SELECTION  (a repo is pruned if it is denied, see below, or if it is NOT excluded AND matches
@@ -40,7 +40,8 @@
 #                            broken scan, not an exclusion)
 #     - kept                (one rid per line in AUDIT_DIR/keep.txt; a verdict a human has
 #                            already overruled, written there by "quarantine restore". A
-#                            did:key: line there clears an identity of rule H only)
+#                            did:key: line there clears an identity of rule H, and keeps none
+#                            of its repos from the other rules)
 #     - pardoned            (UNDO_PARDON: a repo rad-prune is known to have pruned as media by
 #                            mistake, until the release named beside it. Spared the media
 #                            rule (F) alone)
@@ -76,9 +77,10 @@
 #   "Other-seeds" is how many OTHER nodes our routing table says announce the repo. It
 #   is NOT proof a copy exists elsewhere (gossip is incomplete, and the author almost
 #   certainly still has theirs), so a floor of 0 is licence to prune the last copy WE
-#   KNOW OF. junk-id, spam-batch and the three media verdicts get it, on the
-#   reasoning that for machine-generated bulk, and for a pile of media with no project
-#   around it, "nobody else seeds it" measures worthlessness rather than rarity. Rules
+#   KNOW OF. junk-id, spam-batch, the three media verdicts and the malware-op verdict get
+#   it, on the reasoning that for machine-generated bulk, for a pile of media with no project
+#   around it, and for a malware toolkit, "nobody else seeds it" measures worthlessness rather
+#   than rarity. Rules
 #   B and C keep a floor: a big or long-abandoned UNIQUE repo is the very thing a seed
 #   exists to preserve.
 #
@@ -104,7 +106,6 @@
 #   name shape AND the description, because a bulk mirror import shares a name skeleton while
 #   each of its repos carries its own real description. Timing is not a signal: a bulk import
 #   lands its repos together too, and commit dates are the pusher's to set.
-#   README "Rule D: spam batches" has the worked examples and what they were measured on.
 #
 #   A MEDIA DUMP is a repo whose tracked files are video, images or audio with no project
 #   around them. Radicle storage is for collaborating on code; a repo holding one .mp4 and
@@ -138,16 +139,21 @@
 #       AND < PARASITE_TEXT_MAX_BYTES of anything else, anywhere
 #       AND they are not a delegate of ANY repo in storage, and are not us
 #
-#   Rule H - malware operations. Judges an IDENTITY, then single repos, and prunes and blocks
-#     nothing: whoever runs the seed and agrees adds them to the deny list. Over the names and
+#   Rule H - malware operations. Judges an IDENTITY, then single repos. By default it prunes
+#     and blocks nothing: whoever runs the seed and agrees adds them to the deny list. With
+#     MALWARE_PRUNE=1 it prunes every repo a named identity is a delegate of (malware-op), and
+#     an --apply run with --block-peers blocks each identity whose repos it prunes. A repo
+#     named on its own is only reported. A repo an identity this rule leaves out signed is
+#     spared, and a named delegate of a spared repo is not blocked. Over the names and
 #     descriptions of the repos an identity is a delegate of and signed refs in, leaving out
 #     identities that delegate a pinned, kept or our own repo, or are in the keep list or the
 #     deny list:
 #       one of MALWARE_STRONG_WORDS
 #       AND >= MALWARE_MIN_WORDS distinct words of MALWARE_STRONG_WORDS and MALWARE_WEAK_WORDS
 #       AND >= MALWARE_MIN_REPOS repos, and >= MALWARE_MIN_SHARE_PCT% of its repos, holding any
-#     where a repo holding a word counts only if the identity was among its founding delegates
-#     Then one repo the identity review did not list, that is not pinned, private, kept, our
+#     where a repo holding a word counts only for the identity whose key signed the commit
+#     that created it
+#     Then one repo the identity path did not name, that is not pinned, private, kept, our
 #     own or on the deny list, and none of whose signers that review leaves out:
 #       one of MALWARE_STRONG_WORDS in its name or description
 #       AND one in a path at a tip of its branches and tags, or in a commit subject on them
@@ -202,8 +208,7 @@
 #   Publishing the same files across many repos is evidence no single repo can manufacture, so
 #   where it exists the budget widens to MEDIA_TEXT_CEIL_BYTES and the fig leaf stops working.
 #   The FIRST holder is left out of its own batch, or reposting somebody's photos into five
-#   repos of your own would put their repo in the plan instead of yours. README "Rule F: media
-#   dumps" has the known limit this leaves.
+#   repos of your own would put their repo in the plan instead of yours.
 #
 #   A DUMP NO OTHER NODE SEEDS is pruned like any other: the evidence is what the repo holds,
 #   and a dump nobody else seeds is still a dump. MEDIA_MIN_SEEDS=1 keeps that copy, and rule F
@@ -269,7 +274,7 @@
 #   rad prune --apply --yes          # answer that prompt with y (scripts / cron)
 #   rad prune --apply --force        # apply even if the plan trips the runaway caps
 #   rad prune --apply --restart-node # ...and restart the node service afterwards
-#   rad prune --block-peers          # block what rule G found, asking per peer
+#   rad prune --block-peers          # block the peers the rules name, asking per peer
 #   rad prune --block-peers --yes    # ...without asking (cron)
 #
 #   rad prune quarantine list             # what a past run pruned and still holds
@@ -282,10 +287,10 @@
 # --apply scans ONCE, prints the plan, then in a terminal asks before deleting; run
 # non-interactively (cron, a pipe) it just applies. Confirming interactively also bypasses the
 # runaway caps. --yes (-y) answers every prompt a run asks, the per-peer block prompt
-# included: --block-peers --yes is how a cron job blocks what rule G finds, while
-# --block-peers alone with nobody to ask (cron, a pipe) blocks nobody and prints the rad
-# commands instead. --block-peers is a separate action and prunes nothing on its own; pass
-# both to do both.
+# included: --block-peers --yes is how a cron job blocks the peers rule G finds, and with
+# --apply and MALWARE_PRUNE=1 the identities rule H names, while --block-peers alone with
+# nobody to ask (cron, a pipe) blocks nobody and prints the rad commands instead.
+# --block-peers prunes nothing on its own; pass --apply too to do both.
 #
 # ENVIRONMENT
 #   Everything is configured by environment variable, and there are no tuning flags. RAD_HOME
@@ -341,22 +346,23 @@ OUR_NID="${OUR_NID:-$("$RAD" self --did 2>/dev/null || true)}"
 OUR_NID=${OUR_NID#did:key:}
 SERVICE="${SERVICE:-radicle-node}"          # systemd unit for --restart-node
 
-# `check` shows a publisher which of their own public repos a seed running this tool would
+# `check-mine` shows a publisher which of their own public repos a seed running this tool would
 # prune. It writes into a directory of its own, so the operator's audit trail, keep list,
 # deny list, ledger and cache are neither read nor changed. It runs the junk-name (A),
-# spam-batch (D) and media (F) rules, which judge how a repo is named and what it holds, with
-# their windows at 0, so a repo published today shows the verdict it gets once it is old
-# enough, or for the junk-name rule, once nobody has pushed to it for long enough. Their seed
-# floors are 0, since this node's routing table is not a seed's, and there is no disk
-# pressure, so this machine's free space plays no part. Set before the
+# spam-batch (D), media (F) and malware (H) rules, which judge how a repo is named and what it
+# holds, with their windows at 0, so a repo published today shows the verdict it gets once it
+# is old enough, or for the junk-name rule, once nobody has pushed to it for long enough. Their
+# seed floors are 0, since this node's routing table is not a seed's, and there is no disk
+# pressure, so this machine's free space plays no part. The malware rule acts as on a seed
+# that sets MALWARE_PRUNE=1, so a publisher learns what such a seed would do. Set before the
 # settings below, which keep a value already set.
 CHECK_DIR=""
-if [ "${1:-}" = check ]; then
+if [ "${1:-}" = check-mine ]; then
   CHECK_DIR=$(mktemp -d)
   trap 'rm -rf "$CHECK_DIR"' EXIT
   AUDIT_DIR=$CHECK_DIR
   unset KEEP_FILE FIRST_SEEN CACHE_DIR
-  CACHE=0; UNDO=0; DISK_AWARE=0; RULES=ADF
+  CACHE=0; UNDO=0; DISK_AWARE=0; RULES=ADFH; MALWARE_PRUNE=1
   SPAM_STALE_DAYS=0; MEDIA_STALE_DAYS=0; FRESH_GUARD_DAYS=0
   SPAM_MIN_SEEDS=0; MEDIA_MIN_SEEDS=0; JUNK_MIN_SEEDS=0; JUNK_ID_MIN_SEEDS=0
 fi
@@ -502,11 +508,10 @@ PARASITE_TEXT_MAX_BYTES="${PARASITE_TEXT_MAX_BYTES:-16384}"
 
 # --- rule H: malware operations ---
 # Names an identity whose repos are named or described like a malware operation: a stealer, a
-# drainer, a botnet and the panel that runs it. Only a person can tell an operation from
-# research into one, so rule H prunes and blocks nothing; it points at the deny list. Measured
-# over 13k repos on one seed, these flag one identity, the operation they were built from.
-# Security researchers and bulk publishers who hit the weak words stay under the bars. The
-# word lists are lower case and |-separated; a word matches whole, or with one trailing "s".
+# drainer, a botnet and the panel that runs it. Measured over 13k repos on one seed, these flag
+# one identity, the operation they were built from. Security researchers and bulk publishers
+# who hit the weak words stay under the bars. The word lists are lower case and |-separated; a
+# word matches whole, or with one trailing "s".
 MALWARE_STRONG_WORDS="${MALWARE_STRONG_WORDS:-\
 hvnc|stealer|crypter|drainer|keylogger|ransomware|botnet|scam}"
 MALWARE_WEAK_WORDS="${MALWARE_WEAK_WORDS:-c2|payload|panel|loader|zombie|rat|exploit}"
@@ -520,11 +525,17 @@ MALWARE_MIN_SHARE_PCT=50     # of the identity's signed repos in storage, the sh
 # with the repo. Over 13k repos on one seed, a strong word in a name alone flags three honest
 # repos of six, and one in a path or a subject alone flags one operation among dozens of honest
 # repos; together, two operations and one honest repo. A history much older than the repo is a
-# mirror of somebody else's project.
+# mirror of somebody else's project. A history that starts with the repo can still be honest,
+# as the one honest repo above is, so a repo named this way is only reported.
 MALWARE_ORIGINAL_DAYS=7      # most days the first commit may predate the repo's `rad init`
 MALWARE_SUBJECTS=1000        # newest commit subjects read per repo, to bound a big mirror
 MALWARE_TREES=50             # distinct trees at branch and tag tips listed per repo, likewise
 MALWARE_BYTES=4194304        # of paths and subjects read per repo in all; a tree can repeat
+# 1 prunes every repo of an identity rule H names, as malware-op, and an --apply run with
+# --block-peers blocks the identities. Off by default, because one seed's measurements are too
+# few to show how often an honest identity is named, and only a person can tell an operation
+# from research into one. Revisit when several seeds have run it opt-in.
+MALWARE_PRUNE="${MALWARE_PRUNE:-0}"
 
 # Which rules may run at all, one spelling for every rule. A letter absent from this string
 # means that rule neither scans nor puts anything in the plan. RULES= (set but empty) means no
@@ -601,7 +612,7 @@ STALE_YEARS_DAYS_AGG="${STALE_YEARS_DAYS_AGG:-60}"
 MIN_OTHER_SEEDS_AGG="${MIN_OTHER_SEEDS_AGG:-1}"  # hard floor 1: B and C keep the last copy
 
 AUDIT_DIR="${AUDIT_DIR:-$RAD_HOME/prune-audit}"
-# A pruned repo is moved here first and deleted for real once its window passes. Three verdicts
+# A pruned repo is moved here first and deleted for real once its window passes. Some verdicts
 # may prune the last copy the network is known to hold, and for exactly those the documented
 # undo ("re-fetch it") cannot work, so the only real undo is a copy on this disk.
 # A week is long enough for a weekly cron run to be looked at once before its repos go, and
@@ -897,6 +908,20 @@ did_key_hex() {
     for (j = n - 1; j >= 0; j--) printf "%02x", b[j] }' | sed -n 's/^ed01//p'
 }
 
+# The blob id a repo id names, as 40 hex digits: the part after "z" is base58 of the 20 bytes
+# of the blob that holds the repo's first identity document. Leading zero bytes are put back.
+rid_blob_hex() {
+  awk -v s="$1" 'BEGIN {
+    a = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+    for (i = 2; i <= length(s); i++) {
+      c = index(a, substr(s, i, 1)) - 1
+      for (j = 0; j < n; j++) { c += b[j] * 58; b[j] = c % 256; c = int(c / 256) }
+      while (c > 0) { b[n++] = c % 256; c = int(c / 256) }
+    }
+    for (j = n; j < 20; j++) printf "00"
+    for (j = n - 1; j >= 0; j--) printf "%02x", b[j] }'
+}
+
 # Prints the tree of every issue and patch op the given COB refs reach that one of the repo's
 # delegates signed, once per distinct tree, and "torn" if the refs could not be walked whole or
 # reach more than MEDIA_MAX_OPS ops. A patch op's parents include the patch's own commits,
@@ -1006,15 +1031,15 @@ is_archive() {
 }
 
 # ---------------------------------------------------------------------------------------- args
-# Two subcommands: "quarantine", for dealing with repos an earlier run pruned, and "check" (see
+# Two subcommands: "quarantine", for dealing with repos an earlier run pruned, and "check-mine" (see
 # CHECK_DIR above). Everything else is a flag on the prune run itself.
 CMD=""; QVERB=""; QARGS=()
 if [ "${1:-}" = quarantine ]; then
   CMD=quarantine; shift
   QVERB="${1:-}"; [ "$#" = 0 ] || shift
   QARGS=("$@"); set --
-elif [ "${1:-}" = check ]; then
-  CMD=check; shift
+elif [ "${1:-}" = check-mine ]; then
+  CMD=check-mine; shift
 fi
 
 # What --help prints. The comment block at the top of this file is the design document, not a
@@ -1032,16 +1057,16 @@ Automatically detect and prune lower-value repos, spam and abuse from a Radicle 
 USAGE
   $me [options]                    plan a prune, and with --apply carry it out
   $me quarantine <verb> [rid...]   deal with what a past run already pruned
-  $me check                        say which of your own public repos a seed running
-                                         $me would prune, and why; changes nothing
+  $me check-mine                   say which of your own public repos a seed running
+                                         $me would prune or flag, and why; changes nothing
 
   Dry run by default: with no options it prints the plan and changes nothing.
 
 OPTIONS
   --apply          carry out the plan: unseed, block and quarantine every repo in it, and
                    lift the blocks on repos earlier runs may have pruned by mistake
-  --block-peers    block the peers the parasite-peer rule (G) found, asking per peer;
-                   on its own, prunes nothing
+  --block-peers    block the peers the rules name, asking for each; on its own, prunes
+                   nothing
   --yes, -y        answer y to every prompt this run asks, so it needs nobody present
   --force          carry on past the runaway caps, and past the hold on a rule that plans far
                    more repos than usual
@@ -1075,7 +1100,7 @@ for a in "$@"; do
     --yes|-y)       YES=1 ;;
     --force)        FORCE=1 ;;
     --restart-node) RESTART=1 ;;
-    # Rule G only ever reports without this. Blocking a peer is a standing judgement
+    # Rules G and H block nobody without this. Blocking a peer is a standing judgement
     # about a person that applies to every repo at once, so it takes its own opt-in.
     --block-peers)  BLOCK_PEERS=1 ;;
     --version)      echo "radicle-seed-prune $VERSION"; exit 0 ;;
@@ -1085,14 +1110,14 @@ for a in "$@"; do
 done
 # A check judges your own repos as if they were somebody else's, so it must never act on what
 # it finds.
-if [ "$CMD" = check ] && [ $((APPLY + YES + FORCE + RESTART + BLOCK_PEERS)) != 0 ]; then
-  echo "check only reports; it takes none of --apply, --yes, --force, --restart-node," \
+if [ "$CMD" = check-mine ] && [ $((APPLY + YES + FORCE + RESTART + BLOCK_PEERS)) != 0 ]; then
+  echo "check-mine only reports; it takes none of --apply, --yes, --force, --restart-node," \
        "--block-peers" >&2
   exit 2
 fi
 # The scan's own report is written for an operator, so a check keeps it off stdout and prints
 # its answer to fd 3 once the plan is made. Warnings still reach stderr.
-if [ "$CMD" = check ]; then exec 3>&1 1>/dev/null; fi
+if [ "$CMD" = check-mine ]; then exec 3>&1 1>/dev/null; fi
 
 # Answered before the preflight below, the same as the main --help is answered before it: a
 # reader asking what the verbs are gets an answer rather than a list of what is not installed.
@@ -1114,10 +1139,11 @@ need="basename cut date dirname du grep mkdir mv rm stat sync tail"
 # What a scan adds on top. `nproc` is left out of both: its one call has a fallback value.
 if [ "$CMD" != quarantine ]; then
   need="$need awk cat cp df find git head jq mktemp od sed sha1sum sort tail touch tr"
-  need="$need uniq wc xargs"
+  need="$need iconv uniq wc xargs"
 fi
 if [ "$QVERB" = files ]; then need="$need awk git jq od"; fi
 if [ "$CMD" != quarantine ] && rule_on F; then need="$need base64 gzip openssl"; fi
+if [ "$CMD" != quarantine ] && rule_on H; then need="$need base64 openssl"; fi
 missing=
 for c in $need; do
   command -v "$c" >/dev/null 2>&1 || missing="$missing $c"
@@ -1127,16 +1153,32 @@ done
   echo "PATH=$PATH" >&2
   case " $missing " in
     (*" base64 "*|*" gzip "*|*" openssl "*)
-      echo "To run without the media rule (F), which needs base64, gzip and openssl," \
-           "leave F out of RULES." >&2 ;;
+      if [ "$CMD" = check-mine ]; then
+        echo "check-mine runs the media (F) and malware (H) rules, which need base64, gzip" \
+             "and openssl: install them." >&2
+      else
+        echo "To run without the media rule (F), which needs base64, gzip and openssl, and" \
+             "the malware rule (H), which needs base64 and openssl, leave them out of" \
+             "RULES." >&2
+      fi ;;
   esac
   exit 1
 }
-# Rule F counts an issue or patch op only once openssl has checked its signature. An openssl
-# that cannot check ed25519 (before 3.0, pkeyutl has no -rawin) would turn every op down and
-# leave each repo looking as if it had none, so it is tried first on RFC 8032's second test
+# Stranger text goes through `iconv -c` before it reaches the terminal (see HIDDEN_CHARS_SED).
+# An iconv that stops at the first byte that is not UTF-8, rather than dropping it, would cut
+# every name, description and subject there, and quietly, since its status is ignored.
+if [ "$CMD" != quarantine ] \
+   && [ "$(printf 'a\377b\n' | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null)" != ab ]; then
+  echo "iconv here stops at text that is not UTF-8 instead of dropping it. glibc's iconv" \
+       "drops it." >&2
+  exit 1
+fi
+# Rule F counts an issue or patch op only once openssl has checked its signature, and rule H
+# counts a repo's founder only once openssl has checked theirs. An openssl that cannot check
+# ed25519 (before 3.0, pkeyutl has no -rawin) would turn every one down, leaving each repo
+# looking as if it had no ops and no founder, so it is tried first on RFC 8032's second test
 # vector: a key, the one-byte message 72, and its signature.
-if [ "$CMD" != quarantine ] && rule_on F; then
+if [ "$CMD" != quarantine ] && { rule_on F || rule_on H; }; then
   vec=$(mktemp -d)
   { unhex 302a300506032b6570032100
     unhex 3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c; } > "$vec/key"
@@ -1147,8 +1189,13 @@ if [ "$CMD" != quarantine ] && rule_on F; then
     -sigfile "$vec/sig" >/dev/null 2>&1 && ed_ok=1 || ed_ok=0
   rm -rf "$vec"
   [ "$ed_ok" = 1 ] || {
-    echo "openssl here cannot check ed25519 signatures, which the media rule (F) needs. OpenSSL 3 can." >&2
-    echo "To run without the media rule (F), leave F out of RULES." >&2
+    echo "openssl here cannot check ed25519 signatures, which the media (F) and malware (H)" \
+         "rules need. OpenSSL 3 can." >&2
+    if [ "$CMD" = check-mine ]; then
+      echo "check-mine runs both rules, so install OpenSSL 3." >&2
+    else
+      echo "To run without them, leave F and H out of RULES." >&2
+    fi
     exit 1
   }
 fi
@@ -1226,6 +1273,11 @@ done
 case $SPAM_REQUIRE_ID in
   0|1) ;;
   *) echo "# SPAM_REQUIRE_ID must be 0 or 1, not '$SPAM_REQUIRE_ID'." >&2; exit 2 ;;
+esac
+# Only 1 prunes, so a "yes" or "true" meant as on would quietly leave the rule reporting.
+case $MALWARE_PRUNE in
+  0|1) ;;
+  *) echo "# MALWARE_PRUNE must be 0 or 1, not '$MALWARE_PRUNE'." >&2; exit 2 ;;
 esac
 # An extension is matched after it is lower-cased, so an upper-case entry never matches, and a
 # quote would break the worker script the list is written into.
@@ -1322,7 +1374,7 @@ keep_add() {
   if [ ! -e "$KEEP_FILE" ]; then
     add_header "$KEEP_FILE" \
       "Repos rad prune never prunes, one repo id per line. Edit it by hand at any time." \
-      "A did:key: line instead stops the malware rule (H) naming that identity." \
+      "A did:key: line instead clears that identity of the malware rule (H)." \
       "rad prune quarantine restore adds each repo it puts back." \
       || echo "# WARN: could not write the header of a new $KEEP_FILE" >&2
   fi
@@ -1346,6 +1398,35 @@ pruned_as() {
   awk -F'\t' -v r="$1" '!/^#/ && $1 == r && $5 != "" { last = $5 " " $6 }
                        END { if (last != "") print last }' "${logs[@]}" \
     | LC_ALL=C tr '\001-\011\013-\037\177' ' '   # no control byte reaches keep.txt
+}
+# The identities earlier runs blocked as malware (rule H), from the blocked-malware rows of
+# their audit logs, one per line.
+malware_blocked_before() {
+  local f logs=()
+  for f in "$AUDIT_DIR"/prune-*.log; do [ -r "$f" ] && logs+=("$f"); done
+  [ ${#logs[@]} -gt 0 ] || return 0
+  awk -F'\t' '$1 == "blocked-malware" { print $2 }' "${logs[@]}" | sort -u
+}
+# The identities earlier runs pruned malware-op repos for, from the "# malware-op:" lines of
+# their audit logs, one per line.
+malware_op_nids() {
+  local f logs=()
+  for f in "$AUDIT_DIR"/prune-*.log; do [ -r "$f" ] && logs+=("$f"); done
+  [ ${#logs[@]} -gt 0 ] || return 0
+  awk '$1 == "#" && $2 == "malware-op:" {
+         n = split($4, d, ",")
+         for (i = 1; i <= n; i++) print d[i] }' "${logs[@]}" | sort -u
+}
+# The node ids this node blocks right now, from `rad follow`: a row whose policy, its last
+# column, is "block". Fails when `rad follow` fails, with rad's error on stderr.
+nodes_blocked_now() {
+  local list
+  list=$("$RAD" follow) || return 1
+  awk '/did:key:z/ {
+         gsub(/│/, " "); n = split($0, f, " "); nid = ""
+         for (i = 1; i <= n; i++)
+           if (f[i] ~ /^did:key:z[1-9A-HJ-NP-Za-km-z]+$/) { nid = substr(f[i], 9); break }
+         if (nid != "" && f[n] == "block") print nid }' <<<"$list" | sort -u
 }
 # Everything below builds a path from an argument, so a name that is not a repo id never gets
 # to name one: "quarantine delete ../.." would otherwise be a working command.
@@ -1467,6 +1548,16 @@ if [ "$CMD" = quarantine ]; then
     restore)
       [ "${#QARGS[@]}" -gt 0 ] \
         || { echo "usage: $(basename "$0") quarantine restore <rid>..." >&2; exit 2; }
+      # The identities an earlier run blocked as malware (rule H), and of those the ones the
+      # node still blocks. When the blocks cannot be listed, every one of them counts as
+      # still blocked, and rad's own error stays on the terminal to say why.
+      hblocked=$(malware_blocked_before)
+      hnamed=$( { malware_op_nids; printf '%s\n' "$hblocked"; } | sort -u)
+      nblocked=""
+      if [ -n "$hblocked" ] && ! nblocked=$(nodes_blocked_now); then
+        echo "# WARN: '$RAD follow' failed, so a block named below may be lifted already." >&2
+        nblocked=$hblocked
+      fi
       for rid in "${QARGS[@]}"; do
         rid=${rid#rad:}
         is_rid "$rid" || { echo "# not a repo id: $rid" >&2; continue; }
@@ -1497,7 +1588,19 @@ if [ "$CMD" = quarantine ]; then
           || { echo "#   WARN could not write $KEEP_FILE; the next run may prune $rid" >&2
                continue; }
         echo "# restored $rid; added to $KEEP_FILE, so no rule prunes it again and the" \
-             "malware rule (H) names none of its delegates"
+             "malware rule (H) clears all its delegates"
+        # Each delegate the malware rule (H) named is cleared of it by the keep line, which the
+        # operator should know by name. A block the rule put on one is not lifted here; the
+        # command is printed instead, for a block still standing.
+        read_delegates "$STORAGE/$rid"
+        for nid in $dids; do
+          grep -qxF "$nid" <<<"$hnamed" || continue
+          echo "#   the malware rule (H) named its delegate $nid, and no longer does"
+          if grep -qxF "$nid" <<<"$hblocked" && grep -qxF "$nid" <<<"$nblocked"; then
+            echo "#   an earlier run blocked its delegate $nid as malware; to lift that block:" \
+                 "rad unfollow $nid"
+          fi
+        done
       done
       echo "# restart the node to announce them again: sudo systemctl restart $SERVICE"
       ;;
@@ -1660,10 +1763,12 @@ if [ "$DISK_AWARE" = 1 ] && awk -v p="$p" 'BEGIN { exit !(p == 0) }'; then
   space_rules=0
 fi
 # The rules that may prune this run, as its audit log records them. A waiting rule is left out,
-# so the ratchet reads the run as no sample of it, like a run with the rule off.
+# so the ratchet reads the run as no sample of it, like a run with the rule off. So is rule H
+# while it only reports.
 # "-" stands for none, since an empty value reads as a log from before rules were recorded.
 rules_live=$RULES
 [ "$space_rules" = 1 ] || rules_live=${rules_live//[BC]/}
+[ "$MALWARE_PRUNE" = 1 ] || rules_live=${rules_live//H/}
 [ -n "$rules_live" ] || rules_live=-
 
 # interpolate each knob relaxed->aggressive by p
@@ -1685,12 +1790,12 @@ media_cut=$(( now - MEDIA_STALE_DAYS*86400 ))
 # A check first sees every repo now, so a repo whose commits all carry a date ahead of this
 # clock is created now by its reckoning, and a window of 0 would never pass it. A seed that
 # first saw it earlier would.
-if [ "$CMD" = check ]; then
+if [ "$CMD" = check-mine ]; then
   spam_cut=$((now + 1)); media_cut=$((now + 1)); junk_cut=$((now + 1))
 fi
 
 run_mode=$([ "$APPLY" = 1 ] && echo APPLY || echo DRY-RUN)
-[ "$CMD" != check ] || run_mode=CHECK
+[ "$CMD" != check-mine ] || run_mode=CHECK
 echo "# radicle-seed-prune $VERSION  $run_ts   mode=$run_mode"
 # Named at the top and not only at the end: the plan, the per-run log and the quarantine are
 # all under it, and they are what an operator goes looking for while the run is still going.
@@ -1743,10 +1848,16 @@ rule_on G         || rule_g="$rule_g [DISABLED: not in RULES]"
 echo "# rule $rule_g"
 rule_h="H malware-op(>=${MALWARE_MIN_WORDS} malware words, one strong, in the names and"
 rule_h="$rule_h descriptions of >=${MALWARE_MIN_REPOS} and >=${MALWARE_MIN_SHARE_PCT}%"
-rule_h="$rule_h of the repos an identity signed as a delegate; or one repo with a strong"
-rule_h="$rule_h word in its name or description and in a file path or commit subject, first"
-rule_h="$rule_h commit <=${MALWARE_ORIGINAL_DAYS}d before its rad init)"
-rule_h="$rule_h [reports only]"
+rule_h="$rule_h of the repos an identity signed as a delegate)"
+rule_h_op=""
+if [ "$MALWARE_PRUNE" = 0 ]; then rule_h_op=" [reports only; MALWARE_PRUNE=1 prunes]"
+elif [ "$BLOCK_PEERS" = 0 ]; then rule_h_op=" [blocks no identity without --block-peers]"
+fi
+rule_h_repo=" [reports only]"
+if ! rule_on H; then rule_h_op=""; rule_h_repo=""; fi
+rule_h="$rule_h$rule_h_op  malware-repo(a strong word in one repo's name or description and"
+rule_h="$rule_h in a file path or commit subject, first commit <=${MALWARE_ORIGINAL_DAYS}d"
+rule_h="$rule_h before its rad init)$rule_h_repo"
 rule_on H || rule_h="$rule_h [DISABLED: not in RULES]"
 echo "# rule $rule_h"
 
@@ -2039,7 +2150,7 @@ cat "$tmp/pinned" "$tmp/private" "$tmp/own" "$tmp/kept" 2>/dev/null | sort -u > 
 # opens a later line of a description still gets through, and is judged only if its identity
 # document names this node as a delegate. Private is read from that document, for the same
 # reason.
-if [ "$CMD" = check ]; then
+if [ "$CMD" = check-mine ]; then
   : > "$tmp/check-repos"
   while IFS= read -r rid; do
     read_delegates "$STORAGE/$rid"
@@ -2147,7 +2258,7 @@ echo "# excluded: $(wc -l < "$tmp/pinned") pinned," \
 # modes, up front.
 mode=${run_mode,,}
 # A check needs no live node: rad answers its ls and self from disk, node stopped or not.
-[ "$CMD" = check ] || "$RAD" node status >/dev/null 2>&1 \
+[ "$CMD" = check-mine ] || "$RAD" node status >/dev/null 2>&1 \
   || { echo "# ABORT($mode): node unreachable via '$RAD' (home=$RAD_HOME)." >&2; exit 5; }
 [ -n "$OUR_NID" ] \
   || { echo "# ABORT($mode): no NID from '$RAD' (home=$RAD_HOME)." >&2; exit 5; }
@@ -2742,6 +2853,25 @@ undo_apply() {
   fi
 }
 
+# Characters in stranger text that the terminal acts on or does not show, in their UTF-8
+# bytes, so what it shows the operator is what the text holds: the C1 controls (an escape
+# sequence there could rewrite the screen), the soft hyphen, the combining grapheme joiner,
+# the Arabic letter mark, the Mongolian vowel separator, the zero-width and bidi characters
+# U+200B-200F, U+202A-202E and U+2060-206F, and the byte-order mark. Run it after `iconv -c`:
+# then every byte is part of a whole lead-and-continuation sequence, and each pattern starts
+# with a lead byte, which never occurs as a continuation byte, so a match covers whole
+# characters, taking one out cannot join its neighbours into another, and one pass is enough.
+# `iconv -c` exits nonzero when it drops bytes, which is what it is here for, so its status is
+# ignored. This does not stop every way to hide a word, look-alike letters among them; a
+# hidden word only lets a repo go unflagged.
+HIDDEN_CHARS_SED=$'s/\xc2[\x80-\x9f]//g
+s/\xc2\xad//g
+s/\xcd\x8f//g
+s/\xd8\x9c//g
+s/\xe1\xa0\x8e//g
+s/\xe2\x80[\x8b-\x8f\xaa-\xae]//g
+s/\xe2\x81[\xa0-\xa4\xa6-\xaf]//g
+s/\xef\xbb\xbf//g'
 # ------------------------------------------------------------------- rid -> name + description
 # One `rad ls --all` feeds both the plan's NAME column and rule D's batch statistics, so parse
 # the whole row: "| <name> rad:<rid> <visibility> <head> <description...> |". Take the FIRST
@@ -2750,11 +2880,11 @@ undo_apply() {
 # Walk the trailing columns rather than counting fields, because visibility, head and
 # description are each independently missing on some rows. A name and a description are
 # whatever a repo's delegates wrote, and both reach the terminal, so control characters go
-# first, in their UTF-8 spelling (C1) too: an escape sequence there could rewrite what the
-# operator reads. Taking one C1 pair out of a run like \xc2\xc2\x9b\x9b would join the bytes
-# around it into another, so the whole run goes at once.
+# first, and then the ones HIDDEN_CHARS_SED takes out.
 "$RAD" ls --all 2>/dev/null | LC_ALL=C tr -d '\000-\010\013-\037\177' \
-  | LC_ALL=C sed $'s/\xc2\xc2*[\x80-\x9f][\x80-\x9f]*//g' | awk '
+  | { iconv -f UTF-8 -t UTF-8 -c 2>/dev/null || true; } \
+  | LC_ALL=C sed "$HIDDEN_CHARS_SED" \
+  | awk '
   /rad:z[1-9A-HJ-NP-Za-km-z]+/ {
     ridi=0; for (i=1;i<=NF;i++) if ($i ~ /^rad:z[1-9A-HJ-NP-Za-km-z]+$/) { ridi=i; break }
     if (ridi<2) next
@@ -2925,9 +3055,9 @@ fi
   | sort | uniq -c | awk '{print $2"\t"$1}' > "$tmp/seeds" || true
 # An empty routing table means the node knows no other seed, so every seed count reads 0 and
 # the rules that keep the last copy could only ever spare everything. Say so, instead of
-# scanning the whole seed to report a misleading plan. A check holds the seed floors of both
-# its rules at 0, so it reads no seed count.
-[ -s "$tmp/seeds" ] || [ "$CMD" = check ] || {
+# scanning the whole seed to report a misleading plan. A check holds the seed floor of every
+# rule it runs at 0, so it reads no seed count.
+[ -s "$tmp/seeds" ] || [ "$CMD" = check-mine ] || {
   echo "# ABORT($mode): routing table empty via '$RAD' (home=$RAD_HOME)." >&2
   echo "# Every seed count would read 0, so the rules that keep the last copy could prune" \
        "nothing." >&2
@@ -3116,6 +3246,9 @@ skip='JOBS|CACHE|PLAN_FULL|PLAN_COLLAPSE_ROWS|SERVICE|PROGRESS_SECS|BASH|HOME'
 skip+='|MAX_PRUNE_COUNT|MAX_PRUNE_GB|MAX_SCAN_FAIL_PCT'
 skip+='|RATCHET_FACTOR|RATCHET_RUNS|RATCHET_FLOOR'
 skip+='|UNDO|UNDO_MAX_COUNT|UNDO_MAX_GB|QUARANTINE|QUARANTINE_DAYS|NEAR_PCT'
+# Whether rule H's verdicts join the plan. No worker reads it, and an operator trying it with
+# one dry run should not pay a full uncached read for that.
+skip+='|MALWARE_PRUNE'
 knobs=$(grep -oE '\$\{[A-Z_][A-Z0-9_]*[:-]' "$SELF" 2>/dev/null \
         | tr -d '${:-' | grep -vxE "$skip" | sort -u)
 fingerprint=$( { sha1sum < "$SELF"
@@ -3158,7 +3291,7 @@ cache_hits() {                      # $1 = rule's cache name; writes the rids it
   : > "$tmp/cached-$1"
   # A check has the rule read only the repos it judges. The rest count as answered by the
   # cache, which brings no row for them.
-  if [ "$CMD" = check ]; then
+  if [ "$CMD" = check-mine ]; then
     cut -f1 "$tmp/keys" | grep -xFf "$tmp/excluded" > "$tmp/cached-$1" || true
     return 0
   fi
@@ -4024,7 +4157,8 @@ if [ "$nscanerr" -gt 0 ]; then
 fi
 
 declare -A SIZE MTIME LIFE BIRTH NAME SEEDS EXCL SCANFAIL SPAM MEDIA SHARED \
-           FIRSTSEEN MEDIABYTES DELEGATES SIGNERS DENY_RID DENY_NID COPY COPYHELD COPYPCT COPYROW
+           FIRSTSEEN MEDIABYTES DELEGATES SIGNERS DENY_RID DENY_NID COPY COPYHELD COPYPCT COPYROW \
+           MALWARE_OP
 while IFS=$'\t' read -r sz path; do SIZE[${path##*/}]=$sz; done < "$tmp/du"
 while IFS=$'\t' read -r rid mt;   do MTIME[$rid]=${mt%.*}; done < "$tmp/mtimes"
 # Anything that is not a plain number becomes 0, which the classify loop reads as "age
@@ -4047,7 +4181,7 @@ awk -F'\t' 'FILENAME == ARGV[1] { gone[$1] = 1; next }
   "$tmp/excluded" "$tmp/lives" | sort > "$tmp/unlisted"
 # A check leaves unexcluded only the repos it judges, its own by design, so this would exclude
 # them.
-if [ "$CMD" != check ] && [ -s "$tmp/unlisted" ]; then
+if [ "$CMD" != check-mine ] && [ -s "$tmp/unlisted" ]; then
   nunlisted=$(wc -l < "$tmp/unlisted")
   echo "# WARN: $nunlisted repo(s) are ours or private on disk, but '$RAD ls' did not list" \
        "them; they are kept. 'rad seed' the ones marked ours that you want, 'rad rm' what you" \
@@ -4115,6 +4249,8 @@ done
 # repos that arrived in the same run tie, and then the one whose storage directory the node
 # made first (to the second) is earliest: a repo id sorts wherever its pusher grinds it to.
 # Where the filesystem keeps no creation time, a tie falls to whichever repo sorts first.
+# Known limit: copies published before the original reached this seed are first holders, and
+# after storage is moved with cp or rsync, creation times follow the copy's order instead.
 # The list was sorted once, after the media rule (F) ran; with rule F off it does not exist.
 : > "$tmp/media-births"
 if [ -s "$tmp/blobs-all" ]; then
@@ -4272,43 +4408,112 @@ if rule_on H; then
   # already vouches for, the one who never signed there included, since the deny list would not
   # block them either. A private repo vouches for nobody: its delegates chose this seed, not
   # the other way round. An identity in the keep list was cleared by a person, and one the deny
-  # list names is already dealt with.
+  # list names is already dealt with. A check leaves out nobody: it asks what a seed, which
+  # vouches for none of this node's identities, would do with this node's repos.
+  # $tmp/malware-vouched holds the ones this seed vouches for, whose signed refs spare a repo.
+  # A deny-list identity is not one of them: signing refs in an operation's repo must not
+  # shield it.
   { cat "$tmp/pinned" "$tmp/own" "$tmp/kept"
     awk -F'\t' '$2 == "ours" { print $1 }' "$tmp/unlisted"; } | sort -u > "$tmp/vouched"
   { awk -F'\t' 'FILENAME == ARGV[1] { vouched[$1] = 1; next }
                 ($1 in vouched) { n = split($7, d, ",")
                                   for (i = 1; i <= n; i++) print d[i] }' \
       "$tmp/vouched" "$tmp/lives"
-    cat "$tmp/kept-nids" "$tmp/deny-nids"
-    echo "$OUR_NID"; } | sort -u > "$tmp/malware-skip"
-  # The delegates each matching repo was created with. A delegate can add as a co-delegate
-  # anybody who cloned the repo, and a clone signs refs of its own, so only a founder's repos
-  # count as theirs. A repo whose first revision does not read counts for nobody. An identity
-  # that only ever joins repos somebody else created is not named for them, which is the price
-  # of not naming whoever was added to an operation's repos after cloning them.
+    cat "$tmp/kept-nids"
+    echo "$OUR_NID"; } | sort -u > "$tmp/malware-vouched"
+  sort -u "$tmp/malware-vouched" "$tmp/deny-nids" > "$tmp/malware-skip"
+  if [ "$CMD" = check-mine ]; then : > "$tmp/malware-vouched"; : > "$tmp/malware-skip"; fi
+  # The founder of each matching repo: the delegate its first identity revision lists whose
+  # key signed the commit that made it. A delegate can add as a co-delegate anybody who cloned
+  # the repo, and a clone signs refs of its own, so only a founder's repos count as theirs.
+  # Listed is not enough, since that document's author lists whoever they like, and signed
+  # refs older than Radicle 1.7 name no repo and can be copied into one. Radicle signs that
+  # commit, like every op, with ed25519 over its tree id (see delegate_ops). A repo whose first
+  # revision does not read, or whose signature checks out for no listed key, counts for nobody.
+  # The signature covers only that revision's tree, so anybody can copy the commit into a repo
+  # of their own, the signature still good. The repo id is the id of the document's blob, so a
+  # copy that does not hold the document its own id names counts for nobody either.
+  # An identity that only ever joins repos somebody else created is not named for them, which
+  # is the price of not naming whoever was added to an operation's repos after cloning them.
   : > "$tmp/malware-founders"
+  mkdir -p "$tmp/founder"
+  nforeign=0; foreign=""
+  nchecked=0; nfounded=0
   while IFS=$'\t' read -r rid _; do
-    root=$(GIT_DIR="$STORAGE/$rid" git rev-list --max-parents=0 refs/rad/id 2>/dev/null \
-             | tail -n 1) || root=""
+    d="$STORAGE/$rid"
+    root=$(GIT_DIR="$d" git rev-list --max-parents=0 refs/rad/id 2>/dev/null | tail -n 1) \
+      || root=""
     [ -n "$root" ] || continue
-    read_delegates "$STORAGE/$rid" "$root"
-    printf '%s\t%s\n' "$rid" "$dids" >> "$tmp/malware-founders"
+    read_delegates "$d" "$root"
+    docblob=$(GIT_DIR="$d" git rev-parse "$root:embeds/radicle.json" 2>/dev/null) || docblob=""
+    # A first revision with no document credits nobody either, but is no copy to report.
+    if [ -z "$docblob" ]; then
+      dids=""
+    elif [ "$docblob" != "$(rid_blob_hex "$rid")" ]; then
+      dids=""
+      nforeign=$((nforeign+1)); foreign=${foreign:-$rid}
+    fi
+    [ -n "$dids" ] && nchecked=$((nchecked+1))
+    roottree=$(GIT_DIR="$d" git rev-parse "$root^{tree}") || continue
+    unhex "$roottree" > "$tmp/founder/msg"
+    # The signature block in the commit's header, before the blank line that ends it. A commit
+    # with none leaves the file empty, which no key checks out against.
+    GIT_DIR="$d" git cat-file commit "$root" | sed '/^$/q' \
+      | sed -n '/^gpgsig -----BEGIN SSH SIGNATURE-----$/,/^ -----END SSH SIGNATURE-----$/p' \
+      | sed '1d; $d' | tr -d ' \n' | base64 -d > "$tmp/founder/sshsig" 2>/dev/null || true
+    tail -c 64 "$tmp/founder/sshsig" > "$tmp/founder/sig"
+    # The SSH signature names the key that made it: after "SSHSIG" and a version, at byte 10,
+    # come the key's length (51), its type's length (11), "ssh-ed25519", 32, then the key. Only
+    # the listed delegate whose key that is gets checked, so one openssl call per repo.
+    # od fails on a signature too short to skip into, which no key checks out against either.
+    keyfield=$(od -An -tx1 -v -j10 -N55 "$tmp/founder/sshsig" 2>/dev/null | tr -d ' \n') \
+      || keyfield=""
+    signkey=""
+    if [ "${keyfield:0:46}" = 000000330000000b7373682d6564323535313900000020 ]; then
+      signkey=${keyfield:46}
+    fi
+    signer=""
+    for nid in $dids; do
+      if [ -n "$signkey" ] && [ "$(did_key_hex "$nid")" = "$signkey" ]; then
+        signer=$nid
+        break
+      fi
+    done
+    founder=""
+    if [ -n "$signer" ]; then
+      unhex "302a300506032b6570032100$signkey" > "$tmp/founder/key"
+      if openssl pkeyutl -verify -pubin -keyform DER -inkey "$tmp/founder/key" -rawin \
+           -in "$tmp/founder/msg" -sigfile "$tmp/founder/sig" >/dev/null 2>&1; then
+        founder=$signer
+        nfounded=$((nfounded+1))
+      fi
+    fi
+    printf '%s\t%s\n' "$rid" "$founder" >> "$tmp/malware-founders"
   done < "$tmp/malware-words"
+  [ "$nforeign" = 0 ] \
+    || echo "# WARN: $nforeign repo(s) start from another repo's first identity revision," \
+            "copied, such as rad:$foreign. That is how someone would try to get a stranger" \
+            "named by the malware rule (H), so it counts them for nobody." >&2
+  # Every first revision is signed the same way, so none checking out means the way changed.
+  [ "$nchecked" = 0 ] || [ "$nfounded" -gt 0 ] \
+    || echo "# WARN: no signature on the first identity revision of $nchecked repo(s) the" \
+            "malware rule (H) matched checks out for a listed delegate. Radicle may sign" \
+            "them differently now, so the rule names nobody this run." >&2
   # Each identity's repos, counted only where it is a delegate and signed refs of its own, so
   # naming somebody as a co-delegate of a malware repo does not put them here. A matching repo
-  # counts for an identity only if the identity was among the repo's founders, and a matching
-  # repo it did not found leaves its share untouched. Then the bars.
+  # counts for an identity only if the identity founded it, and a matching repo it did not
+  # found leaves its share untouched. Then the bars.
   awk -F'\t' -v minwords="$MALWARE_MIN_WORDS" -v minrepos="$MALWARE_MIN_REPOS" \
       -v share="$MALWARE_MIN_SHARE_PCT" '
     FILENAME == ARGV[1] { skip[$1] = 1; next }
     FILENAME == ARGV[2] { words[$1] = $2; strong[$1] = $3; name[$1] = $4; next }
-    FILENAME == ARGV[3] { founders[$1] = " " $2 " "; next }
+    FILENAME == ARGV[3] { founder[$1] = $2; next }
     $6 != "-" {
       n = split($6, signer, ",")
       for (i = 1; i <= n; i++) {
         d = signer[i]
         if (d in skip) continue
-        if (($1 in words) && !index(founders[$1], " " d " ")) continue
+        if (($1 in words) && founder[$1] != d) continue
         repos[d]++
         if (!($1 in words)) continue
         hits[d]++; row[d, hits[d]] = $1 "\t" words[$1] "\t" name[$1]
@@ -4329,6 +4534,76 @@ if rule_on H; then
     | sort -t$'\t' -k1,1 -k4,4 > "$tmp/malware"
 fi
 nmalware=$(cut -f1 "$tmp/malware" | sort -u | wc -l)
+# Under MALWARE_PRUNE=1 a named identity is treated as a did:key: line on the deny list treats
+# one: every repo it is a DELEGATE of is pruned, a push into somebody else's repo is not. A repo
+# is spared when it is excluded, or when an identity this rule leaves out signed refs in it,
+# since that repo is one this seed vouches for. Signed, not merely named: anybody can name this
+# seed's own identity in their document. A named identity that delegates a spared repo is not
+# blocked either, because blocking a delegate stops that repo receiving their updates.
+# $tmp/malware-op: rid \t the named delegates. $tmp/malware-block: the identities to block.
+: > "$tmp/malware-op"; : > "$tmp/malware-block"; : > "$tmp/malware-nids-kept"
+if [ "$MALWARE_PRUNE" = 1 ] && [ "$nmalware" -gt 0 ]; then
+  cut -f1 "$tmp/malware" | sort -u > "$tmp/malware-nids"
+  awk -F'\t' -v kept="$tmp/malware-nids-kept" '
+    FILENAME == ARGV[1] { named[$1] = 1; next }
+    FILENAME == ARGV[2] { skip[$1] = 1; next }
+    FILENAME == ARGV[3] { excl[$1] = 1; next }
+    {
+      hit = ""
+      nd = split($7, dl, ",")
+      for (i = 1; i <= nd; i++) if (dl[i] in named) hit = hit (hit == "" ? "" : ",") dl[i]
+      if (hit == "") next
+      spared = ($1 in excl)
+      # Signed refs older than Radicle 1.7 name no repo, so copies of those a vouched identity
+      # signed can earn a repo this spare. That is accepted: a spare only leaves a repo alone.
+      ns = split($6, sg, ",")
+      for (i = 1; i <= ns; i++) if (sg[i] in skip) spared = 1
+      if (!spared) { print $1 "\t" hit; next }
+      nh = split(hit, h, ",")
+      for (i = 1; i <= nh; i++) print h[i] > kept
+    }' "$tmp/malware-nids" "$tmp/malware-vouched" "$tmp/excluded" "$tmp/lives" \
+    | sort > "$tmp/malware-op"
+  sort -u -o "$tmp/malware-nids-kept" "$tmp/malware-nids-kept"
+  grep -vxFf "$tmp/malware-nids-kept" "$tmp/malware-nids" > "$tmp/malware-block" || true
+  while IFS=$'\t' read -r rid nids; do MALWARE_OP[$rid]=$nids; done < "$tmp/malware-op"
+fi
+nmalware_block=$(wc -l < "$tmp/malware-block")
+# Blocks an earlier run made as malware that rule H now finds wrong. rad-prune does not lift a
+# block on a person, so it names each one, on every run while `rad follow` lists it:
+#   - an identity rule H names, but which delegates a repo it spares: the block stops that
+#     repo's updates.
+#   - an identity rule H clears now: a keep-list line, or a kept, pinned or our own repo it
+#     delegates.
+# A block the operator made by hand is theirs, and a deny-list identity is meant to stay
+# blocked, so neither is named. rad unfollow deletes a node's policy row,
+# whatever it holds, so it lifts the block; rad unblock is missing from older heartwood. When
+# the blocks cannot be listed, every one is named, and the run says why.
+if rule_on H && [ "$CMD" != check-mine ]; then
+  malware_blocked_before > "$tmp/malware-blocked-before"
+  sort -u "$tmp/malware-nids-kept" "$tmp/malware-vouched" \
+    | grep -xFf "$tmp/malware-blocked-before" | grep -vxFf "$tmp/deny-nids" \
+    > "$tmp/malware-unblock" || true
+  if [ -s "$tmp/malware-unblock" ]; then
+    if nodes_blocked_now > "$tmp/nodes-blocked" 2> "$tmp/follow-err"; then
+      grep -xFf "$tmp/nodes-blocked" "$tmp/malware-unblock" > "$tmp/malware-unblock-now" \
+        || true
+      mv "$tmp/malware-unblock-now" "$tmp/malware-unblock"
+    else
+      echo "# WARN: '$RAD follow' failed, so the identities below may be unblocked already:" \
+           "$(head -c 200 "$tmp/follow-err" | LC_ALL=C tr -c '[:print:]' ' ')" >&2
+    fi
+  fi
+  while IFS= read -r nid; do
+    if grep -qxF "$nid" "$tmp/malware-nids-kept"; then
+      echo "# WARN: an earlier run blocked $nid as malware, and it is a delegate of a repo" \
+           "the malware rule (H) spares, whose updates the block stops. Lift it with:" \
+           "rad unfollow $nid" >&2
+    else
+      echo "# WARN: an earlier run blocked $nid as malware, and the malware rule (H)" \
+           "clears it now. Lift that block with: rad unfollow $nid" >&2
+    fi
+  done < "$tmp/malware-unblock"
+fi
 
 : > "$tmp/repos"   # rid \t size \t mtime \t life \t birth
 for rid in "${!SIZE[@]}"; do
@@ -4433,7 +4708,8 @@ malware_evidence() {   # $1 = rid
     GIT_DIR="$d" git log --no-show-signature --encoding=UTF-8 --branches --tags \
       --format='subject: %s' -n "$MALWARE_SUBJECTS" 2>/dev/null
   } | head -c "$MALWARE_BYTES" | LC_ALL=C tr -d '\000-\010\011\013-\037\177' \
-    | LC_ALL=C sed $'s/\xc2\xc2*[\x80-\x9f][\x80-\x9f]*//g' \
+    | { iconv -f UTF-8 -t UTF-8 -c 2>/dev/null || true; } \
+    | LC_ALL=C sed "$HIDDEN_CHARS_SED" \
     | awk -v strong="$MALWARE_STRONG_WORDS" '
       function known(list, key) { return key != "" && index("|" list "|", "|" key "|") > 0 }
       {
@@ -4451,7 +4727,7 @@ malware_evidence() {   # $1 = rid
       }'
 }
 # Rows: rid, the words in its name and description, the path or subject found, and the name.
-# A repo the identity judge named is left to that review. The identities that judge leaves out
+# A repo the identity judge named is left to that judge. The identities that judge leaves out
 # keep the repos they signed refs in out of this one, and only those: anybody can name this
 # seed's own identity in their document.
 : > "$tmp/malware-repos"
@@ -4463,9 +4739,10 @@ if rule_on H; then
     [ "$isstrong" = 1 ] || continue
     [ -z "${EXCL[$rid]:-}" ] && [ -z "${DENY_RID[$rid]:-}" ] || continue
     grep -qxF "$rid" "$tmp/malware-named" && continue
+    [ -z "${MALWARE_OP[$rid]:-}" ] || continue
     skipped=0
     IFS=, read -ra signers <<<"${SIGNERS[$rid]:-}"
-    for sg in "${signers[@]}"; do grep -qxF "$sg" "$tmp/malware-skip" && skipped=1; done
+    for sg in "${signers[@]}"; do grep -qxF "$sg" "$tmp/malware-vouched" && skipped=1; done
     # A listed identity among its delegates, signed or not, has the deny list prune it.
     IFS=, read -ra dels <<<"${DELEGATES[$rid]:-}"
     for dl in "${dels[@]}"; do [ -n "${DENY_NID[$dl]:-}" ] && skipped=1; done
@@ -4473,7 +4750,7 @@ if rule_on H; then
     evidence=$(malware_evidence "$rid") || true
     [ -n "$evidence" ] || continue
     # The first commit's date is the pusher's to set, so backdating it keeps a repo off this
-    # list. That costs a review list one entry, since rule H prunes nothing.
+    # list: the direction that misses an operation, never one that names an honest repo.
     gap=$(import_gap "$rid")
     row=$(printf '%s\t%s\t%s\t%s' "$rid" "$found" "$evidence" "$rname")
     if [ -z "$gap" ]; then printf '%s\n' "$row" >> "$tmp/malware-undated"; continue; fi
@@ -4567,7 +4844,7 @@ while IFS=$'\t' read -r rid sz mt life birth; do
   [ "$mt" -ge "$fresh_cut" ] && { nfresh=$((nfresh+1)); continue; }   # in-flight fetch
   [ "$life" = 0 ] && { nnoage=$((nnoage+1)); continue; }               # unknown age: leave it
   # A check calls a repo ok only when it reached the rules below.
-  [ "$CMD" != check ] || printf '%s\n' "$rid" >> "$tmp/check-judged"
+  [ "$CMD" != check-mine ] || printf '%s\n' "$rid" >> "$tmp/check-judged"
 
   # Rules D and F measure age from here: the older of the repo's own oldest ref date and
   # the day this seed first saw it. A pusher controls the first and cannot reach the second.
@@ -4603,10 +4880,16 @@ while IFS=$'\t' read -r rid sz mt life birth; do
   is_big=0; [ "$sz" -gt "$abscut" ] && [ "$sz" -ge "$relcut" ] && is_big=1
 
   reason=""
-  # D and F come first, so a repo the corpus shows to be generated bulk, or whose own tree is
-  # nothing but media, reads as that rather than as ordinary staleness.
+  # H, D and F come first, so a repo named like a malware operation, one the corpus shows to be
+  # generated bulk, or one whose own tree is nothing but media reads as that rather than as
+  # ordinary staleness. H is first of them, so a spam batch that is also malware reads as
+  # malware.
   #
-  # They measure $origin. None of their evidence is about time, so the window is only a grace
+  # H asks for no age and no seed count: its evidence is what the repo is called and holds, and
+  # a copy of a malware toolkit nobody else seeds is no copy worth keeping. The quarantine is
+  # its undo. The guards above still apply, so a fetch in flight is not judged.
+  #
+  # D and F measure $origin. None of their evidence is about time, so the window is only a grace
   # period in case the evidence was wrong, and measured from LAST ACTIVITY that grace period
   # never expires: the spammer appends a COB to their own repos every few days and resets it.
   #
@@ -4618,7 +4901,10 @@ while IFS=$'\t' read -r rid sz mt life birth; do
   # have its row dropped later: that would hide the repo from the rules still running.
   age_from=$life
   near=""
-  if   rule_on D && [ -n "${SPAM[$rid]:-}" ] && [ "$origin" != 0 ] \
+  # The map is filled only under MALWARE_PRUNE=1.
+  if   rule_on H && [ -n "${MALWARE_OP[$rid]:-}" ]; then
+    reason="malware-op"
+  elif rule_on D && [ -n "${SPAM[$rid]:-}" ] && [ "$origin" != 0 ] \
        && [ "$origin" -lt "$spam_cut" ] && [ "$seeds" -ge "$SPAM_MIN_SEEDS" ]; then
     reason="spam-batch"; age_from=$origin
     near_age "$origin" "$spam_cut"; near_min "$seeds" "$SPAM_MIN_SEEDS" seeds
@@ -4730,7 +5016,8 @@ gib=$(awk -v b="$bytes" 'BEGIN{printf "%.2f", b/1073741824}')
 # %.0f, because mawk prints a size of 2 GiB or more as 2.1e+09, which sort -n misreads.
 # File and branch names are whatever a delegate pushed, and they reach the terminal. With
 # quotePath off, git still escapes a path's control characters, but not the C1 ones spelled
-# in UTF-8, which a ref name may hold as well, so those go.
+# in UTF-8, which a ref name may hold as well, so those go, with the others HIDDEN_CHARS_SED
+# takes out.
 check_biggest() {
   local d="$STORAGE/$1" ref short
   { GIT_DIR="$d" git for-each-ref --format='%(refname)' refs/heads refs/tags \
@@ -4744,27 +5031,43 @@ check_biggest() {
           | awk -F'\t' -v ref="$short" '{ split($1, f, " ")
                                           printf "%.0f\t%s\t%s\n", f[4], ref, $2 }'
       done \
-    | LC_ALL=C sed $'s/\xc2\xc2*[\x80-\x9f][\x80-\x9f]*//g' \
+    | { iconv -f UTF-8 -t UTF-8 -c 2>/dev/null || true; } \
+    | LC_ALL=C sed "$HIDDEN_CHARS_SED" \
     | sort -t$'\t' -k1,1nr | awk -F'\t' '!seen[$3]++ && n++ < 5'
 }
 check_pruned=0
+check_flagged=0
 check_report() {
   local rid name reason nrepos
-  local -A VERDICT=() JUDGED=() UNREAD=()
+  local -A VERDICT=() JUDGED=() UNREAD=() FLAGGED=()
   while IFS=$'\t' read -r rid _ _ _ reason _; do VERDICT[$rid]=$reason; done < "$tmp/plan.sorted"
   while IFS= read -r rid; do JUDGED[$rid]=1; done < "$tmp/check-judged"
   while IFS=$'\t' read -r rid _; do UNREAD[$rid]=1; done < "$tmp/media-fail"
+  while IFS=$'\t' read -r rid _; do FLAGGED[$rid]=1; done \
+    < <(cat "$tmp/malware-repos" "$tmp/malware-undated")
   nrepos=$(wc -l < "$tmp/check-repos")
   if [ "$nrepos" = 0 ]; then
     echo "# Nothing to check: no public repo in $STORAGE names this node's identity" \
          "($OUR_NID) as a delegate."
     return 0
   fi
-  echo "# $nrepos public repo(s) of yours, judged by the junk-name (A), spam-batch (D) and" \
-       "media (F) rules as a seed would judge them once old enough"
+  echo "# $nrepos public repo(s) of yours, judged by the junk-name (A), spam-batch (D)," \
+       "media (F) and malware (H) rules as a seed would judge them once old enough"
   while IFS= read -r rid; do
     name=${NAME[$rid]:-(?)}
     reason=${VERDICT[$rid]:-}
+    # A seed never prunes a repo for these words alone but lists it for its operator, who may
+    # add it to the deny list. This tells the publisher.
+    if [ -z "$reason" ] && [ -n "${FLAGGED[$rid]:-}" ]; then
+      check_flagged=$((check_flagged + 1))
+      printf 'flagged      %s  rad:%s  as possible malware\n' "$name" "$rid"
+      echo "  Its name or description, and a file path or commit subject, use a word such as" \
+           "stealer, keylogger or botnet. A seed lists it for its operator to read, and" \
+           "prunes it only if the operator adds it to the deny list."
+      echo "  Fix: if it is not malware, name and describe it without these words, or ask" \
+           "the seeds you rely on to keep it."
+      continue
+    fi
     if [ -z "$reason" ] && [ -n "${UNREAD[$rid]:-}" ]; then
       printf 'unjudged     %s  rad:%s\n' "$name" "$rid"
       echo "  The media rule (F) could not judge it: it has more refs, issue and patch ops or" \
@@ -4782,6 +5085,9 @@ check_report() {
     fi
     check_pruned=$((check_pruned + 1))
     printf 'would-prune  %s  rad:%s  as %s\n' "$name" "$rid" "$reason"
+    [ -z "${FLAGGED[$rid]:-}" ] \
+      || echo "  Its name or description, and a file path or commit subject, also use a" \
+              "word such as stealer, keylogger or botnet, so seeds list it for review."
     case $reason in
       media-dump)
         echo "  It holds images, video, audio or archives, no source or build file, and" \
@@ -4801,6 +5107,12 @@ check_report() {
         echo "  Its name and description follow one template that $SPAM_MIN_BATCH or more" \
              "repos on this node share."
         echo "  Fix: give it a name and a description of its own." ;;
+      malware-op)
+        echo "  An identity among its delegates founded repos named or described like a malware" \
+             "operation, with words such as stealer, botnet or panel. A seed that prunes" \
+             "malware (MALWARE_PRUNE=1) prunes every repo that identity is a delegate of."
+        echo "  Fix: if it is not malware, name and describe those repos without these words," \
+             "or ask the seeds you rely on to keep it." ;;
       junk-name|junk-id)
         if [ "$reason" = junk-id ]; then
           echo "  Its name is nothing but a random id."
@@ -4826,13 +5138,13 @@ check_report() {
     esac
   done < <(while IFS= read -r rid; do printf '%s\t%s\n' "${NAME[$rid]:-}" "$rid"; done \
              < "$tmp/check-repos" | sort | cut -f2)
-  echo "# Not checked: the size (B), stale (C), parasite-peer (G) and malware (H) rules," \
+  echo "# Not checked: the size (B), stale (C) and parasite-peer (G) rules," \
        "and the deny lists seed operators keep. A seed also looks for media batches across" \
        "every repo it holds, so it can find one this check misses."
 }
-if [ "$CMD" = check ]; then
+if [ "$CMD" = check-mine ]; then
   check_report >&3
-  [ "$check_pruned" = 0 ] || exit 6
+  [ $((check_pruned + check_flagged)) = 0 ] || exit 6
   exit 0
 fi
 
@@ -4927,6 +5239,7 @@ fi
 RULE_OF_REASON="junk-name:A junk-id:A size-outlier:B stale:C"
 RULE_OF_REASON="$RULE_OF_REASON spam-batch:D spam-family:D"
 RULE_OF_REASON="$RULE_OF_REASON media-dump:F media-ratio:F media-batch:F"
+RULE_OF_REASON="$RULE_OF_REASON malware-op:H"
 # rule \t how many verdicts that rule has in the file named by $1, one line per rule.
 count_by_rule() {
   awk -F'\t' -v map="$RULE_OF_REASON" '
@@ -4985,11 +5298,13 @@ count_by_rule "$tmp/plan.new-verdicts" > "$tmp/ratchet-planned"
 # The past leaves out every repeat, or one undo wave pruned again weekly would set a usual that
 # lets the next real wave through. Each row is kept only in the oldest log that names its
 # repo: log name \t the row. The glob sorts the logs oldest first, by the time in their names.
+# A row that does not open with a repo id, such as a blocked-peer or blocked-malware row, is
+# a block, not a prune.
 first_prunes() {
   local f logs=()
   for f in "$AUDIT_DIR"/prune-*.log; do [ -r "$f" ] && logs+=("$f"); done
   [ ${#logs[@]} -gt 0 ] || return 0
-  awk -F'\t' '!/^#/ && NF >= 5 && !($1 in seen) {
+  awk -F'\t' '$1 ~ /^z[0-9A-Za-z]+$/ && NF >= 5 && !($1 in seen) {
                  seen[$1] = 1; n = split(FILENAME, p, "/"); print p[n] "\t" $0 }' "${logs[@]}"
 }
 first_prunes > "$tmp/ratchet-firsts"
@@ -5167,9 +5482,10 @@ if [ "$nparasite" -gt 0 ]; then
   echo "#   Or --block-peers, which asks for each peer; add --yes to answer for them."
 fi
 
-# Rule H judges an identity, and a person decides what happens to it: the deny list both prunes
-# its repos and blocks it, so the review points there.
-if [ "$nmalware" -gt 0 ]; then
+# Rule H judges an identity. By default a person decides what happens to it: the deny list both
+# prunes its repos and blocks it, so the review points there. Under MALWARE_PRUNE=1 the plan
+# above holds its repos, and what is left to say is how to block it or clear it.
+if [ "$nmalware" -gt 0 ] && [ "$MALWARE_PRUNE" = 0 ]; then
   echo
   echo "# REVIEW, MALWARE OPERATIONS: $nmalware identity(s), from the malware rule (H)." \
        "Nothing here is pruned or blocked."
@@ -5192,13 +5508,37 @@ if [ "$nmalware" -gt 0 ]; then
   echo "#   ones, and blocks the identity unless it is a delegate of a private repo. The same"
   echo "#   line in $KEEP_FILE stops the identity being named and keeps none of its repos:"
   cut -f1 "$tmp/malware" | sort -u | sed 's/^/#     did:key:/'
+elif [ "$nmalware" -gt 0 ]; then
+  echo
+  echo "# MALWARE OPERATIONS: $nmalware identity(s), from the malware rule (H). The repos they" \
+       "are a delegate of are in the plan as malware-op, except one that is pinned, private," \
+       "our own, kept, signed by an identity this seed vouches for, still arriving, or undated."
+  for nid in $(cut -f1 "$tmp/malware" | sort -u); do
+    grep "^$nid"$'\t' "$tmp/malware" > "$tmp/malware-one"
+    IFS=$'\t' read -r _ nhit nall _ < "$tmp/malware-one"
+    printf '#   %s: %d of its %d repos match:\n' "$nid" "$nhit" "$nall"
+    head -n "$top_evidence" "$tmp/malware-one" \
+      | while IFS=$'\t' read -r _ _ _ rid found rname; do
+          printf '#       rad:%s  # %s (%s)\n' "$rid" "$rname" "$found"
+        done
+    if [ "$nhit" -gt "$top_evidence" ]; then
+      echo "#       ...and $((nhit - top_evidence)) more (PLAN_FULL=1 lists them)"
+    fi
+  done
+  echo "#   last-run/H-malware-identities.tsv lists every matching repo. An identity's"
+  echo "#   did:key: line in $KEEP_FILE clears it of the malware rule (H)."
+  if [ "$nmalware_block" -gt 0 ]; then
+    echo "#   --apply --block-peers blocks these once it prunes their repos, asking for each; or"
+    echo "#   run whichever you agree with:"
+    sed 's/^/#     rad block /' "$tmp/malware-block"
+  fi
 fi
 # Each line is the one to act on: the deny list and the keep list both read what follows a #
 # as a comment, so the evidence rides along when a line is copied.
 if [ "$nmalware_repos" -gt 0 ]; then
   echo
-  echo "# REVIEW, MALWARE REPOS: $nmalware_repos repo(s), from the malware rule (H). Nothing here is pruned" \
-       "or blocked."
+  echo "# REVIEW, MALWARE REPOS: $nmalware_repos repo(s) the malware rule (H) named and left" \
+       "in place."
   echo "#   a strong word in the name or description, one in a file path or commit subject,"
   echo "#   and a history that starts with the repo; read them before acting. Adding a line"
   echo "#   below to $DENY_FILE prunes and blocks its repo. In $KEEP_FILE the line stops the"
@@ -5268,15 +5608,26 @@ if [ "$lr_ok" = 1 ]; then
             "are not a delegate of, with the evidence. Only --block-peers blocks them."
     printf '# peer_nid\trepos_sharing_blob\trepos_touched\tmedia_bytes\ttext_bytes\tblob\n'
     cat "$tmp/parasites"; } > "$staging/G-parasite-peers.tsv" 2>/dev/null || lr_ok=0
-  # A person decides on these, and the terminal shows only the first few repos of each.
+  # The terminal shows only the first few repos of each, and these are what a verdict rests on.
+  if [ "$MALWARE_PRUNE" = 1 ]; then
+    h_ids="Their repos are in plan.tsv as malware-op."
+  else
+    h_ids="Nothing here is pruned or blocked unless you add it to deny.txt."
+  fi
   { lr_head "Identities the malware rule (H) named, one row per repo of theirs that" \
-            "matched. Nothing here is pruned or blocked unless you add it to deny.txt."
+            "matched. $h_ids"
     printf '# nid\trepos_hit\trepos_signed\trid\twords\tname\n'
     cat "$tmp/malware"; } > "$staging/H-malware-identities.tsv" 2>/dev/null || lr_ok=0
   { lr_head "Single repos the malware rule (H) named, with the words it found and where." \
-            "Nothing here is pruned unless you add it to deny.txt."
+            "None is pruned unless you add its rad: line to deny.txt."
     printf '# rid\twords\tevidence\tname\n'
     cat "$tmp/malware-repos"; } > "$staging/H-malware-repos.tsv" 2>/dev/null || lr_ok=0
+  # A malware-op row's own name may match nothing, so the identity is all that explains it.
+  { lr_head "Repos in the plan as malware-op, with the named identities among their delegates."
+    printf '# rid\tidentities\n'
+    awk -F'\t' 'FILENAME == ARGV[1] { if ($5 == "malware-op") planned[$1] = 1; next }
+                 $1 in planned' "$tmp/plan.sorted" "$tmp/malware-op"; } \
+    > "$staging/H-malware-op-repos.tsv" 2>/dev/null || lr_ok=0
   # The repos rule F could not read. Without them the run's own warning names a count and
   # nothing to go and look at.
   { lr_head "Repos the media rule (F) could not check: unreadable, over MEDIA_MAX_REFS refs" \
@@ -5372,6 +5723,10 @@ prune_delegates() {
   echo "$line"
 }
 
+# Blocks this run meant to make and could not. Any one makes the run exit 1, since somebody it
+# meant to block is not.
+block_failed=0
+
 # The deny list's ids that no repo in storage stands for: repo ids not fetched yet, and
 # identities. Blocked now, so the node never fetches the repo and never follows the identity.
 # A repo id still in storage is left to the prune, and one the prune moved out was blocked by
@@ -5386,19 +5741,19 @@ deny_block_ahead() {
     grep -qxF "$id" "$tmp/excluded" && continue
     said=$("$RAD" block "rad:$id" 2>"$tmp/block-err") \
       || { echo "# WARN: could not block denied repo rad:$id: $(head -1 "$tmp/block-err")" >&2
-           continue; }
+           block_failed=$((block_failed+1)); continue; }
     [ -n "$said" ] || continue
     open_audit; printf 'blocked-denied\trad:%s\n' "$id" >> "$audit"
     nblocked=$((nblocked+1))
   done < "$tmp/deny-rids"
   while IFS= read -r id; do
     if grep -qxF "$id" "$tmp/deny-nids-kept"; then
-      echo "# WARN: not blocking $id, a delegate of a kept repo; rad unblock it if blocked." >&2
+      echo "# WARN: not blocking $id, a delegate of a kept repo; rad unfollow it if blocked." >&2
       continue
     fi
     said=$("$RAD" block "$id" 2>"$tmp/block-err") \
       || { echo "# WARN: could not block denied identity $id: $(head -1 "$tmp/block-err")" >&2
-           continue; }
+           block_failed=$((block_failed+1)); continue; }
     [ -n "$said" ] || continue
     open_audit; printf 'blocked-denied\t%s\n' "$id" >> "$audit"
     nblocked=$((nblocked+1))
@@ -5407,14 +5762,17 @@ deny_block_ahead() {
   return 0
 }
 
-# Rule G's action. A block is permanent, it is invisible to the person blocked, and it applies
-# to every repo at once, so rule G never blocks without a human in the room: --block-peers
-# refuses outright when nothing can be asked, and asks again per peer.
+# The blocks of rules G and H. A block is permanent, it is invisible to the person blocked, and
+# it applies to every repo at once, so neither rule blocks without a human in the room:
+# --block-peers refuses outright when nothing can be asked, and asks again per peer.
 # Blocking is what makes it stick, since the node filters every namespaced ref it receives
 # through the block list whatever the seeding scope is, so refs dropped here do not come back.
 # Dropping them frees no disk until git gc runs, which this tool does not do, so none of it is
-# counted as reclaimed.
-if [ "$BLOCK_PEERS" = 1 ] && [ "$nparasite" -gt 0 ]; then
+# counted as reclaimed. Rule G's peers are blocked here, rule H's identities only by an --apply
+# run (see malware_block_named).
+hpending=0
+[ "$APPLY" = 0 ] || hpending=$nmalware_block
+if [ "$BLOCK_PEERS" = 1 ] && [ $((nparasite + hpending)) -gt 0 ]; then
   # --yes stands in for every answer, which is what makes this usable from cron. Blocking then
   # happens with nobody in the room, so it takes both flags: --block-peers to look, --yes to
   # act on what it found. Without --yes the answers come in on fd 9, opened once here; reading
@@ -5428,7 +5786,8 @@ if [ "$BLOCK_PEERS" = 1 ] && [ "$nparasite" -gt 0 ]; then
   if [ "$asked" = 0 ]; then
     echo "# --block-peers has nobody to ask: no terminal, and no --yes standing in." >&2
     echo "# Nobody was blocked. The commands are listed above; run them yourself." >&2
-  else
+  fi
+  if [ "$asked" = 1 ] && [ "$nparasite" -gt 0 ]; then
     while IFS=$'\t' read -r nid widest _npeerrepos mb ob oid; do
       if [ "$YES" = 1 ]; then
         printf '# Blocking %s (--yes): it put %s in %s repos it is not a delegate of\n' \
@@ -5441,7 +5800,8 @@ if [ "$BLOCK_PEERS" = 1 ] && [ "$nparasite" -gt 0 ]; then
       fi
       case "$reply" in [yY]) ;; *) echo "#   skipped $nid"; continue ;; esac
       "$RAD" block "$nid" >/dev/null 2>&1 \
-        || { echo "#   WARN block failed, leaving refs alone: $nid" >&2; continue; }
+        || { echo "#   WARN block failed, leaving refs alone: $nid" >&2
+             block_failed=$((block_failed+1)); continue; }
       blocked=$((blocked+1))
       open_audit
       # The evidence goes in the audit log beside the block, because a standing judgement
@@ -5466,6 +5826,64 @@ if [ "$BLOCK_PEERS" = 1 ] && [ "$nparasite" -gt 0 ]; then
     echo "# blocked $blocked of $nparasite peer(s); run git gc to reclaim their objects."
   fi
 fi
+# Rule H's identities, under MALWARE_PRUNE=1 and --block-peers. Called by an --apply run once it
+# is past the runaway caps and the ratchet, and it blocks only an identity with a repo still in
+# the plan as malware-op: the block goes with pruning what the identity is named for, so a run
+# that holds those repos back blocks nobody. What they push into other repos is no evidence, so
+# the block alone is the act here.
+malware_block_named() {
+  local nid nhit nall words why reply nnow said hblocked=0 halready=0
+  [ "$BLOCK_PEERS" = 1 ] && [ "$nmalware_block" -gt 0 ] && [ "${asked:-0}" = 1 ] || return 0
+  awk -F'\t' 'FILENAME == ARGV[1] { if ($5 == "malware-op") planned[$1] = 1; next }
+              $1 in planned { n = split($2, d, ","); for (i = 1; i <= n; i++) print d[i] }' \
+    "$tmp/plan.sorted" "$tmp/malware-op" | sort -u \
+    | grep -xFf - "$tmp/malware-block" > "$tmp/malware-block-now" || true
+  nnow=$(wc -l < "$tmp/malware-block-now")
+  [ "$nnow" = "$nmalware_block" ] \
+    || echo "# not blocking $((nmalware_block - nnow)) identity(s) the malware rule (H)" \
+            "named: this run prunes none of their repos."
+  [ "$nnow" -gt 0 ] || return 0
+  while IFS= read -r nid; do
+    read -r nhit nall words < <(awk -F'\t' -v n="$nid" '
+        $1 == n { hit = $2; all = $3; m = split($5, w, ",")
+                  for (i = 1; i <= m; i++) if (!(w[i] in seen)) {
+                    seen[w[i]] = 1; words = words (words == "" ? "" : ",") w[i] } }
+        END { print hit, all, words }' "$tmp/malware")
+    why="$nhit of its $nall repos read like a malware operation ($words)"
+    if [ "$YES" = 1 ]; then
+      printf '# Blocking %s (--yes): %s\n' "$nid" "$why"
+      reply=y
+    else
+      printf '# Block %s? %s [y/N] ' "$nid" "$why"
+      reply=""; IFS= read -r reply <&9 || reply=""
+    fi
+    # Later runs no longer name an identity whose repos are gone, so a block not made here is
+    # never asked for again.
+    case "$reply" in
+      [yY]) ;;
+      *) echo "#   skipped $nid; no later run asks again. To block it: rad block $nid"
+         continue ;;
+    esac
+    said=$("$RAD" block "$nid" 2>/dev/null) \
+      || { echo "# WARN: could not block $nid, and no later run will try again." \
+                "Block it yourself: rad block $nid" >&2
+           block_failed=$((block_failed+1)); continue; }
+    # rad block prints a line only when it changes the policy. A node blocked already, by hand
+    # or by the deny list, gets no blocked-malware row, which would later read as this tool's
+    # block and advise lifting it.
+    [ -n "$said" ] || { halready=$((halready+1)); continue; }
+    hblocked=$((hblocked+1))
+    open_audit
+    printf 'blocked-malware\t%s\trepos_hit=%s\trepos_signed=%s\twords=%s\n' \
+           "$nid" "$nhit" "$nall" "$words" >> "$audit"
+  done < "$tmp/malware-block-now"
+  if [ "$halready" = 0 ]; then
+    echo "# blocked $hblocked of $nnow identity(s) the malware rule (H) named."
+  else
+    echo "# blocked $hblocked of $nnow identity(s) the malware rule (H) named;" \
+         "$halready of them already blocked."
+  fi
+}
 
 if [ "$APPLY" = 0 ]; then
   if [ "$blocked" -gt 0 ]; then
@@ -5473,6 +5891,7 @@ if [ "$APPLY" = 0 ]; then
   else
     echo "# DRY-RUN: nothing in storage changed. Re-run with --apply to execute."
   fi
+  [ "$block_failed" = 0 ] || exit 1
   exit 0
 fi
 
@@ -5504,6 +5923,7 @@ if [ "$nplan" = 0 ]; then
      && ask "# Apply now? unblock $nunblock repo(s) an earlier run blocked [y/N] "; then
     case "$reply" in
       [yY]|[yY][eE][sS]) echo "# confirmed." ;;
+      # Not 1 for a failed rule G block above: the person who said no saw its WARN.
       *)                 echo "# aborted; no block was lifted, and the quarantine was left as it is."
                          exit 0 ;;
     esac
@@ -5512,9 +5932,11 @@ if [ "$nplan" = 0 ]; then
   quar_purge_expired
   quar_purge_all_if_critical
   deny_block_ahead
+  malware_block_named
   echo "# nothing to prune"
   # A lift that failed leaves a repo blocked that should not be, which wants a person.
   [ "$undo_failed" = 0 ] || exit 1
+  [ "$block_failed" = 0 ] || exit 1
   exit 0
 fi
 # A yes to this prompt is the human sign-off that lets a run bypass the ratchet and the runaway
@@ -5535,6 +5957,7 @@ if [ "$YES" = 0 ]; then
   if ask "$prompt"; then
     case "$reply" in
       [yY]|[yY][eE][sS]) CONFIRMED=1; echo "# confirmed." ;;
+      # Not 1 for a failed rule G block above: the person who said no saw its WARN.
       *)                 echo "# aborted; no repos were pruned or unblocked."; exit 0 ;;
     esac
   fi
@@ -5583,6 +6006,7 @@ if [ "$FORCE" = 0 ] && [ "$CONFIRMED" = 0 ]; then
          "(MAX_PRUNE_COUNT=$MAX_PRUNE_COUNT, MAX_PRUNE_GB=$MAX_PRUNE_GB)." \
          "Nothing was pruned." >&2
     echo "# Review it, then re-run with --force (unattended), or confirm interactively." >&2
+    # Also covers a failed rule G block above, since 3 is not 0 either.
     exit 3
   fi
 fi
@@ -5600,8 +6024,10 @@ quar_purge_all_if_critical
 
 if [ "$nplan" = 0 ]; then
   deny_block_ahead
+  malware_block_named
   echo "# nothing pruned: every verdict in the plan was held back (see HELD BACK above)." >&2
   [ "$undo_failed" = 0 ] || exit 1
+  [ "$block_failed" = 0 ] || exit 1
   exit 4
 fi
 
@@ -5633,6 +6059,11 @@ open_audit
   fi
   # Which line of the deny list each denied repo was pruned for, so one bad line can be traced.
   sed 's/^/# denied: /; s/\t/ /' "$tmp/deny-why"
+  # And which named identities each malware-op repo was pruned for, since its own name may
+  # match nothing. A repo the ratchet held is not in this run's plan.
+  awk -F'\t' 'FILENAME == ARGV[1] { if ($5 == "malware-op") planned[$1] = 1; next }
+              $1 in planned { print "# malware-op: " $1 " " $2 }' \
+    "$tmp/plan.sorted" "$tmp/malware-op"
   # And how much of each copy is listed files, and from which source. A copy the ratchet held
   # is not in this run's plan.
   awk -F'\t' -v plan="$tmp/plan.sorted" '
@@ -5772,6 +6203,7 @@ fi
 }
 
 deny_block_ahead
+malware_block_named
 
 if [ "$RESTART" = 1 ]; then
   echo "# restarting $SERVICE (clears the stale inventory-announce warning)..."
@@ -5823,11 +6255,12 @@ fi
           "inventory-announce log warning."
 [ "$nheld" = 0 ] \
   || echo "# $nheld repo(s) held back are still in storage; see HELD BACK above." >&2
-# A repo whose removal failed is blocked and still in storage, and one whose lift failed is
-# blocked when it should not be. Either wants a person sooner than a held-back rule does, so
-# it wins over exit 4.
+# A repo whose removal failed is blocked and still in storage, one whose lift failed is
+# blocked when it should not be, and a peer whose block failed is not blocked when it should
+# be. Each wants a person sooner than a held-back rule does, so it wins over exit 4.
 [ "$deleted" = "$nplan" ] || exit 1
 [ "$undo_failed" = 0 ] || exit 1
+[ "$block_failed" = 0 ] || exit 1
 # Non-zero so whatever runs this unattended sees that verdicts are waiting on a human. Not 3,
 # which says the caps stopped the whole run and nothing was pruned.
 [ "$nheld" = 0 ] || exit 4
