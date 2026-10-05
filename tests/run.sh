@@ -1,17 +1,15 @@
 #!/usr/bin/env bash
 #
-# Test suite for radicle-seed-prune. Zero external deps beyond bash + git + coreutils:
-# it builds a throwaway Radicle-home fixture (fake `rad` stub on PATH + real bare git repos
-# with controlled activity dates and sizes) and runs the real script against it.
+# Test suite for radicle-seed-prune. Builds a throwaway Radicle home (a fake `rad` on PATH,
+# real bare git repos with set dates and sizes) and runs the real script against it.
 #
 #   tests/run.sh                 everything, in order, in one process
 #   tests/run.sh -k quarantine   only the sections that mention "quarantine"
 #   tests/run.sh -n 7            only the 7th section, in a process of its own
 #   tests/run.sh -e              every section, each in a process of its own
 #
-# A section is everything from one fixture rebuild to the next, and it must set up everything
-# it reads: a whole run takes minutes and one section takes seconds, so a section that only
-# passes after the one above it has run takes that loop away from whoever comes next.
+# A section runs from one fixture rebuild to the next and must set up everything it reads,
+# because it is also run on its own.
 #
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -19,8 +17,7 @@ SCRIPT="$HERE/../rad-prune"
 PASS=0; FAIL=0
 ok(){ PASS=$((PASS+1)); printf 'ok   - %s\n' "$1"; }
 no(){ FAIL=$((FAIL+1)); printf 'FAIL - %s\n' "$1"; }
-# Neither pass nor fail: the machine cannot run this one. It still prints, so a
-# permanently skipped check is visible rather than quietly absent.
+# This machine cannot run the check. Printed, so a check skipped for good stays visible.
 skip(){ printf 'skip - %s\n' "$1"; }
 # true when plan text $1 holds a row for rid $2
 has(){ grep -qE "^$2 " <<<"$1"; }
@@ -110,27 +107,22 @@ zpara2\tparahost2\t2\tpublic\t0\t60\t100\tanother repo that peer posts into
 zpara3\tparahost3\t2\tpublic\t0\t60\t100\ta third repo that peer posts into
 zparaown\tcontribown\t2\tpublic\t0\t60\t100\ta repo the contributor delegates'
 
-# Rule D is decided by the CORPUS, so it needs whole batches, and the batches below are a
-# controlled experiment: all five are 9 repos, the same age, the same size, and a name skeleton
-# with a variable slot. They differ in exactly one variable each, so a failure names its own
-# cause.
+# Rule D judges whole batches. Each batch is 9 repos of one age, size and name skeleton, and
+# each differs from zspam in one variable, so a failure names its own cause.
 #   zspam*   name has a random-id slot AND all 9 share one description template  -> pruned
 #   zdecoy*  same name shape, but every repo carries its OWN real description    -> kept
 #   zenum*   descriptions agree, but the slot is an enumeration, by default no id -> kept
 #   znodesc* random-id slot, but no descriptions at all, so only ONE signal      -> kept
-#   zdate*   agreeing descriptions and a 6+ digit slot, but no LETTER in it, so
-#            it is a date/sequence rather than a random id                        -> kept
-# 90 days old: too young for rules A and C, too small for B, so a hit on any of them names
-# rule D as its cause.
+#   zdate*   descriptions agree, but a 6+ digit slot with no letter is a date    -> kept
+# 90 days old: too young for rules A and C, too small for B, so any hit is rule D's.
 build_batches(){
   local i rows=""
   local hex=(- 33ed7115 6cf239e8 28036e03 1d9ce82f e9a0b26f
              df68129a 944f76e9 283bed8c 9e1437e9)
-  # a mirror farm's descriptions differ in WORDS, the way real ones do, not merely in a number
+  # a mirror farm's descriptions differ in words, as real ones do, not only in a number
   local word=(- gyroscope barometer thermometer altimeter magnetometer
                hygrometer photodiode tachometer voltmeter)
-  # rids index from 1: 0 is not in the base58 alphabet, so a "zspam0" would be correctly
-  # rejected as a malformed rid and the batch would come up one member short.
+  # rids start at 1: 0 is not base58, so a "zspam0" would be rejected as malformed.
   for i in $(seq 1 9); do
     rows+="zspam$i\tflatten-$i-${hex[$i]}\t5\tpublic\t0\t90\t2000"
     rows+="\tFlatten a nested array. Variant $i.\n"
@@ -144,8 +136,7 @@ build_batches(){
   rows+="\tFlatten a nested array. Variant 10.\n"
   rows+="zspamfresh\tflatten-11-7d3a9c22\t5\tpublic\t0\t90\t2000"
   rows+="\tFlatten a nested array. Variant 11.\n"
-  # a twelfth member whose refs are one day old, used by the first-seen ledger: on ref dates
-  # alone it is too young for rule D, and only the ledger's older date reaches it
+  # refs one day old: too young for rule D on ref dates, so only the ledger's date reaches it
   rows+="zspamaged\tflatten-13-8f2a4d61\t5\tpublic\t0\t1\t2000"
   rows+="\tFlatten a nested array. Variant 13.\n"
   printf '%b' "$rows"
@@ -155,9 +146,8 @@ NREPOS=130
 
 # A peer that pushes into zmediapeer and zvictimten without being a delegate of either.
 STRANGER_NID=zSTRANGERxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-# Radicle signs each issue and patch op with its author's ed25519 key, over the op's tree id,
-# and rule F counts an op only once that signature checks out. So the repos whose delegates
-# write ops get a real key: a throwaway made for this suite, and the node id it spells.
+# Rule F counts an op only once its author's ed25519 signature over the op's tree id checks
+# out, so repos whose delegates write ops get a throwaway key and the node id it spells.
 COB_KEY=$HERE/fixtures/throwaway-test-key.pem
 COB_NID=z6Mkei8KLNDCqpfdk9KbvUNQJ4YrTep1EWMJqjTsKWw1pR4X
 # The node id this fixture hands out as a delegate of $1. It has to survive the script's base58
@@ -170,10 +160,9 @@ dlg(){
   printf '%s' "$n"
   local i=${#n}; while [ "$i" -lt 45 ]; do printf x; i=$((i+1)); done
 }
-# Rewrites commit $1 of the repo at $GIT_DIR as an op COB_KEY signed, the way Radicle signs
-# one: ed25519 over the 20 bytes of the tree id, in an SSH signature block under the "gpgsig"
-# header, with the author's node id as the email. Prints the new commit's id. $2 and $3 sign
-# with another key, and the node id it spells.
+# Re-signs commit $1 of $GIT_DIR as a Radicle op: ed25519 over the 20-byte tree id, an SSH
+# signature under "gpgsig", the node id as email. Prints the new commit id. $2 and $3
+# sign with another key and its node id.
 hex(){ od -An -tx1 -v | tr -d ' \n'; }
 u32(){ printf '%08x' "$1"; }
 sshstr(){ local h; h=$(printf '%s' "$1" | hex); printf '%s%s' "$(u32 $(( ${#h} / 2 )))" "$h"; }
@@ -234,27 +223,22 @@ bomb_tree(){
   done
   printf '%s\n' "$t"
 }
-# Replaces one ref of $rid with a tree holding exactly the given "name:bytes" files, which is
-# how rule F's fixtures control what a repo tracks. Random bytes, so nothing compresses to a
-# different size than asked for, and the force-push leaves the manifest loop's own commit
-# UNREACHABLE: a rule F that read the object store instead of the tree would still see it and
-# reach a different verdict.
+# Replaces one ref of $rid with a tree of exactly the given "name:bytes" files. Random bytes
+# keep sizes exact. The force-push leaves the manifest loop's commit unreachable, so a
+# rule F reading the object store instead of the tree would reach another verdict.
 e_tree(){
   local rid=$1 days=$2 ref=$3; shift 3
   local w spec; w=$(mktemp -d -p "$ROOT")
   git -C "$w" init -q -b master
   git -C "$w" config user.email a@b; git -C "$w" config user.name a
-  # Build on what the ref already holds, so a second call to the same ref adds a commit the way
-  # a COB gains an op. Each call still declares the WHOLE tree: files it does not list are gone
-  # from that commit, which is how an attachment ends up only in history.
+  # Builds on what the ref holds, so a second call adds a commit as a COB gains an op. Each
+  # call lists the whole tree; files left out stay only in history.
   if GIT_DIR="$STORAGE/$rid" git rev-parse --verify -q "$ref" >/dev/null 2>&1; then
     git -C "$w" fetch -q "$STORAGE/$rid" "$ref" && git -C "$w" reset -q --hard FETCH_HEAD
     find "$w" -maxdepth 1 -type f -delete
   fi
-  # "name:bytes" is random filler; the kind suffix writes a real file header instead, which is
-  # what the content sniff recognises. Without one, a renamed video is indistinguishable from
-  # any other unknown file and the test would be asserting the wrong thing. "same" pads with
-  # zeros rather than noise, so two repos given it end up holding the very same blob.
+  # "name:bytes" is random filler; a kind suffix writes a real file header for the content
+  # sniff to recognise. "same" pads with zeros, so two repos given it hold one blob.
   local name rest bytes kind
   for spec in "$@"; do
     name=${spec%%:*}; rest=${spec#*:}; bytes=${rest%%:*}
@@ -301,10 +285,8 @@ e_tree(){
   touch -d "10 days ago" "$STORAGE/$rid"
 }
 
-# Building the fixture below is about 700 git invocations, and the suite wants a clean one
-# once per section, which would be most of its runtime. It is built once and kept as a
-# template; every later call throws the working copy away and restores it from that template,
-# which is a copy of a few MB, and a reflink on a filesystem that has them.
+# The fixture costs about 700 git calls, so it is built once as a template and each section
+# restores a copy of it (a few MB, a reflink where the filesystem has them).
 build_fixture(){
   [ -n "${ROOT:-}" ] || { ROOT=$(mktemp -d); _fixture_env
                           trap 'rm -rf "$ROOT" 2>/dev/null' EXIT ; }
@@ -317,9 +299,8 @@ build_fixture(){
       TEMPLATE=$(cached_template) || exit 3         # kept between runs, so never deleted here
     fi
   fi
-  # A test that left a directory unreadable would otherwise leave it standing here, and the
-  # fixture that follows would be the previous test's leftovers rather than a fresh one. ROOT
-  # is the same directory for the whole process now, so a failure to clear it has to stop it.
+  # Clear the last test's ROOT, unreadable dirs included, or the next fixture is its
+  # leftovers. ROOT is reused for the whole process, so failing to clear it aborts.
   if [ -e "$ROOT" ]; then
     chmod -R u+rwX "$ROOT" 2>/dev/null
     rm -rf "$ROOT"
@@ -329,28 +310,22 @@ build_fixture(){
   cp -a --reflink=auto "$TEMPLATE/." "$ROOT/"
 }
 
-# Building the fixture takes about eighteen seconds, which is most of what running a single
-# section costs, and nothing about it changes between two runs of the same suite. It is kept
-# under TMPDIR between runs, keyed by the part of this file that builds it plus the rad stub,
-# so editing a test reuses it and editing the fixture does not. Every date inside it is
-# relative to the moment it was built, so it is thrown away after an hour rather than left to
-# drift towards the day thresholds the tests sit near. RSP_FIXTURE_CACHE=0 turns it off.
+# Building takes about 18s, most of what one section costs. The template is kept under
+# TMPDIR, keyed by this file's header and the rad stub, so editing a test reuses it. Its
+# dates are relative to build time, so it expires after an hour, before they drift past
+# the thresholds tests sit near. RSP_FIXTURE_CACHE=0 turns it off.
 cached_template(){
   local key dir staging old
   key=$( { sed -n '1,/^# ---- end of header/p' "$0"; cat "$HERE/rad-stub"; } \
          | sha1sum | cut -c1-12 )
   dir="${TMPDIR:-/tmp}/rsp-fixture-$(id -u)-$key"      # never another user's, on a shared /tmp
-  # An hour old is still today's dates; older than that and the day thresholds the tests sit
-  # near have moved under it.
   if [ -d "$dir" ] && [ -z "$(find "$dir" -maxdepth 0 -mmin +60)" ]; then
     printf '%s\n' "$dir"; return 0
   fi
   _build_fixture >&2
-  # Filled beside the target and renamed onto it, so a second suite running at the same time
-  # sees either the old template or the new one, never half of one. The old one is renamed away
-  # rather than deleted where it stands: `rm -rf` on a whole fixture leaves the path missing
-  # for as long as the walk takes, and a suite copying from it in that window gets a fixture
-  # with no storage in it, which fails as a handful of unrelated tests.
+  # Filled beside the target and renamed onto it, so a concurrent suite sees the old or the
+  # new template, never half. The old one is renamed away first: `rm -rf` in place leaves
+  # a window where a copy gets no storage, which fails as unrelated tests.
   staging=$(mktemp -d -p "$(dirname "$dir")")
   cp -a --reflink=auto "$ROOT/." "$staging/"
   old="$dir.old.$$"
@@ -362,18 +337,17 @@ cached_template(){
     [ -n "$old" ] && mv -T "$old" "$dir" 2>/dev/null
   fi
   [ -d "$dir" ] || { echo "ABORT: could not cache the fixture at $dir" >&2; return 1; }
-  # The key changes whenever the fixture does, so yesterday's templates are dead weight.
+  # The key changes with the fixture, so older templates are dead weight.
   find "${TMPDIR:-/tmp}" -maxdepth 1 -name "rsp-fixture-$(id -u)-*" -type d -mtime +0 \
     -exec rm -rf {} + 2>/dev/null
   printf '%s\n' "$dir"
 }
 
-# Where the fixture is and what the script under test must read. Separate from building it,
-# because a process that restores the template instead of building it needs this all the same.
+# Paths and inputs for the script under test. Apart from building, because a process that
+# restores the template needs them too.
 _fixture_env(){
-  # A Debian seed runs mawk, which is stricter than gawk in ways that matter here: it ignores
-  # a {n} interval regex instead of honouring it, and prints an integer over 2^31 as %.6g.
-  # Test against it wherever it exists, or a program that only works under gawk ships green.
+  # Debian seeds run mawk, which ignores {n} interval regexes and prints integers over 2^31
+  # as %.6g. Test under it where present, or awk that only works under gawk ships green.
   AWKBIN=${AWK:-$(command -v mawk || command -v awk)}
   export PATH="$ROOT/bin:$PATH"
 
@@ -381,9 +355,9 @@ _fixture_env(){
   export RSP_NID="z6MkourNodexxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
   export RSP_MANIFEST="$ROOT/manifest.tsv"
 
-  # ISOLATION: pin every input the script reads so a test can NEVER touch the real Radicle
-  # home, even if the caller's shell exported RAD_HOME/RAD/STORAGE/etc. STORAGE in particular
-  # confines all deletions to the temp dir (the script only rm's paths under "$STORAGE"/z*).
+  # ISOLATION: pin every input the script reads, so a test never touches the real Radicle home
+  # even if the caller exported RAD_HOME and the rest. STORAGE confines every deletion to
+  # the temp dir (the script only rm's paths under "$STORAGE"/z*).
   export RAD="$ROOT/bin/rad"
   export RAD_HOME="$RSP_HOME"
   export STORAGE="$RSP_HOME/storage"
@@ -391,11 +365,10 @@ _fixture_env(){
   export AUDIT_DIR="$RSP_HOME/prune-audit"
   unset OUR_NID   # read from the stub's `rad self --did`, so that path runs in every test
   export SERVICE="rsp-test-does-not-exist.service"
-  # Colour is a terminal's, and some shells and CI runners export FORCE_COLOR. A test that
-  # wants colour asks for it.
+  # Some shells and CI runners export FORCE_COLOR; a test that wants colour asks for it.
   unset FORCE_COLOR NO_COLOR
-  # Hermetic git: ignore the user's global/system config, so fixture commits never use their
-  # signing key (gpgsign) or identity, and the host config can't change behaviour.
+  # Ignore global and system git config, so fixture commits never use the user's signing key
+  # or identity.
   export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 }
 
@@ -415,7 +388,6 @@ _build_fixture(){
   mkdir -p "$STORAGE"
   printf '{ "web": { "pinned": { "repositories": ["rad:zpin6"] } } }\n' > "$CONFIG"
 
-  # real bare git repos with controlled activity date + size (all under $ROOT)
   while IFS=$'\t' read -r rid name _seeds vis own days size desc; do
     [ -z "$rid" ] && continue
     local d="$STORAGE/$rid"
@@ -429,12 +401,10 @@ _build_fixture(){
     GIT_AUTHOR_DATE="@$ts +0000" GIT_COMMITTER_DATE="@$ts +0000" git -C "$w" commit -q -m c
     git -C "$w" push -q "$d" master:master 2>/dev/null
     rm -rf "$w"
-    # refs/rad/id is where the script learns who the repo's delegates are. Real storage keeps
-    # the identity document there, at embeds/radicle.json, and only the local node writes it,
-    # so a stranger's push cannot move it. Committed at the repo's own date so it does not
-    # disturb the activity clocks. zmediapeer's description thanks the stranger who pushed
-    # into it by their did:key, which a delegate is free to write and which does not make that
-    # stranger a delegate.
+    # refs/rad/id holds the identity document (embeds/radicle.json) that names the delegates.
+    # Only the local node writes it, so a stranger's push cannot move it. Committed at the
+    # repo's own date to leave its activity clocks alone. zmediapeer's description names the
+    # stranger by did:key, which does not make them a delegate.
     w=$(mktemp -d -p "$ROOT")
     git -C "$w" -c init.defaultBranch=master init -q
     git -C "$w" config user.email a@b; git -C "$w" config user.name a
@@ -456,9 +426,8 @@ _build_fixture(){
     touch -d "10 days ago" "$d"        # keep every dir out of the freshness guard
   done < "$RSP_MANIFEST"
 
-  # zspamfresh keeps its 90-day-old root commit but gains a COB authored yesterday, the shape
-  # the real spam has: created long ago, touched constantly. A rule D that clocks LAST
-  # ACTIVITY spares it forever; one that clocks CREATION prunes it.
+  # zspamfresh: a 90-day-old root plus a COB from yesterday, as real spam looks. Only a rule
+  # D that clocks creation, not last activity, prunes it.
   local d="$STORAGE/zspamfresh" w ts
   w=$(mktemp -d -p "$ROOT")
   git -C "$w" init -q -b master
@@ -470,64 +439,60 @@ _build_fixture(){
   rm -rf "$w"
   touch -d "10 days ago" "$d"
 
-  # zspamaged's refs are a day old, so on ref dates alone rule D cannot touch it. This seed
-  # says it has been here for over a year, which is the date that rule is supposed to use.
+  # zspamaged's refs are a day old, but the ledger saw it 400 days ago, the date rule D uses.
   mkdir -p "$AUDIT_DIR"
   printf 'zspamaged\t%s\n' "$(date -u -d "400 days ago" +%s)" > "$AUDIT_DIR/first-seen.tsv"
-  # A batch member seen before every other one is spared as the original, so a second member
-  # seen the same day keeps zspamaged one of the batch.
+  # The batch member seen first is spared as the original. zspam9 is seen the same day, so
+  # zspamaged is not that lone first member and stays prunable.
   printf 'zspam9\t%s\n' "$(date -u -d "400 days ago" +%s)" >> "$AUDIT_DIR/first-seen.tsv"
-  # A ledger appended to for years will eventually carry a line torn by a crash mid-write.
+  # A crash mid-write leaves a torn ledger line.
   printf 'zfresh4\tnot-a-date\n' >> "$AUDIT_DIR/first-seen.tsv"
   # zbatch3 published the shared clip first, so the batch path has to leave it alone.
   printf 'zbatch3\t%s\n' "$(date -u -d "400 days ago" +%s)" >> "$AUDIT_DIR/first-seen.tsv"
 
   touch "$STORAGE/zinfetch"        # a fetch landing right now: inside the freshness guard
 
-  # Rule F fixtures. Each replaces the manifest loop's tree, so what the repo tracks is exactly
-  # what is listed here. The suite runs with MEDIA_MIN_BYTES=20000, small enough to keep its
-  # many full runs fast. Sizes straddle that bar and MEDIA_TEXT_MAX_BYTES (2048), so each repo
-  # differs from zmediaone in ONE thing.
+  # Rule F fixtures. Each replaces the manifest loop's tree. The suite runs with
+  # MEDIA_MIN_BYTES=20000 to stay fast; sizes straddle that and MEDIA_TEXT_MAX_BYTES (2048),
+  # and each repo differs from zmediaone in ONE thing.
   e_tree zmediaone   60 master "clip.mp4:40000"                 # media only          -> pruned
   e_tree zmediatwo   60 master "clip.mp4:40000" "README.md:8192" # a real README       -> kept
   e_tree zmediabin   60 master "payload.bin:40000:mp4"          # a video renamed     -> pruned
   e_tree zmediaraw   60 master "payload.bin:40000"               # unknown, and really -> kept
   e_tree zmediamd    60 master "notes.md:400000:mp4"            # a video called .md  -> pruned
   e_tree zmediatiny  60 master "thumb.png:10000"                 # under the byte bar  -> kept
-  # A repo is only young if every one of its refs is, the identity ref included, so zmediafresh
-  # carries a 5-day manifest row as well as a 5-day tree.
+  # A repo is young only if every ref is, identity included, so zmediafresh also has a 5-day
+  # manifest row.
   e_tree zmediafresh  5 master "clip.mp4:40000"                  # too young           -> kept
   e_tree zmediazero  60 master "clip.mp4:40000"                  # no other seeds      -> kept
-  # The same clip in a namespace, twice over. zmediacob's is the delegate's own, a dump hiding
-  # in the delegate's issue thread. zmediapeer's belongs to a passing stranger, and counting
-  # that would let anybody delete anybody else's near-empty repo by pushing them a video. Both
-  # canonical trees hold 100 bytes of text, so whose namespace it is, is the ONLY difference
-  # between them.
+  # The same clip in a namespace twice. zmediacob's is the delegate's own issue. zmediapeer's
+  # is a stranger's, and counting it would let anyone get a near-empty repo deleted by
+  # pushing it a video. Both branches hold 100 bytes of text, so whose namespace it is, is
+  # the ONLY difference.
   e_tree zmediacob   60 master "notes.txt:100"
   e_tree zmediacob   60 "refs/namespaces/$(dlg zmediacob)/refs/cobs/xyz.radicle.issue/aaa" \
                         "clip.mp4:40000"
   e_tree zmediazip   60 master "payload.dat:40000:zip"          # a zip of something  -> pruned
-  # An attachment from an earlier op. The COB's tip holds only the later reply, so anything
-  # reading the tip alone sees a repo with no media at all.
+  # An attachment in an earlier op. The COB's tip holds only the later reply, so reading the
+  # tip alone sees no media.
   local past
   past=refs/namespaces/$(dlg zmediapast)/refs/cobs/xyz.radicle.issue/ccc
   e_tree zmediapast  60 master   "notes.txt:100"
   e_tree zmediapast  60 "$past"  "clip.mp4:40000"
   e_tree zmediapast  60 "$past"  "reply.txt:50"
-  # The batch path: five repos publishing the SAME clip, each behind a README too big for the
-  # single-repo budget. zbatchodd is the control, same README over a clip of its own, so the
-  # only difference between it and the five is whether anybody else holds the file.
+  # The batch path: five repos publish the SAME clip behind a README too big for the
+  # single-repo budget. zbatchodd has the same README over its own clip, so sharing the
+  # file is the only difference.
   e_tree zbatch1     60 master "clip.mp4:40000:same" "README.md:4096"
   e_tree zbatch2     60 master "clip.mp4:40000:same" "README.md:4096"
   e_tree zbatch3     60 master "clip.mp4:40000:same" "README.md:4096"
   e_tree zbatch4     60 master "clip.mp4:40000:same" "README.md:4096" "run.sh:40"
   e_tree zbatch5     60 master "clip.mp4:40000:same" "README.md:4096" "Makefile:10"
   e_tree zbatchodd   60 master "clip.mp4:40000:mp4"  "README.md:4096"
-  # The same clip again, in a repo whose README clears every budget. It sorts before the
-  # README, so a listing that stops once the text is too big has already seen it: it must still
-  # not count as one more holder.
+  # The same clip behind a README that clears every budget. The clip sorts first, so a listing
+  # that stops at too much text has seen it; it still must not count as a holder.
   e_tree zbatchbig   60 master "Aclip.mp4:40000:same" "README.md:70000"
-  # Shapes a real seed's false positives took. Each differs from zmediaone in ONE thing.
+  # Shapes of a real seed's false positives, each differing from zmediaone in ONE thing.
   e_tree zmediagz    60 master "rows.csv.gz:40000:gztext"       # data, compressed    -> kept
   e_tree zmediagzv   60 master "rows.csv.gz:40000:gzmp4"        # a video, compressed -> pruned
   e_tree zmediahost  60 master "logo.png:40000"                 # a hostname for name -> kept
@@ -541,8 +506,9 @@ _build_fixture(){
   e_tree zmediamake  60 master "Blank.png:0" "clip.mp4:40000" "Makefile:0"    # -> kept
   # A name with a non-ASCII byte, which git quotes unless told not to.
   e_tree zmediasrc   60 master "clip.mp4:40000" "café/main.py:50"   # a source file    -> kept
-  # The ratio path: a README too big for the dump budget, but tiny beside the clip. A clip of
-  # zeros keeps the fixture small on disk, and its size is its own, so no other repo holds it.
+  # The ratio path: a README too big for the dump budget but tiny beside the clip. Zero-filled
+  # clips stay small on disk, and each size is unique, so no other repo holds the same
+  # blob.
   e_tree zmediaratio  60 master "clip.mp4:6400001:same" "README.md:3000"            # -> pruned
   e_tree zmediaratio  60 refs/heads/dev "README.md:3100"            # the same README, edited
   e_tree zmediaratio3 60 master "clip.mp4:6400003:same" "LICENSE:3000"              # -> kept
@@ -554,41 +520,36 @@ _build_fixture(){
   e_tree zmediacobr   60 master "README.md:3000"
   e_tree zmediacobr   60 "refs/namespaces/$(dlg zmediacobr)/refs/cobs/xyz.radicle.issue/aaa" \
                         "clip.mp4:6400015:same"
-  # Two shapes that a real seed produced and the fixture did not. A file whose name is a lone
-  # "[" is not a valid regex, so a classifier matching names by regex dies on it. A README
+  # A file named a lone "[" is not a valid regex, so a regex name match dies on it. A README
   # between the two text budgets is only looked past when the guard uses the wider one.
   e_tree zmediabrk    60 master "clip.mp4:40000:mp4" "[:20"
-  # A Radicle COB op is a tree of files named 0, 1, ... beside a "manifest". Those are read as
-  # text without being opened, so a 4 KB one blows the budget even though it holds a video
-  # header. That is the price of not opening the millions of them a seed carries.
+  # A COB op is a tree of files named 0, 1, ... beside a "manifest". They count as text
+  # unopened, so a 4 KB one blows the budget despite a video header. That is the price of
+  # not opening the millions a seed carries.
   e_tree zmediaop     60 master "clip.mp4:40000:mp4" "0:4096:mp4"
   e_tree zmediaman    60 master "clip.mp4:40000:mp4" "manifest:4096:mp4"
-  # A path may hold spaces, so a classifier reading the last word of the line sees "0" here
-  # and waves the file through as a COB op payload.
+  # A path may hold spaces, so a classifier reading the line's last word sees "0" here and
+  # waves the file through as a COB op payload.
   e_tree zmediaspc    60 master "clip.mp4:40000:mp4" "notes 0:4096:mp4"
-  # Every other fixture repo has two refs, refs/rad/id and master, so a cap of 2 singles this
-  # one out and leaves the rest judged.
+  # Every other fixture repo has two refs, so a cap of 2 singles this one out.
   e_tree zmediarefs   60 master "clip.mp4:40000:mp4"
   e_tree zmediarefs   60 extra  "other.mp4:40000:mp4"
   e_tree zmediawide   60 master "payload.dat:40000:mp4" "README.md:70000"
-  # A repo whose listing dies part-way: the docs/ subtree is deleted from the object store
-  # after the push, so the walk sees the clip, then fails before it can see the README that
-  # would have spared the repo. A short list must not read as a repo holding less.
+  # The docs/ subtree is deleted after the push, so the walk sees the clip, then fails before
+  # the README that would spare the repo. A short list must not read as a repo holding less.
   e_tree zmediatorn   60 master "clip.mp4:40000:mp4" "docs/README.md:4096"
   torn_tree=$(GIT_DIR="$STORAGE/zmediatorn" git rev-parse 'master^{tree}:docs')
   rm -f "$STORAGE/zmediatorn/objects/${torn_tree:0:2}/${torn_tree:2}"
-  # The README alone already holds more text than any verdict allows, so the walk can stop at
-  # it. Everything after it is unreadable, as in zmediatorn: a run that reads on
-  # regardless tears and reports the repo unjudged, one that stops does not.
+  # The README alone exceeds every text budget, so the walk can stop there. The rest is
+  # unreadable as in zmediatorn: reading on reports the repo unjudged, stopping does not.
   e_tree zmediacut    60 master "README.md:70000" "clip.mp4:40000:mp4" "docs/note.md:4096"
   cut_tree=$(GIT_DIR="$STORAGE/zmediacut" git rev-parse 'master^{tree}:docs')
   rm -f "$STORAGE/zmediacut/objects/${cut_tree:0:2}/${cut_tree:2}"
   e_tree zmediapeer  60 master "notes.txt:100"
   local stranger=$STRANGER_NID
-  # A project with a README on its branch and a clip attached to its delegate's own issue,
-  # which one peer replicates: replicating mirrors the branch, so the README is a blob a
-  # stranger's refs hold too. Subtract on that and the README is gone while the un-mirrored
-  # clip stays, leaving a real repo looking like a dump.
+  # A README on the branch and a clip on the delegate's own issue, replicated by a peer.
+  # Replication mirrors the branch, so a stranger's refs hold the README too. Subtracting
+  # that leaves the un-mirrored clip, and a real repo looking like a dump.
   e_tree zmediamirr  60 master "README.md:8192"
   e_tree zmediamirr  60 "refs/namespaces/$(dlg zmediamirr)/refs/cobs/xyz.radicle.issue/aaa" \
                         "clip.mp4:40000"
@@ -597,10 +558,9 @@ _build_fixture(){
     "$(GIT_DIR="$STORAGE/zmediamirr" git rev-parse master)"
   e_tree zmediapeer  60 "refs/namespaces/$stranger/refs/cobs/xyz.radicle.issue/aaa" \
                         "clip.mp4:40000"
-  # The same trap one layer in. This repo's text is not on its branch but in its delegate's own
-  # issue thread, and replicating mirrors COB refs as well as branches, so those op payloads
-  # are blobs a stranger's refs hold too. Subtract on that and the repo's own writing is gone
-  # while the clip on its branch stays, which is the dump shape exactly.
+  # The same trap one layer in: the text is in the delegate's own issue thread, and
+  # replication mirrors COB refs too. Subtracting them leaves only the branch's clip, the
+  # dump shape exactly.
   e_tree zmediacobm  60 master "clip.mp4:70000:mp4" "README.md:64"
   e_tree zmediacobm  60 "refs/namespaces/$(dlg zmediacobm)/refs/cobs/xyz.radicle.issue/aaa" \
                         "0:60000"
@@ -609,10 +569,9 @@ _build_fixture(){
     "$(GIT_DIR="$STORAGE/zmediacobm" git rev-parse \
         "refs/namespaces/$(dlg zmediacobm)/refs/cobs/xyz.radicle.issue/aaa")"
 
-  # Rule G fixture. Three peers push the very same clip ("same" pads with zeros, so all three
-  # push one blob) into three repos none of them is a delegate of. Only the first is a
-  # parasite: the second is a delegate of zparaown, and the third also wrote something. Each
-  # repo keeps a README on its own branch, so none of them is a media dump in its own right.
+  # Rule G fixture. Three peers push one clip ("same", so one blob) into three repos none of
+  # them delegates. Only the first is a parasite: the second delegates zparaown, the third
+  # also wrote something. Each repo has a README on its branch, so none is a media dump.
   local para=zPARASITExxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
   local writer=zWRITERxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
   local contrib; contrib=$(dlg zparaown)
@@ -630,7 +589,7 @@ _build_fixture(){
   e_tree zparaown 60 master "README.md:4096"
 }
 
-# Defense in depth: refuse to run anything if STORAGE is not confined to the temp fixture.
+# Defense in depth: refuse to run if STORAGE is not inside the temp fixture.
 assert_isolated(){
   case "$STORAGE" in
     "$ROOT"/*) : ;;
@@ -641,8 +600,8 @@ assert_isolated(){
 # run the real script against the fixture; echoes combined output
 # shellcheck disable=SC2120  # no caller passes flags today; they must still reach the script
 run(){ local out; out=$("$SCRIPT" "$@" 2>&1); printf '%s' "$out"; }
-# One past applied run, as the ratchet reads it: an audit log and the history.log line naming it.
-# $1 = which run (1-9, oldest first), then any of: "reason:count" for what it pruned,
+# One past applied run, as the ratchet reads it: an audit log and its history.log line.
+# $1 = which run (1-9, oldest first), then any of "reason:count" for what it pruned,
 # "held:<rule>" for a rule it held back, "rules:<letters>" for the rules it ran with.
 past_run(){
   local i=$1 spec reason count r log="prune-2026010${1}T000000Z.log" rules="" held=""
@@ -663,9 +622,9 @@ past_run(){
     done; } > "$AUDIT_DIR/$log"
   printf '2026-01-0%sT00:00:00Z\tdeleted=1\taudit=%s\n' "$i" "$log" >> "$AUDIT_DIR/history.log"
 }
-# A past where every rule but C pruned plenty and C pruned nothing, so only C is over its usual.
-# The fixture plans 4 of rule A, 1 of B, 4 of C, 12 of D and 14 of F. The link-farm rows stand
-# for audit logs written while rule E existed.
+# A past where every rule but C pruned plenty and C nothing, so only C is over its usual.
+# The fixture plans 4 of rule A, 1 of B, 4 of C, 12 of D and 14 of F. The link-farm rows
+# stand for audit logs written while rule E existed.
 USUAL_BUT_C="junk-name:20 junk-id:20 size-outlier:20 spam-batch:50 link-farm:50 media-dump:50"
 # The same past for every rule but C, which each test then writes its own history for.
 REST="junk-name:20 junk-id:20 size-outlier:20 spam-batch:50 media-dump:50"
@@ -673,10 +632,9 @@ REST="junk-name:20 junk-id:20 size-outlier:20 spam-batch:50 media-dump:50"
 # drop the tty for the non-interactive --apply test
 NOTTY=(); command -v setsid >/dev/null && NOTTY=(setsid)
 
-# $1 = a dir to fill with symlinks to everything on the real PATH except the commands named
-# after it, for the tests that run the script against a PATH short of something.
-# Mirrored rather than listed, because a hand-written list of what the tool needs goes stale
-# and then fails as "the tool needs git" when it means "the test forgot cut".
+# $1 = a dir filled with symlinks to everything on PATH except the commands named after it.
+# Mirrored, not listed, because a hand-kept list goes stale and then fails as "the tool
+# needs git" when it means "the test forgot cut".
 path_without(){
   local dir=$1 d gone
   shift
@@ -690,9 +648,8 @@ path_without(){
   for gone in "$@"; do rm -f "$dir/$gone"; done
 }
 
-# The three peers the rule G fixture pushes with: the parasite, the one who also wrote
-# something, and the one who delegates a repo of its own. Named here rather than in the
-# section that first checks them, because six sections read them.
+# The rule G fixture's peers: the parasite, the one who also wrote, and the delegate.
+# Defined here because six sections read them.
 PARA=zPARASITExxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 WRITER=zWRITERxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 CONTRIB=$(dlg zparaown)
@@ -720,10 +677,8 @@ summary(){
 }
 
 # ---- end of header ---------------------------------------------------------
-# Everything below the marker is one long straight-line script, cut into sections by the
-# fixture rebuild that opens each one. A section always starts from a fresh fixture, so running
-# one on its own gives the same result it gets in the whole suite. This prints the sections a
-# caller asked for, or, in count mode, how many there are.
+# Below the marker is one straight-line script, cut into sections by the fixture rebuild
+# that opens each. This prints the sections asked for, or in count mode how many there are.
 sections(){                      # $1 = regex, or "" for all   $2 = index, or 0   $3 = "count"?
   awk -v pat="$1" -v want="$2" -v mode="$3" '
     function flush() {
@@ -743,23 +698,18 @@ sections(){                      # $1 = regex, or "" for all   $2 = index, or 0 
   ' "$0"
 }
 
-# Settings every section runs under, so a section run on its own is the same run it gets in
-# the whole suite. PLAN_FULL because nearly every assertion looks for one repo's row, and the
-# folding that hides those rows on a real 519-row plan gets its own test rather than silencing
-# the rest. Every rule, because the fixture has a case for each. DISK_AWARE=0 also lets rules B
-# and C act at any free space, which the host's disk would otherwise decide.
+# Settings every section runs under. PLAN_FULL because most assertions look for one repo's
+# row; folding gets its own test. DISK_AWARE=0 lets rules B and C act at any free space,
+# which the host's disk would otherwise decide.
 export DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 MEDIA_MIN_BYTES=20000 PLAN_FULL=1 RULES=ABCDFGH
 
-# The three ways to run something other than the whole file in one process:
+# Running less than the whole file in one process:
 #
-#   tests/run.sh -k quarantine   the sections whose text matches this regular expression. A
-#                                test name, a rid, a knob or a rule letter all select one,
-#                                which is the loop to be in while changing a single rule.
+#   tests/run.sh -k quarantine   the sections whose text matches this regex: a test name,
+#                                a rid, a knob or a rule letter.
 #   tests/run.sh -n 7            the 7th section alone, in a process of its own.
-#   tests/run.sh -e              every section, each in a process of its own, one after
-#                                another. Slower than a plain run and not there for speed: a
-#                                section that only passes because the section above it ran
-#                                first fails here, and that is what keeps -k honest.
+#   tests/run.sh -e              every section, each in a process of its own. Slower; it
+#                                fails a section that passes only after the one above it.
 case "${1:-}" in
   -k|-n)
     [ $# -ge 2 ] || { echo "usage: $0 [-k PATTERN | -n INDEX | -e]"; exit 3; }
@@ -771,15 +721,13 @@ case "${1:-}" in
     ;;
   -e)
     total=$(sections "" 0 count); printed=$(mktemp)
-    # Each section keeps its own tally in its own process and prints it, which is noise once per
-    # section, so the tallies are dropped here and the ok and FAIL lines counted instead.
+    # Each section prints its own tally; drop those and count the ok and FAIL lines instead.
     for i in $(seq 1 "$total"); do
       bash "$0" -n "$i" || echo "# section $i exited $?, see above"
     done | grep -vE '^(-+$|passed: )' | tee "$printed"
     PASS=$(grep -c '^ok   - ' "$printed")
     FAIL=$(grep -c '^FAIL - ' "$printed")
-    # A section that died part-way took the assertions after it down with it, and neither count
-    # above can see the ones that never ran.
+    # A section that died part-way hid its remaining assertions from both counts.
     [ "$FAIL" -gt 0 ] || FAIL=$(grep -c '^# section [0-9]* exited ' "$printed")
     rm -f "$printed"
     summary
@@ -788,10 +736,8 @@ case "${1:-}" in
 esac
 
 # ============================================================================
-# The classification tests below are cut into the sections that follow rather than left as
-# one, so that -k on a rule reaches a handful of runs instead of all of them. The price is that
-# several of them build the same default plan again for themselves: a section that borrowed it
-# from another could not be run on its own.
+# Split into sections so -k on a rule reaches a few runs. Several rebuild the default plan,
+# since a section that borrowed it could not run on its own.
 build_fixture
 assert_isolated                                   # STORAGE must be inside the temp fixture
 
@@ -826,10 +772,9 @@ has "$plan" "zhexid23" && grep -qE "^zhexid23 .*junk-id" <<<"$plan" \
   && ok "all-digit name '12345678' not treated as a random id"  \
   || no "'12345678' not a random id"
 
-# --- pruning the last copy WE KNOW OF, but only where the evidence is conclusive --- "No other
-# seed has it" is worthlessness for machine-generated bulk and preservation value for anything
-# else, so the two rule-A branches take separate seed floors and rule C is not in this game
-# at all.
+# --- pruning the last copy WE KNOW OF, only on conclusive evidence --- No other seed having
+# it marks generated bulk as worthless and anything else as worth keeping, so rule A's two
+# branches take separate seed floors and rule C never prunes the last copy.
 has "$plan" "zhexzero27" && grep -qE "^zhexzero27 .*junk-id" <<<"$plan" \
   && ok "zero-seed random-id name is pruned (junk-id prunes the last copy)" \
   || no "zero-seed junk-id pruned"
@@ -839,13 +784,13 @@ has "$plan" "zhexzero27" && grep -qE "^zhexzero27 .*junk-id" <<<"$plan" \
 has "$plan" "zspamzero" && grep -qE "^zspamzero .*spam-batch" <<<"$plan" \
   && ok "zero-seed spam batch member is pruned" || no "zero-seed spam-batch pruned"
 
-# Both new floors must be able to say no, or they are decoration.
+# Both floors must be able to say no.
 plan_i=$(JUNK_ID_MIN_SEEDS=1 run)
 ! has "$plan_i" "zhexzero27" && has "$plan_i" "zhexid23" \
   && ok "JUNK_ID_MIN_SEEDS=1 spares the zero-seed id repo, keeps the seeded one" \
   || no "JUNK_ID_MIN_SEEDS check is vacuous"
-# ...and the word branch's floor must be the REASON zwordzero28 survives, not a coincidence of
-# it also failing every other rule: drop the floor and it has to appear.
+# zwordzero28 must survive because of the floor, not because it fails every other rule.
+# With the floor dropped it has to appear.
 plan_w=$(JUNK_MIN_SEEDS=0 run)
 grep -qE "^zwordzero28 .*junk-name" <<<"$plan_w" \
   && ok "JUNK_MIN_SEEDS=0 does reach the zero-seed word repo (so the keep above is real)" \
@@ -878,8 +823,8 @@ has "$plan_hi" "zfews5" \
 ! has "$plan_hi" "zfresh4" \
   && ok "pressure still keeps a fresh repo"          \
   || no "pressure keeps fresh repo"
-# A pusher who dates every ref 1970 leaves the repo no usable date. Its age then comes from
-# the day this seed first saw it, so it is still judged, and not counted as unreadable.
+# A repo with every ref dated 1970 has no usable date, so its age comes from the day this
+# seed first saw it: still judged, not counted unreadable.
 for ref in $(GIT_DIR="$STORAGE/zspam1" git for-each-ref --format='%(refname)'); do
   GIT_DIR="$STORAGE/zspam1" git cat-file -e "$ref^{commit}" 2>/dev/null || continue
   c=$(GIT_DIR="$STORAGE/zspam1" GIT_AUTHOR_NAME=a GIT_AUTHOR_EMAIL=a@b \
@@ -909,10 +854,10 @@ grep -qE '^ztwoyr3 .* stale ' <<<"$plan_e" \
 
 
 build_fixture; assert_isolated
-# --- rule A spares an import: a junk-named repo whose history began well before its rad init.
-# Both repos get their master and refs/rad/id commits rewritten with the init 380 days ago,
-# and only master's author date moves back: 20 days for zjunk1, past IMPORT_SPARE_DAYS, and 12
-# for zbar8, short of it. Committer dates stay at the init, so only the author date counts.
+# --- rule A spares an import: a junk-named repo whose history predates its rad init.
+# Both repos' init is 380 days ago. master's author date moves back 20 days for zjunk1,
+# past IMPORT_SPARE_DAYS, and 12 for zbar8, short of it. Committer dates stay at the
+# init, so only the author date counts.
 init=$(date -u -d "380 days ago" +%s)
 for spec in zjunk1:20 zbar8:12; do
   d="$STORAGE/${spec%%:*}"
@@ -937,13 +882,11 @@ grep -qE "^zbar8 .*junk-name +[^ ]*import" <<<"$plan" \
 
 
 build_fixture; assert_isolated
-# Built here rather than inherited, so this section can run on its own.
 plan=$(run)
 
 # --- rule D: generated-bulk batches, decided by the corpus ---
-# The three batches are identical except for the one variable each tests, so these assertions
-# isolate a single cause. Every zspam* member must be pruned, including the LAST one, since the
-# batch-extension pass is what carries stragglers whose random slot came out all-digits.
+# All nine zspam members must be pruned, the last included, since the batch-extension pass
+# carries those whose random slot came out all digits.
 spamhits=$(grep -cE "^zspam[1-9] .*spam-batch" <<<"$plan" || true)
 [ "$spamhits" = 9 ] \
   && ok "templated batch (id slot + one description) pruned (spam-batch)" \
@@ -972,9 +915,8 @@ nodeschits=$(grep -cE "^znodesc[1-9] " <<<"$plan" || true)
   && ok "id-slot batch with no descriptions kept (one signal is not enough)" \
   || no "no-description batch kept (got $nodeschits/9 pruned)"
 
-# The check must be able to say no: raise the batch threshold above the batch size and the
-# exact same repos have to survive, or the rule is passing on something other than the evidence
-# it claims.
+# The check must be able to say no: with the threshold above the batch size the same repos
+# must survive.
 plan_k=$(SPAM_MIN_BATCH=13 run)   # the flatten batch is 12 members
 [ "$(grep -cE "^zspam[1-9] " <<<"$plan_k" || true)" = 0 ] \
   && ok "SPAM_MIN_BATCH above the batch size spares it" \
@@ -987,8 +929,8 @@ iddecoy=$(grep -cE "^zdecoy[1-9] " <<<"$plan_id" || true)
   && ok "SPAM_REQUIRE_ID=0 reaches enumeration batches, still not the decoy" \
   || no "SPAM_REQUIRE_ID=0 reaches enum batch (got $idhits/9 enum, $iddecoy/9 decoy)"
 # --- rule D clocks CREATION, not last activity ---
-# The spammer appends a COB to their own repos every few days, which resets a last-activity
-# clock and makes the whole batch permanently immune. Creation only moves forward.
+# A spammer appending a COB every few days resets a last-activity clock forever. Creation
+# only moves forward.
 has "$plan" "zspamfresh" && grep -qE "^zspamfresh .*spam-batch" <<<"$plan" \
   && ok "spam repo created 90d ago but touched yesterday is still pruned" \
   || no "rule D clocks creation"
@@ -1000,12 +942,10 @@ plan_b=$(SPAM_STALE_DAYS=99999 run)
 
 
 build_fixture; assert_isolated
-# Built here rather than inherited, so this section can run on its own.
 plan=$(run)
 
-# --- rule F: media dumps --- Radicle storage is for collaborating on code, and a repo tracking
-# a video and nothing else is using the seed as file hosting. The fixtures differ from each
-# other in one thing each, so a failure names its own cause.
+# --- rule F: media dumps --- A repo tracking a video and nothing else uses the seed as
+# file hosting. Each fixture differs from the others in one thing.
 grep -qE "^zmediaone .*media-dump" <<<"$plan" \
   && ok "a repo tracking only media is pruned (media-dump)" || no "media-only repo pruned"
 ! has "$plan" "zmediatwo" \
@@ -1037,9 +977,9 @@ grep -qE "^zmediazip .*media-dump" <<<"$plan" \
 grep -qE "^zmediapast .*media-dump" <<<"$plan" \
   && ok "an attachment from an earlier comment counts, not just the newest one" \
   || no "rule F walks COB history"
-# zmediapast's issue holds two ops and zmediacob's one, so a cap of one leaves only the first
-# unjudged. Judged on its newest op alone, zmediapast would also leave the plan, so the list of
-# unjudged repos is what shows the cap.
+# zmediapast's issue has two ops and zmediacob's one, so a cap of one leaves only the
+# first unjudged. Judged on its newest op alone zmediapast would also leave the plan, so
+# the unjudged list is what shows the cap.
 plan_fo=$(MEDIA_MAX_OPS=1 run)
 { ! has "$plan_fo" "zmediapast" && grep -qE "^zmediacob .*media-dump" <<<"$plan_fo" \
   && cut -f1 "$RSP_HOME/prune-audit/last-run/F-media-unjudged.tsv" | grep -qx zmediapast; } \
@@ -1094,8 +1034,8 @@ grep -qE "^zmediaratio .*media-ratio" <<<"$plan" \
   && ok "MEDIA_RATIO_MIN_BYTES sets how much media the ratio path needs" \
   || no "the ratio path ignored MEDIA_RATIO_MIN_BYTES"
 
-# Shapes a real 11k-repo seed threw at rule F: filenames a naive match misreads, and COB files
-# whose bytes rule F has no need to open.
+# Shapes a real 11k-repo seed threw at rule F: names a naive match misreads, and COB
+# files it need not open.
 grep -qE "^zmediabrk .*media-dump" <<<"$plan" \
   && ok "a file called \"[\" does not break the classifier" \
   || no "a filename that is not a valid regex breaks rule F"
@@ -1108,15 +1048,14 @@ grep -qE "^zmediabrk .*media-dump" <<<"$plan" \
 grep -qE "^zmediaspc .*media-dump" <<<"$plan" \
   && ok "a space in a path does not turn its last word into the filename" \
   || no "a file called \"notes 0\" passes as a COB op payload"
-# The fragment left by a half-finished listing holds the clip and not the README, so judging it
-# would delete the repo on the evidence that failed to arrive.
+# The fragment a half-finished listing leaves holds the clip and not the README, so judging
+# it would delete the repo on the evidence that failed to arrive.
 { ! has "$plan" "zmediatorn" && grep -q 'could not judge 1 repo,' <<<"$plan"; } \
   && ok "a repo whose listing dies part-way is left unjudged, not pruned on the fragment" \
   || no "rule F judges a repo on a partial listing"
-# zmediacut is the same broken listing behind a README that already clears the widest budget.
-# Only zmediatorn is unjudged, so the walk must have stopped at that README and never reached
-# the break: the verdict was settled, and the rest of the repo was never read. Reading on
-# regardless makes this count 2.
+# zmediacut is the same break behind a README that clears the widest budget. Only
+# zmediatorn is unjudged, so the walk stopped at that README. Reading on would make the
+# unjudged count 2.
 { ! has "$plan" "zmediacut" && grep -q 'could not judge 1 repo,' <<<"$plan"; } \
   && ok "rule F stops reading a repo once its text clears the widest budget" \
   || no "the walk read past the point where the verdict was already settled"
@@ -1129,10 +1068,9 @@ grep -qE "^zmediaspc .*media-dump" <<<"$plan" \
   && ok "a peer replicating a repo does not subtract the repo's own COB text from itself" \
   || no "replication erased zmediacobm's issue thread and left it looking like a dump"
 
-# --- rule F leaves a repo unjudged when the stage that shapes its listing dies --- The git
-# readers before it finish cleanly and see only a closed pipe, so the death shows only in that
-# stage's own exit. zmediatwo's README is the text that spares it, and the cut listing holds
-# the clip alone.
+# --- rule F leaves a repo unjudged when the stage shaping its listing dies --- The git
+# readers before it see only a closed pipe, so only that stage's exit shows it.
+# zmediatwo's README spares it, and the cut listing holds the clip alone.
 build_fixture; assert_isolated
 tornawk="$ROOT/torn-awk"; mkdir -p "$tornawk"
 cp "$HERE/torn-awk-shim" "$tornawk/awk"; chmod +x "$tornawk/awk"
@@ -1143,14 +1081,13 @@ plan=$(PATH="$tornawk:$PATH" run)
   || no "rule F judged a repo on a listing cut short by its last stage"
 
 # --- rule F counts only ops a delegate signed, and a repo it cannot list whole is unjudged ---
-# zmediapeer's delegate replies to the stranger's issue op, and Radicle makes that op a parent
-# of the reply, so the stranger's clip is in the history of the delegate's own COB ref. The
-# stranger's commit even names the delegate as its author and carries a signature the delegate
-# made, copied from the reply: only a signature over the commit's own tree ties the two
-# together. zmediacob's dump gains a branch whose tip commit is gone from the object
-# store; what it held is unknown, so the repo cannot be judged on the branch that is left.
-# A stranger points a branch at the newest op of zmediapast's issue, which must not hide the
-# clip in the older one.
+# zmediapeer's delegate replies to the stranger's op, which makes it a parent of the reply,
+# so the stranger's clip sits in the history of the delegate's own COB ref. The stranger's
+# commit names the delegate as author and carries the delegate's signature, copied from the
+# reply. Only a signature over the commit's own tree shows who made it.
+# zmediacob gains a branch whose tip is gone from the object store. What it held is
+# unknown, so the repo cannot be judged on what is left.
+# A stranger's branch at the newest op of zmediapast's issue must not hide the older clip.
 build_fixture; assert_isolated
 d="$STORAGE/zmediapeer"
 ts=$(date -u -d "60 days ago" +%s)
@@ -1179,8 +1116,8 @@ d="$STORAGE/zmediapast"
 GIT_DIR="$d" git update-ref "refs/namespaces/$STRANGER_NID/refs/heads/hide" \
   "refs/namespaces/$COB_NID/refs/cobs/xyz.radicle.issue/ccc"
 touch -d "10 days ago" "$d"
-# zmediaone's dump gains a directory of a few small trees that lists as only 2^11 paths, but
-# ones 11 KB long, more than MEDIA_TIP_BYTES in all.
+# zmediaone gains a directory of small trees listing only 2^11 paths, but ones 11 KB
+# long, over MEDIA_TIP_BYTES in all.
 d="$STORAGE/zmediaone"
 root=$({ GIT_DIR="$d" git ls-tree master
          printf '040000 tree %s\tx\n' "$(bomb_tree "$d" 11 1000)"; } | GIT_DIR="$d" git mktree)
@@ -1204,13 +1141,11 @@ grep -qE "^zmediapast .*media-dump" <<<"$plan" \
 
 build_fixture; assert_isolated
 
-# --- rule F: the batch path, and every threshold that gates a media verdict --- Both read one
-# default plan, built here rather than inherited, so this section can run on its own.
+# --- rule F: the batch path, and every threshold behind a media verdict ---
 plan=$(run)
 
-# The batch path. A README clears the single-repo budget, so these five can only be reached by
-# what no one repo can fake: other repos holding the very same file. zbatch4 also holds a
-# script, which spares no repo from this path; zbatch5 holds a Makefile, which does.
+# The batch path. A README clears the single-repo budget, so only other repos holding the
+# same file reach these. zbatch4's script spares nothing here; zbatch5's Makefile does.
 [ "$(grep -cE "^zbatch[124] .*media-batch" <<<"$plan" || true)" = 3 ] \
   && ok "repos reposting one clip behind a README are pruned (media-batch)" \
   || no "the batch path prunes a reposted dump"
@@ -1232,10 +1167,9 @@ plan_fc=$(MEDIA_TEXT_CEIL_BYTES=100 run)
   && ok "a ceiling under their README spares them, batch or no batch" \
   || no "MEDIA_TEXT_CEIL_BYTES is vacuous"
 
-# Each threshold must be able to say no on its own, and each must be able to say yes: a rule
-# that only ever spares is indistinguishable from one that never runs.
-# The ref cap. zmediarefs is a dump like any other until its third ref puts it over the cap,
-# and the run has to say so rather than quietly counting it as clean.
+# Each threshold must be able to say no and yes on its own: a rule that only spares looks
+# like one that never runs. zmediarefs is a dump until its third ref passes the cap, and
+# the run must say so instead of counting it clean.
 grep -qE "^zmediarefs .*media-dump" <<<"$plan" \
   && ok "a dump under MEDIA_MAX_REFS is judged" || no "the extra ref alone spares zmediarefs"
 plan_fr=$(MEDIA_MAX_REFS=2 run)
@@ -1247,8 +1181,8 @@ plan_ft=$(MEDIA_TEXT_MAX_BYTES=99999 run)
 grep -qE "^zmediatwo .*media-dump" <<<"$plan_ft" \
   && ok "a bigger text budget reaches the repo its README was sparing" \
   || no "MEDIA_TEXT_MAX_BYTES is vacuous"
-# zmediawide's README sits between the two budgets, and its media is only findable by reading.
-# Raising one budget past the other must move the read guard with it.
+# zmediawide's README sits between the two budgets and its media is found only by
+# reading, so raising one budget past the other must move the read guard too.
 grep -qE "^zmediawide .*media-dump" <<<"$plan_ft" \
   && ok "raising the text budget past the ceiling still reads the files it needs" \
   || no "the read guard uses the narrower budget"
@@ -1259,8 +1193,7 @@ plan_fx=$(MEDIA_EXTS='bin' run)
 { grep -qE "^zmediabin .*media-dump" <<<"$plan_fx" && ! has "$plan_fx" "zmediaone"; } \
   && ok "MEDIA_EXTS decides what counts as media, both ways" || no "MEDIA_EXTS is vacuous"
 
-# Rule F may prune the last copy we know of, like rule D. Its evidence is what the repo
-# itself holds, and a dump nobody else seeds is still a dump.
+# Rule F may prune the last copy we know of: its evidence is what the repo itself holds.
 grep -qE "^zmediazero .*media-dump" <<<"$plan" \
   && ok "a media dump no other node seeds is pruned by default" \
   || no "the default seed floor spared a dump nobody else seeds"
@@ -1268,17 +1201,17 @@ plan_fz=$(MEDIA_MIN_SEEDS=1 run)
 ! has "$plan_fz" "zmediazero" \
   && ok "MEDIA_MIN_SEEDS=1 keeps the last copy we know of" \
   || no "MEDIA_MIN_SEEDS is vacuous"
-# Sparing it silently would make the seed floor a permanent hiding place, so a run that raised
-# the floor says what it saw and left alone.
+# Sparing it silently would make the seed floor a hiding place, so the run names it.
 { grep -qx '# REVIEW 1 media dump no other node seeds, not pruned' <<<"$plan_fz" \
     && grep -qE '^#        zmediazero +media-dump' <<<"$plan_fz"; } \
   && ok "the dump it kept is named for a human to look at" \
   || no "the review list names what it kept"
 
 
-# Repos first seen in the same run tie in the ledger. The original is then the repo whose
-# storage directory the node made first, never the one whose id sorts first, since a pusher
-# grinds an id to sort wherever they like. Every other holder is made again here, after it.
+# Repos first seen in one run tie in the ledger. The original is then the repo whose
+# storage dir was made first, never the lowest id, since a pusher can grind an id.
+# zbatch3 loses its ledger row so all five tie, and the others are made again a second
+# later, after zbatch3.
 build_fixture; assert_isolated
 sed -i '/^zbatch3\t/d' "$AUDIT_DIR/first-seen.tsv"
 sleep 1
@@ -1292,9 +1225,8 @@ plan_tie=$(run)
   || no "a first-seen tie went to the repo whose id sorts first"
 build_fixture; assert_isolated
 
-# --- a plan nobody reads is not a review --- A verdict decided by a pattern across many repos
-# folds to one line once the group is big; a verdict decided by one repo's own metadata never
-# folds, however many there are, because those are the rows that want eyes.
+# --- plan folding --- A corpus verdict folds to one line once its group is big; a verdict
+# on one repo's own metadata never folds, because those rows want eyes.
 folded=$(PLAN_FULL=0 PLAN_COLLAPSE_ROWS=2 run)
 { grep -qE '^\([0-9]+ repos\) .* spam-batch' <<<"$folded" \
   && ! has "$folded" "zspam1"; } \
@@ -1307,7 +1239,7 @@ grep -q "PLAN_FULL=1" <<<"$folded" \
   && ok "the folded line says how to see what it hid" \
   || no "the plan folded rows without saying how to expand them"
 
-# --- one spelling for turning a rule off --- Every rule answers to the same switch.
+# --- RULES turns any rule off ---
 noa=$(RULES=BCDFG run)
 { ! has "$noa" "zjunk1" && has "$noa" "zbig2"; } \
   && ok "a rule left out of RULES puts nothing in the plan" \
@@ -1317,8 +1249,8 @@ nof=$(RULES=ABCD run)
   && has "$nof" "zjunk1"; } \
   && ok "a rule left out of RULES does not even run its scan" \
   || no "RULES=ABCD still ran or planned rule F"
-# The link-farm rule (E) is gone, and a cron line written for an older release still names it.
-# Refusing the letter would prune nothing until somebody read the error.
+# Rule E is gone, and a cron line from an older release still names it. Refusing the
+# letter would prune nothing until somebody read the error.
 withe=$(RULES=ABCDEFGH "$SCRIPT" 2>&1); rc=$?
 { [ "$rc" = 0 ] && grep -qE '^zspam1 .* spam-batch ' <<<"$withe" \
   && grep -qxF '# WARN the link-farm rule (E) was removed in 0.8.0; E in RULES is ignored.' \
@@ -1336,10 +1268,10 @@ onlye=$(RULES=E "$SCRIPT" 2>&1); rc=$?
   && ok "RULES naming only E says no rule runs" \
   || no "RULES naming only E ran a rule, failed, or ran none without saying so (rc=$rc)"
 
-# Rules B and C prune for space alone, so with free space above the relaxed threshold they
-# wait. The thresholds are set so this machine's disk cannot decide: a relaxed threshold of 0
-# free is never above the free space, and one of the whole disk always is. Under pressure the
-# B endpoints match the relaxed values, so zbig2 qualifies either way.
+# Rules B and C prune for space alone, so they wait while free space is above the relaxed
+# threshold. The calm run's relaxed threshold of 0 free is never above free space, and the
+# tight run's whole disk always is, so this machine's disk decides nothing. Under pressure
+# B's endpoints match the relaxed values, so zbig2 qualifies either way.
 calm=$(DISK_AWARE=1 PRESSURE_RELAX_PCT=0 PRESSURE_RELAX_GB=0 PRESSURE_CRIT_PCT=0 \
          PRESSURE_CRIT_GB=0 run)
 tight=$(DISK_AWARE=1 PRESSURE_RELAX_PCT=100 PRESSURE_RELAX_GB=0 PRESSURE_CRIT_PCT=0 \
@@ -1352,8 +1284,8 @@ tight=$(DISK_AWARE=1 PRESSURE_RELAX_PCT=100 PRESSURE_RELAX_GB=0 PRESSURE_CRIT_PC
   && ok "rules B and C wait for disk pressure, and act once there is some" \
   || no "rules B and C pruned with no disk pressure, or not under pressure either"
 
-# Turning a rule off must not SPARE a repo the remaining rules would have pruned: a dropped D
-# verdict could shadow the rule C verdict underneath it.
+# Turning a rule off must not spare a repo the other rules would prune: a dropped D verdict
+# could hide the rule C verdict under it.
 withd=$(STALE_YEARS_DAYS=30 RULES=ABCDFG run)
 nod=$(STALE_YEARS_DAYS=30 RULES=ABCFG run)
 { has "$withd" "zspam1" && has "$nod" "zspam1" \
@@ -1362,15 +1294,15 @@ nod=$(STALE_YEARS_DAYS=30 RULES=ABCFG run)
   && ok "a repo a disabled rule would have claimed falls through to the next rule" \
   || no "RULES=ABCFG let a batch member escape rule C as well as rule D"
 
-# --- check: a publisher's own public repos, judged as a seed would judge them --- It runs on
-# the publisher's own node, so it must leave that node as it found it: nothing blocked, nothing
-# removed, nothing written beside the operator's audit trail. It answers for a seed, not for
-# this node, so a repo this node's deny list names is still judged on its own.
+# --- check: a publisher's own public repos, judged as a seed would --- It runs on the
+# publisher's node, so it blocks and removes nothing and writes nothing beside the
+# operator's audit trail. It answers for a seed, so a repo this node's deny list names is
+# still judged.
 build_fixture; assert_isolated
-# Ours: the repos `rad ls` lists whose identity document names this node. zcode4 is listed but
-# names somebody else, as a fork does. zpin6 is pinned here, which spares nothing on a seed.
-# zpriv7 is private, and its description quotes zmediaone, which is public all the same.
-# zjunk1 was pushed to recently, and a seed prunes it for its name once it goes quiet.
+# Ours: repos `rad ls` lists whose identity names this node. zcode4 is listed but names
+# somebody else, as a fork does. zpin6 is pinned, which spares nothing on a seed. zpriv7 is
+# private and quotes zmediaone, which stays public. zjunk1 is recent; a seed prunes it once
+# quiet.
 awk -F'\t' -v OFS='\t' '$1 ~ /^(zmediaone|zmediafresh|zpin6|zcode4|zpriv7|zspam1|zjunk1)$/ { $5 = 1 }
                          $1 == "zpriv7" { $8 = "notes on rad:zmediaone" } 1' \
   "$RSP_MANIFEST" > "$ROOT/manifest.new" && mv "$ROOT/manifest.new" "$RSP_MANIFEST"
@@ -1388,8 +1320,8 @@ for r in zmediaone zmediafresh zpin6 zown22 zpriv7 zspam1 zjunk1; do
   git -C "$w" push -q --force "$STORAGE/$r" master:refs/rad/id; rm -rf "$w"
   touch -d "10 days ago" "$STORAGE/$r"
 done
-# zmediafresh's commits are dated a day ahead, as a clock running fast dates them. A seed waits
-# out a repo's age, however young.
+# zmediafresh's commits are dated a day ahead, as a fast clock dates them. A seed waits out
+# a repo's age, however young.
 ahead="@$(date -u -d "1 day" +%s) +0000"
 for ref in $(GIT_DIR="$STORAGE/zmediafresh" git for-each-ref --format='%(refname)'); do
   c=$(GIT_DIR="$STORAGE/zmediafresh" GIT_AUTHOR_NAME=a GIT_AUTHOR_EMAIL=a@b \
@@ -1441,10 +1373,10 @@ out=$(MEDIA_MAX_REFS=1 "$SCRIPT" check-mine 2>/dev/null); rc=$?
 out=$("$SCRIPT" check-mine --apply 2>&1); rc=$?
 [ "$rc" = 2 ] \
   && ok "check refuses --apply" || no "check took --apply (rc=$rc)"
-# With the media dumps and the batch member no longer listed by `rad ls`, nothing of ours is
-# pruned, though zpriv7 quotes zmediaone, whose identity document still names this node. An
-# unjudged repo is no reason to fail, nor is an empty routing table, since a seed's count is
-# not this node's, nor a stopped node, since rad reads all a check needs from disk.
+# With the dumps and the batch member unlisted, nothing of ours is pruned, though zpriv7
+# quotes zmediaone, whose identity still names this node. None of these fail the check:
+# an unjudged repo, an empty routing table (a seed's count is not this node's), a stopped
+# node (rad reads what a check needs from disk).
 awk -F'\t' -v OFS='\t' '$1 ~ /^(zmediaone|zmediafresh|zspam1|zjunk1)$/ { $5 = 0 } 1' \
   "$RSP_MANIFEST" > "$ROOT/manifest.new" && mv "$ROOT/manifest.new" "$RSP_MANIFEST"
 out=$(RSP_NO_ROUTING=1 RSP_NODE_DOWN=1 "$SCRIPT" check-mine 2>/dev/null); rc=$?
@@ -1455,11 +1387,10 @@ out=$(RSP_NO_ROUTING=1 RSP_NODE_DOWN=1 "$SCRIPT" check-mine 2>/dev/null); rc=$?
 
 build_fixture; assert_isolated
 
-# --- rule G: parasite peers --- Three peers put the identical clip in the same three repos.
-# Only one of them is accused, so each exemption is what separates it from the other two, not
-# a shortage of evidence.
-# Exported, not prefixed: run is a shell function, and an assignment in front of one does not
-# reach the script it launches.
+# --- rule G: parasite peers --- Three peers put one clip in the same three repos. Only
+# one is accused, so each exemption is what separates it from the other two.
+# Exported, not prefixed: an assignment before a shell function does not reach the
+# script it launches.
 export PARASITE_MIN_REPOS=3 PARASITE_MIN_BYTES=65536 PARASITE_TEXT_MAX_BYTES=4096
 gplan=$(run)
 grep -q "REVIEW 1 parasite peer the" <<<"$gplan" && grep -q "$PARA" <<<"$gplan" \
@@ -1479,15 +1410,13 @@ unset PARASITE_MIN_REPOS PARASITE_MIN_BYTES PARASITE_TEXT_MAX_BYTES
 
 build_fixture; assert_isolated
 
-# --- numbers must not follow the operator's locale --- mawk honours LC_NUMERIC, so under a
-# comma locale it hands back "2,52e+10" and the awk that reads it gets 2. The script pins
-# LC_ALL=C; this checks the plan is byte-identical either way rather than eyeballing output.
+# --- numbers must not follow the operator's locale --- mawk honours LC_NUMERIC, so a comma
+# locale hands back "2,52e+10" and the reader gets 2. The script pins LC_ALL=C; this
+# compares the plan byte for byte.
 if locale -a 2>/dev/null | grep -qix 'de_AT.utf8'; then
-  # Plan rows only: the banner carries a timestamp, so two runs never match on it.
-  # Both sides are pinned, because the machine running the suite may itself be on a comma
-  # locale, in which case an unpinned baseline would match the comma run and prove nothing.
-  # Exported rather than prefixed for the same reason as the rule G knobs above: run is a
-  # shell function, and an assignment in front of one never reaches the script it launches.
+  # Plan rows only: the banner has a timestamp. Both sides are pinned, because the host may
+  # itself be on a comma locale, and an unpinned baseline would then prove nothing.
+  # Exported because run is a shell function.
   unset LC_ALL
   export LC_NUMERIC=C;             base=$(run | grep -v '^#')
   export LC_NUMERIC=de_AT.UTF-8;   comma=$(run | grep -v '^#')
@@ -1502,15 +1431,13 @@ fi
 
 build_fixture; assert_isolated
 
-# --- the clocks a row is judged on --- The ledger and the freshness guard both read one
-# default plan, built here rather than inherited, so this section runs on its own.
+# --- the clocks a row is judged on --- Both checks below read one default plan.
 fs_rows=$(grep -v '^#' "$AUDIT_DIR/first-seen.tsv")
 plan=$(run)
 
-# --- the creation clock cannot be reset by a push --- Every date inside a repo is set by
-# whoever pushed it, so force-pushing every ref with fresh dates would renew rules D and F
-# forever. What this seed recorded when it first saw the repo cannot be reached from outside,
-# and the age those rules use is whichever of the two is older.
+# --- a push cannot reset the creation clock --- A repo's dates are set by its pusher, so
+# force-pushing fresh dates would renew rules D and F forever. They use the older of that
+# and this seed's first-seen date, which nobody outside can reach.
 grep -qE "^zspamaged .*spam-batch" <<<"$plan" \
   && ok "day-old refs do not save a batch member the seed has held for a year" \
   || no "first-seen ledger overrides young refs"
@@ -1521,10 +1448,9 @@ plan_fs=$(FIRST_SEEN=/dev/null run)
 grep -q "^zjunk1"$'\t' "$AUDIT_DIR/first-seen.tsv" \
   && ok "the ledger records repos it had not seen before, on a dry run too" \
   || no "the ledger is written on a dry run"
-# The fixture's ledger was written with no header, as an older version writes it, and the first
-# run above added one by rewriting the file. A rewrite that dropped a row would hand the age
-# rules back to dates a pusher sets, and the dropped row would come back dated today, so a
-# second run planning zspamaged as a year-old batch member is what shows its row survived.
+# The fixture's ledger has no header, as older versions wrote it, and the run above added
+# one by rewriting the file. A dropped row would come back dated today, handing age back
+# to the pusher, so zspamaged still planned as a year-old member shows its row survived.
 nhead=$(grep -c '^#' "$AUDIT_DIR/first-seen.tsv")
 plan_fs2=$(run)
 { head -n1 "$AUDIT_DIR/first-seen.tsv" | grep -q '^# ' \
@@ -1551,17 +1477,16 @@ grep -qE "^zinfetch .*stale" <<<"$plan_fg" \
 
 build_fixture; assert_isolated
 
-# --- what a run cannot read is reported, never quietly dropped --- An empty listing, a home
-# rad never saw, an empty routing table and a directory nobody may read: each one is named,
-# and the run finishes or aborts loudly.
+# --- what a run cannot read is reported, never quietly dropped --- The run names each
+# case and finishes or aborts loudly.
 
-# --- an empty `rad ls` degrades loudly: blank names and a blind rule D would otherwise look
-# like a clean seed ---
-# With no listing, own and private repos are known only from the repo itself; an --apply would
-# otherwise quarantine and block them. zbig2's document names this node as a delegate and nests
-# a private visibility in its payload, which it puts first, and zbig2 has a root branch named
-# like this node's signed refs. Its delegates can publish all three, so it stays in the plan.
-# zpriv7's delegate is on the deny list, and kept with its repo, it is not blocked.
+# --- an empty `rad ls` warns: blank names and a blind rule D would look like a clean seed ---
+# With no listing, own and private repos are found from the repo itself. Otherwise --apply
+# would quarantine and block them.
+# zbig2 names this node as delegate, nests a private visibility in a payload placed
+# first, and has a root branch named like our signed refs. Its delegates can write all
+# three, so it stays in the plan. zpriv7's delegate is on the deny list but, kept with
+# its repo, is not blocked.
 d="$STORAGE/zbig2"
 w=$(mktemp -d -p "$ROOT")
 printf '%s' '{"payload":{"x.y":{"visibility":{"type":"private"}}},' \
@@ -1607,10 +1532,9 @@ out=$(RSP_NO_LS=1 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 run)
   || no "the deny list would block the delegate of a repo kept as private"
 rm -f "$AUDIT_DIR/deny.txt"
 
-# --- RAD_HOME reaches rad as ENVIRONMENT, not just as a shell variable --- A RAD_HOME rad does
-# not see sends every rad call to the default home, which comes back empty and plans zero
-# repos. Unset it in the caller so the only way the stub can see it is the script exporting
-# what it resolved from `rad path`.
+# --- RAD_HOME reaches rad as environment --- A RAD_HOME rad cannot see sends it to the
+# default home, which plans zero repos. Unset in the caller, so the stub sees only what
+# the script exports from `rad path`.
 : > "$RSP_HOME/.stub_radhome"
 env -u RAD_HOME DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" >/dev/null 2>&1; rc=$?
 { grep -qxF "$RSP_HOME" "$RSP_HOME/.stub_radhome" && [ "$rc" = 0 ]; } \
@@ -1633,16 +1557,13 @@ out=$(RSP_NO_ROUTING=1 DISK_AWARE=0 "$SCRIPT" 2>&1); rc=$?
   && ok "empty routing table aborts (exit 5, no plan)" \
   || no "empty routing aborts (got exit $rc)"
 
-# --- an unreadable repo survives the scan: reported and excluded, never fatal --- du failing
-# on one dir makes xargs return 123, which `set -e` would turn into a silent exit. The
-# unreadable dir is INSIDE the repo, so its refs stay readable and ztwoyr3 still looks prunable
-# on age, and only the scan-error exclusion keeps it out of the plan.
+# --- an unreadable repo is reported and excluded, never fatal --- du failing on one dir
+# makes xargs return 123, which `set -e` turns into a silent exit. The dir is inside the
+# repo, so its refs stay readable and only the scan-error exclusion keeps ztwoyr3 out.
 mkdir -p "$STORAGE/ztwoyr3/unreadable" && chmod 000 "$STORAGE/ztwoyr3/unreadable"
-# creating the subdir bumped mtime; keep it out of the freshness guard so that ONLY the
-# scan-error rule excludes it
+# creating the subdir bumped mtime; keep it out of the freshness guard
 touch -d "10 days ago" "$STORAGE/ztwoyr3"
-# a high blind-scan limit, so this tests the per-repo exclusion and not the aggregate guard
-# below
+# a high blind-scan limit, so this tests the per-repo exclusion, not the aggregate guard
 out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 MAX_SCAN_FAIL_PCT=50 "$SCRIPT" 2>&1); rc=$?
 chmod 755 "$STORAGE/ztwoyr3/unreadable"; rmdir "$STORAGE/ztwoyr3/unreadable"
 { [ "$rc" = 0 ] && grep -q '# PLAN ' <<<"$out"; } \
@@ -1655,10 +1576,9 @@ grep -qE '^# WARN [0-9]+ scan error' <<<"$out" \
   && ok "unreadable repo excluded from plan, others still planned" \
   || no "unreadable repo excluded from plan"
 
-# The other way a non-number reaches an age comparison, and this one is in every heartwood
-# repo: refs/rad/sigrefs points at a blob, a blob has no creatordate, so `for-each-ref
-# --sort=creatordate` prints that ref first with an empty date field and the object id lands
-# where the date should be. Rules D and F then compare a 40-hex string and spare the repo.
+# Every heartwood repo's refs/rad/sigrefs points at a blob, which has no creatordate, so
+# `for-each-ref --sort=creatordate` lists it first with an empty date and its object id
+# lands in the date field. Rules D and F then compare a hex string and spare the repo.
 build_fixture; assert_isolated
 blob=$(printf 'sigrefs\n' | GIT_DIR="$STORAGE/zmediaone" git hash-object -w --stdin)
 GIT_DIR="$STORAGE/zmediaone" git update-ref refs/rad/sigrefs "$blob"
@@ -1669,20 +1589,19 @@ out=$(DISK_AWARE=0 run)
   && ok "a ref with no date does not put an object id where the repo's age belongs" \
   || no "a dateless ref blinded the age rules, and the repo went unjudged"
 
-# What the terminal showed is trimmed and then scrolls away, so the lists behind it are written
-# out whole on every run, a dry one included. The point is not that the files exist: it is that
-# they hold the rows the screen left out, and that a reviewer is told where they are.
+# The terminal output is trimmed and scrolls away, so every run, dry ones too, writes the
+# lists out whole. They must hold the rows the screen left out, and say where they are.
 build_fixture; assert_isolated
 L="$RSP_HOME/prune-audit/last-run"
 short=$(DISK_AWARE=0 PLAN_COLLAPSE_ROWS=2 PLAN_FULL=0 run)
-# Counted against the plan's own total, not against a number written here: a file holding
-# every row but one would pass any comparison with what the screen happened to print.
+# Counted against the plan's own total: a file missing one row could still match a number
+# written here.
 planned=$(sed -n 's/^# PLAN   prune \([0-9]*\) repo.*/\1/p' <<<"$short")
 screenrows=$(grep -cE '^z[1-9A-HJ-NP-Za-km-z]+ ' <<<"$short")
 cols=$(printf '# rid\tsize_bytes\tother_seeds\tlast_activity_unix\treason')
 cols=$cols$(printf '\tname\tage_from_unix\tnear_threshold')
-# Read months later a file of repo ids says nothing about what it is or which run condemned
-# them, so every one of them opens with a line saying what it holds and the stamp of that run.
+# Read months later, a file of rids says nothing of what it holds or which run wrote it, so
+# each opens with what it holds and the stamp of its run.
 stamped=1
 for f in "$L"/*; do
   head -n1 "$f" | grep -qE '^# [A-Z][a-z]' || stamped=0
@@ -1698,17 +1617,16 @@ done
   && ok "a dry run writes the whole plan out and says where, however folded the screen was" \
   || no "the rows the plan folded away were nowhere to be found after the run"
 
-# The evidence files must carry what the tables trimmed, not just the top few the screen got.
-# The fixture holds two media dumps and the screen shows five, so the table only truncates once
-# there are more of them than that: copies of one dump, each a repo in its own right to every
-# rule, take the count past the cut with no new fixture to maintain.
+# The evidence files must carry what the tables trimmed. The screen shows five media
+# dumps and the fixture has two, so six copies of one, each a repo to every rule, take
+# the count past the cut.
 build_fixture; assert_isolated
 L="$RSP_HOME/prune-audit/last-run"
 for i in 1 2 3 4 5 6; do cp -a "$STORAGE/zmediamd" "$STORAGE/zmediacopy$i"; done
 screen=$(DISK_AWARE=0 MEDIA_MIN_SEEDS=99 PLAN_FULL=0 run)
 kept=$(sed -n 's/^# REVIEW \([0-9]*\) media dump.*/\1/p' <<<"$screen")
-# The rows the review table itself printed, which is what the cap acts on. The "...and N more"
-# line wears the same indent as a row and would otherwise count as one.
+# Rows the review table printed, which the cap acts on. The "...and N more" line has a
+# row's indent and would count as one.
 reviewrows() { awk '/^# REVIEW [0-9]+ media dump/ { inb = 1; next }
                     inb && /^#        \.\.\.and/ { next }
                     inb && /^#        / { n++; next }
@@ -1722,8 +1640,8 @@ reviewrows() { awk '/^# REVIEW [0-9]+ media dump/ { inb = 1; next }
   && ok "an evidence table the screen cut at five is written out in full" \
   || no "the evidence file was cut down to the same rows the screen showed"
 
-# A count of repos rule F gave up on is a warning nobody can act on until it names them. Every
-# repo in the fixture is over the ref ceiling below, so the walk gives up on all of them.
+# A count of repos rule F gave up on is useless until it names them. Every fixture repo is
+# over the ref ceiling below.
 unj=$(DISK_AWARE=0 MEDIA_MAX_REFS=0 CACHE=0 run)
 nunj=$(sed -n 's/^# WARN the media rule (F) could not judge \([0-9]*\) repo.*/\1/p' <<<"$unj")
 { [ "${nunj:-0}" -gt 0 ] \
@@ -1747,25 +1665,25 @@ upgraded=$(DISK_AWARE=0 MEDIA_MAX_REFS=0 CACHE=0 run)
   && ok "the first run after an upgrade reads 0.7.0's list of unjudged repos" \
   || no "the first run after an upgrade called every unjudged repo new"
 
-# A recording saved as .ts shares its extension with TypeScript, so only its bytes say it is
-# video. Over MEDIA_SNIFF_TEXT_BYTES a file named like text is read, and this one must not
-# pass for code. The copies below have no name in rad ls, so each holds over the 1 MiB of
-# media under which an unnamed repo is spared.
+# A .ts recording shares TypeScript's extension, so only its bytes say video. Over
+# MEDIA_SNIFF_TEXT_BYTES a text-named file is read and must not pass for code. The
+# copies have no rad ls name, so each holds over 1 MiB of media, below which an unnamed
+# repo is spared.
 build_fixture; assert_isolated
 L="$RSP_HOME/prune-audit/last-run"
 cp -a "$STORAGE/zmediamd" "$STORAGE/zmediats"
 e_tree zmediats 60 master "rec.ts:1200000:ts"
-# Past MEDIA_SNIFF_MAX_FILES (200) files of unknown type, the smallest go unread. 200 clips
-# and one unread file: unread bytes that could be text past the smallest budget leave the
-# repo unjudged, and a few that could not are counted as text and change nothing. The unread
-# file sorts first by name, so only reading the biggest first leaves it the one unread.
+# Past MEDIA_SNIFF_MAX_FILES (200) unknown files, the smallest go unread. Unread bytes that
+# could be text past the smallest budget leave the repo unjudged. A few that could not are
+# counted as text and change nothing. The unread file sorts first, so only reading biggest
+# first skips it.
 cap=(); for i in $(seq -w 1 200); do cap+=("clip$i.bin:6000:mp4"); done
 cp -a "$STORAGE/zmediamd" "$STORAGE/zmediacap"
 e_tree zmediacap 60 master "${cap[@]}" "0tail.bin:2500"
 cp -a "$STORAGE/zmediamd" "$STORAGE/zmediacap2"
 e_tree zmediacap2 60 master "${cap[@]}" "0tail.bin:100"
-# A video beside 200 small files of text already past the widest budget: no verdict is in
-# reach whatever the one unread file is, so the repo is spared, not reported as unjudged.
+# A video beside 200 small text files already past the widest budget. No verdict is in
+# reach whatever the one unread file holds, so the repo is spared, not reported unjudged.
 many=(); for i in $(seq -w 1 200); do many+=("t$i.bin:400"); done
 cp -a "$STORAGE/zmediamd" "$STORAGE/zmediamany"
 e_tree zmediamany 60 master "big.mp4:1200000:mp4" "${many[@]}" "0tail.bin:300"
@@ -1785,9 +1703,9 @@ grep -qE "^zmediacap2 .*media-dump" <<<"$plan" \
 
 
 build_fixture; assert_isolated
-# --- a scan that missed too much of storage refuses to report a plan at all --- Three
-# unreadable repos against a 1% limit, so the assertion does not ride on the fixture size.
-# Without this the run would report a plausible-looking small plan built from a partial scan.
+# --- a scan that missed too much of storage reports no plan --- Three unreadable repos
+# against a 1% limit, whatever the fixture size. A partial scan would otherwise give a
+# plausible small plan.
 for r in zjunk1 zbig2 zbar8; do chmod 000 "$STORAGE/$r"; done
 out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 MAX_SCAN_FAIL_PCT=1 "$SCRIPT" 2>&1); rc=$?
 for r in zjunk1 zbig2 zbar8; do chmod 755 "$STORAGE/$r"; done
@@ -1797,9 +1715,8 @@ for r in zjunk1 zbig2 zbar8; do chmod 755 "$STORAGE/$r"; done
   && ok "blind scan aborts instead of reporting a small plan" \
   || no "blind scan aborts (got exit $rc)"
 
-# --- every walk in the scan can fail mid-flight without taking the run down --- A busy seed
-# changes under find, and a find that fails while counting repos must not end the run before it
-# prints anything a bug report could use.
+# --- a walk in the scan can fail mid-flight without ending the run --- A busy seed
+# changes under find, and a failing find must not end the run before it prints anything.
 shimdir="$ROOT/shim"; mkdir -p "$shimdir"
 cp "$HERE/find-shim" "$shimdir/find"; chmod +x "$shimdir/find"
 out=$(PATH="$shimdir:$PATH" DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" 2>&1); rc=$?
@@ -1810,9 +1727,8 @@ grep -qE '^# WARN [0-9]+ scan error' <<<"$out" \
   && ok "a failing find is still reported as a scan error" \
   || no "failing find reported"
 
-# --- storage we cannot read is an abort, never a serene empty plan --- Running as the wrong
-# user reads as zero repos, and zero repos reads as "nothing to do" rather than "I could not
-# look".
+# --- unreadable storage aborts --- The wrong user reads zero repos, which would look like
+# "nothing to do" when it means "could not look".
 chmod 000 "$STORAGE"
 out=$(DISK_AWARE=0 "$SCRIPT" 2>&1); rc=$?
 chmod 755 "$STORAGE"
@@ -1821,9 +1737,8 @@ chmod 755 "$STORAGE"
   && ok "unreadable storage dir aborts (no empty plan)" \
   || no "unreadable storage aborts (got exit $rc)"
 
-# A quarantine verb is checked against what it calls, not against what a scan calls, so the
-# list it is checked against has to be right: restore reaches dirname through the keep file it
-# writes, and without dirname it puts a repo back that the next run prunes again.
+# A quarantine verb is checked against the commands it calls. restore reaches dirname
+# through the keep file it writes, and without it restores a repo the next run prunes.
 nodirname="$ROOT/nodirname"; path_without "$nodirname" dirname
 out=$(PATH="$nodirname" "$SCRIPT" quarantine restore zjunk1 2>&1); rc=$?
 { [ "$rc" = 1 ] && grep -q 'missing required command(s): dirname$' <<<"$out"; } \
@@ -1834,8 +1749,7 @@ out=$(PATH="$noiconv" DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" 2>&1); rc=$?
 { [ "$rc" = 1 ] && grep -q 'missing required command(s): iconv$' <<<"$out"; } \
   && ok "a scan without iconv stops and names it" \
   || no "a scan ran without iconv, or did not name it (got exit $rc)"
-# An iconv that stops at the first byte that is not UTF-8, as BSD's does, keeps only what came
-# before it.
+# An iconv that stops at the first non-UTF-8 byte, as BSD's does, keeps only what came before.
 mkdir -p "$ROOT/stopiconv"
 printf '#!/bin/sh\nLC_ALL=C sed "s/[^ -~].*//"\nexit 1\n' > "$ROOT/stopiconv/iconv"
 chmod +x "$ROOT/stopiconv/iconv"
@@ -1844,10 +1758,9 @@ out=$(PATH="$ROOT/stopiconv:$PATH" DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" 2>
   && ok "a scan with an iconv that stops at bad bytes stops and says so" \
   || no "a scan ran with an iconv that cuts text short (got exit $rc)"
 
-# --- the per-repo workers do not need bash on PATH --- A run started as
-# `/nix/store/.../bash rad-prune` has the shell by absolute path and not through PATH.
-# The stub's shebang is rewritten because `env bash` cannot find bash here either, and the stub
-# is not what this test is about.
+# --- workers do not need bash on PATH --- A run started as `/nix/store/.../bash rad-prune`
+# has bash only by absolute path. The stub's shebang is rewritten because `env bash`
+# fails here too.
 nobash="$ROOT/nobash"; path_without "$nobash" bash sh rad
 realbash=$(command -v bash)
 sed "1s|.*|#!$realbash|" "$HERE/rad-stub" > "$nobash/rad"; chmod +x "$nobash/rad"
@@ -1858,9 +1771,8 @@ out=$(PATH="$nobash" RAD="$nobash/rad" DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 \
   && ok "the workers run with bash off PATH" \
   || no "workers need bash on PATH (got exit $rc)"
 
-# --- a walk that read nothing is refused, not reported as an empty plan --- A ref walk that
-# dies wholesale leaves every repo ageless, every age rule then skips it, and the plan comes
-# out empty from a scan that read no dates at all.
+# --- a walk that read nothing aborts --- A ref walk that dies wholesale leaves every repo
+# ageless, the age rules skip them all, and the plan comes out empty.
 nolife="$ROOT/nolife"; mkdir -p "$nolife"
 cp "$HERE/no-life-xargs-shim" "$nolife/xargs"; chmod +x "$nolife/xargs"
 out=$(PATH="$nolife:$PATH" DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" 2>&1); rc=$?
@@ -1869,9 +1781,8 @@ out=$(PATH="$nolife:$PATH" DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" 2>&1); rc=
   && ok "a scan with no ref dates aborts (no empty plan)" \
   || no "ref-less scan aborts (got exit $rc)"
 
-# --- a fetch still arriving is fresh, not ageless --- A repo whose directory exists before its
-# refs do has no age, and counting it against the blind-scan limit would abort a run over
-# nothing worse than a busy node.
+# --- a fetch still arriving is fresh, not ageless --- A repo dir that exists before its
+# refs has no age, and counting it against the blind-scan limit aborts over a busy node.
 git init -q --bare "$STORAGE/zinflightfetch"
 touch "$STORAGE/zinflightfetch"
 out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" 2>&1); rc=$?
@@ -1881,11 +1792,10 @@ rm -rf "$STORAGE/zinflightfetch"
   && ok "a repo with no refs yet counts as freshly written, not as ageless" \
   || no "an in-flight fetch counted against the blind-scan limit (got exit $rc)"
 
-# --- the progress line shows a share done and a time left only once it can stand by them ---
-# One repo can cost a thousand times another, so a projection from a few repos is wrong by
-# minutes. The size walk is held to calls of 64 repos finishing at 2s, 4s and 24s: the reading
-# after 64 repos is too few to project from, the one after 128 is enough, and the 20 seconds of
-# the last call is a stall the line has to own up to. That needs a fixture of 129 to 192 repos.
+# --- progress shows a share done and time left only once it can stand by them --- One repo
+# can cost a thousand times another. The size walk runs calls of 64 repos ending at 2s,
+# 4s and 24s: 64 repos is too few to project from, 128 is enough, and the last call's
+# 20s is a stall the line must own up to. That needs a fixture of 129 to 192 repos.
 [ "$NREPOS" -gt 128 ] && [ "$NREPOS" -le 192 ] || no "the progress test needs 129-192 repos"
 slowdu="$ROOT/slowdu"; mkdir -p "$slowdu"
 cp "$HERE/slow-du-shim" "$slowdu/du"; chmod +x "$slowdu/du"
@@ -1913,7 +1823,6 @@ out=$(RSP_NODE_DOWN=1 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" --apply 2>&1); 
   || no "node-down aborts --apply (got exit $rc)"
 
 # --- apply: non-interactive (cron path) applies; interactive prompt (pty) obeys y/N ---
-# non-interactive --apply (no controlling tty): applies directly, no prompt.
 build_fixture; assert_isolated                    # fresh fixture before the tests that delete
 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null \
   >"$ROOT/apply.out" 2>&1
@@ -1934,15 +1843,14 @@ done
   && ok "apply calls rad unseed + block on a pruned repo" \
   || no "apply calls unseed+block"
 
-# What a run that has just moved GiB out of storage is asked next is how to get the disk back.
+# After moving GiB out of storage, the next question is how to get the disk back.
 grep -q 'quarantine delete --all' <<<"$aout" \
   && ok "the DONE line says how to reclaim the disk now" \
   || no "DONE line does not name the reclaim command"
 
-# --- an apply that could block nothing --- The block is what stops a deleted repo being
-# fetched straight back, so a repo it failed on stays in storage. Every line the run then
-# prints has to agree with the disk: a progress phase that counted repos attempted would close
-# with the full plan directly above the warning that none of it happened.
+# --- an apply that could block nothing --- The block stops a deleted repo being fetched
+# back, so a repo it failed on stays. Every line must then agree with the disk, or a phase
+# counting attempts shows the full plan above the warning that none of it happened.
 build_fixture; assert_isolated
 RSP_BLOCK_FAIL=1 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null \
   >"$ROOT/blockfail.out" 2>&1
@@ -1957,18 +1865,17 @@ for r in zjunk1 zbig2 ztwoyr3; do [ -e "$STORAGE/$r" ] || kept=0; done
   && ok "an apply that blocked nothing deletes nothing and reports 0 of the plan pruned" \
   || no "a failed apply deleted repos or reported the whole plan as pruned"
 
-# The quarantine advice is about what THIS run put there, so a run that put nothing there does
-# not print it and does not point at a delete --all that would delete earlier runs' repos.
+# The quarantine advice covers this run's repos. A run that quarantined none prints none,
+# and above all no delete --all, which would delete earlier runs' repos.
 { grep -q '^# DONE   quarantined 0 repos' <<<"$bout" \
   && ! grep -q 'quarantine delete --all' <<<"$bout"; } \
   && ok "a run that quarantined nothing leaves out the quarantine advice" \
   || no "quarantine advice printed after a run that quarantined nothing"
 
-# --- a quarantine copy that could not be dated --- The purge measures the window from the
-# directory's date, so a copy that kept the repo's own date counts its window from a date this
-# run did not choose. The repo did leave storage, so it counts as pruned; what it may not have
-# is the full undo the closing line promises, and that line is the one an operator reads
-# before walking away.
+# --- a quarantine copy that could not be dated --- The purge window runs from the dir's
+# date, so a copy that kept the repo's own date starts from one this run did not choose.
+# It left storage, so it counts as pruned, but the closing line must not promise it the
+# full undo.
 build_fixture; assert_isolated
 notouch="$ROOT/notouch"; mkdir -p "$notouch"
 cp "$HERE/failing-touch-shim" "$notouch/touch"; chmod +x "$notouch/touch"
@@ -1985,14 +1892,12 @@ uplanned=$(sed -n 's/^# PLAN   prune \([0-9]*\) repo.*/\1/p' <<<"$uout")
   && ok "a quarantine copy that kept its own date is pruned, and its short undo is reported" \
   || no "a copy that kept its own date was reported as recoverable for the full window"
 
-# --- rule G's act, which judges a PERSON --- Blocking is permanent and the peer never hears
-# about it, so it needs a human in the room every time: --apply alone must not reach it, and
-# --block-peers must refuse when there is nobody to ask.
+# --- rule G's act, which judges a PERSON --- Blocking is permanent and the peer never
+# hears of it, so it needs a human every time: --apply alone must not reach it, and
+# --block-peers refuses with nobody to ask.
 #
-# Each of the four sections below sets rule G's thresholds again. They are the same three
-# values every time and only the first needs them in a full run, but a section that inherited
-# them from the section above could not be run on its own, and one that judges no peer at all
-# passes these assertions for the wrong reason.
+# Each section below sets rule G's thresholds again so it runs alone; one that judged no
+# peer would pass these assertions for the wrong reason.
 build_fixture; assert_isolated
 export PARASITE_MIN_REPOS=3 PARASITE_MIN_BYTES=65536 PARASITE_TEXT_MAX_BYTES=4096
 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null >/dev/null 2>&1
@@ -2011,11 +1916,9 @@ DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply --block-peers \
   && ok "--block-peers refuses with no terminal rather than blocking unattended" \
   || no "--block-peers blocked a peer with nobody there to approve it"
 
-# The unattended form an operator asks for explicitly. Two opt-ins, because this blocks a peer
-# across every repo at once with nobody reviewing it.
-#
-# "Exclusions (never touched)" has to mean the same thing whichever action is running: a kept
-# repo keeps the parasite's refs too, and the block alone stops anything new landing in it.
+# The unattended form, behind two opt-ins because it blocks a peer across every repo with
+# nobody reviewing. "Exclusions (never touched)" holds for every action: a kept repo
+# keeps the parasite's refs, and the block alone stops anything new landing in it.
 build_fixture; assert_isolated
 export PARASITE_MIN_REPOS=3 PARASITE_MIN_BYTES=65536 PARASITE_TEXT_MAX_BYTES=4096
 echo zpara3 > "$RSP_HOME/keep.txt"
@@ -2040,7 +1943,7 @@ DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 KEEP_FILE="$RSP_HOME/keep.txt" "${NOTTY[@]}" \
   || no "the ref drop ignored the exclusions, or stopped dropping refs anywhere"
 rm -f "$RSP_HOME/keep.txt"
 
-# --yes alone must not start blocking peers: the finding is not the act.
+# --yes alone must not block peers.
 build_fixture; assert_isolated
 export PARASITE_MIN_REPOS=3 PARASITE_MIN_BYTES=65536 PARASITE_TEXT_MAX_BYTES=4096
 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply --yes \
@@ -2055,9 +1958,8 @@ grep -q "rad block $PARA" <<<"$plan_g" \
   || no "rule G named a peer without printing how to act on it"
 
 if command -v script >/dev/null 2>&1; then
-  # Two prompts, and the peer comes first because --block-peers is its own action that does
-  # not wait on the prune. "n" then "y" leaves the peer alone and still applies the plan,
-  # which is what separates the per-peer question from a blanket licence given by the flag.
+  # The peer prompt comes first. "n" then "y" must spare the peer and still apply the plan, so
+  # the flag is no blanket licence to block.
   build_fixture; assert_isolated
   printf 'n\ny\n' | script -qec \
     "env DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 PARASITE_MIN_REPOS=3 PARASITE_MIN_BYTES=65536 \
@@ -2098,9 +2000,8 @@ if command -v script >/dev/null 2>&1; then
     && ok "a block is recorded in the audit log with the evidence behind it" \
     || no "a peer was blocked without the evidence being written down"
 
-  # Blocking a peer and pruning repos are separate decisions, so --block-peers must stand on
-  # its own: nobody should have to delete the whole plan to deal with one peer. One "y", for
-  # the peer, since without --apply there is no plan prompt to answer.
+  # --block-peers stands alone, so dealing with one peer never means pruning the plan. One "y",
+  # since without --apply there is no plan prompt.
   build_fixture; assert_isolated
   before=$(ls "$STORAGE" | wc -l)
   printf 'y\n' | script -qec \
@@ -2120,10 +2021,9 @@ else
 fi
 unset PARASITE_MIN_REPOS PARASITE_MIN_BYTES PARASITE_TEXT_MAX_BYTES
 
-# --- a failed deletion is never reported as reclaimed disk --- A repo dir that is not writable
-# lets the whole plan compute, then fails its move, since moving a directory to another parent
-# rewrites its "..". The audit log and the GiB total are both written from the plan, so
-# silence here would record disk that never freed.
+# --- a failed deletion is never reported as reclaimed disk --- A read-only repo dir fails its
+# move, since mv rewrites its "..". The audit log and GiB total come from the plan, so silence
+# here would record disk that never freed.
 build_fixture; assert_isolated
 before=$(ls "$STORAGE" | wc -l)
 chmod 555 "$STORAGE"/z*
@@ -2137,10 +2037,10 @@ after=$(ls "$STORAGE" | wc -l)
     && [ "$(tail -1 "$(ls "$AUDIT_DIR"/prune-*.log | tail -1)")" = '# exit 1' ]; } \
   && ok "a failed quarantine move is reported, not counted as reclaimed, and exits 1" \
   || no "failed quarantine reported (rc=$rc)"
-# The blocks that run left are its own, so the run that does remove those repos must not
-# record them as blocked by somebody else, which would keep the undo from ever lifting them.
+# The failed run's blocks are its own, so the run that later removes those repos must not
+# record them as somebody else's, or the undo never lifts them.
 grep -q '^# prune-failed: rad:zjunk1$' "$AUDIT_DIR"/prune-*.log 2>/dev/null; failed_logged=$?
-# A run whose blocks fail in between plans zjunk1 again and must keep that line going.
+# A middle run whose blocks fail plans zjunk1 again and must carry that line forward.
 mid=$(RSP_UNSEED_FAIL=1 RSP_BLOCK_FAIL=1 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" \
         "$SCRIPT" --apply </dev/null 2>&1); midrc=$?
 grep -q 'WARN block failed, skipping delete: zjunk1' <<<"$mid" || midrc=bad
@@ -2151,8 +2051,8 @@ last=$(ls "$AUDIT_DIR"/prune-*.log | tail -1)
   && ok "a block left by a failed prune stays rad-prune's own" \
   || no "a failed prune's block was recorded as somebody else's (rc=$rc, middle run $midrc)"
 
-# --- an audit log is never overwritten --- Logs are named by the second, and another run's log
-# is that run's only record of what it pruned. The first name the run asks for is taken.
+# --- an audit log is never overwritten --- Logs are named by the second, and a log is its
+# run's only record of what it pruned. The first name this run tries is taken.
 build_fixture; assert_isolated
 mkdir -p "$AUDIT_DIR"
 echo "# another run" > "$AUDIT_DIR/prune-20300101T000000Z.log"
@@ -2166,9 +2066,9 @@ out=$(PATH="$fixdate:$PATH" RSP_STAMPS="$ROOT/stamps" DISK_AWARE=0 ABS_SIZE_FLOO
   && ok "a run whose log name is taken waits for a free one" \
   || no "a run wrote over another run's audit log (rc=$rc)"
 
-# --- an audit dir the run cannot write stops it before the scan --- Every block is recorded in
-# the audit log, and a block with no record is one the undo cannot tell from somebody else's.
-# A file where the dir should be defeats mkdir -p even for root.
+# --- an audit dir the run cannot write stops it before the scan --- A block with no log record
+# is one the undo cannot tell from somebody else's. A file where the dir should be defeats
+# mkdir -p even for root.
 build_fixture; assert_isolated
 : > "$RSP_HOME/.stub_block"
 rm -rf "$AUDIT_DIR"; : > "$AUDIT_DIR"
@@ -2183,9 +2083,8 @@ pout=$(PARASITE_MIN_REPOS=3 PARASITE_MIN_BYTES=65536 PARASITE_TEXT_MAX_BYTES=409
   && ok "an audit dir that cannot be written stops --apply and --block-peers before any block" \
   || no "an unwritable audit dir let a run block or prune (rc=$rc, --block-peers rc=$prc)"
 
-# --- one changing run at a time --- A second run that blocks, moves or deletes while another
-# holds the lock could delete the copy that run just put in the quarantine. Without flock the
-# run goes ahead, and says it is not kept apart.
+# --- one changing run at a time --- A second changing run could delete the copy the first just
+# quarantined. Without flock the run goes ahead and says it is not kept apart.
 build_fixture; assert_isolated
 mkdir -p "$AUDIT_DIR/quarantine/zlockq"; touch -d '30 days ago' "$AUDIT_DIR/quarantine/zlockq"
 : > "$RSP_HOME/.stub_block"
@@ -2256,20 +2155,18 @@ grep -q '^# unblocked: rad:zcode4 why=prune-failed reason=link-farm ' "$log" \
 grep -q "^# unblocked: rad:$LIFTONE why=prune-failed reason=junk-name " "$log" \
   && ok "a failed removal of a repo UNDO_LIFT names has the block lifted" \
   || no "a failed removal's block outlived its UNDO_LIFT entry"
-# A repo this run plans again keeps the block, and the removal is retried under it.
 { [ ! -e "$STORAGE/zbar8" ] && ! grep -q 'unblocked: rad:zbar8' "$log"; } \
   && ok "a failed removal planned again keeps its block" \
   || no "the block was lifted on a repo this run prunes"
-# Missing from the plan is not a withdrawn verdict, and a spared repo the deny list pruned, or
-# one of whose delegates it names, is the deny list's to keep blocked.
+# Missing from the plan is no withdrawn verdict. A block the deny list made, by repo or by
+# delegate, is the deny list's to keep.
 { [ -d "$STORAGE/zbig2" ] && ! grep -q 'unblocked: rad:zbig2' "$log" \
     && ! grep -q 'unblocked: rad:zpin6' "$log" && ! grep -q 'unblocked: rad:zpriv7' "$log"; } \
   && ok "a failed removal nothing spares, or that the deny list made, keeps its block" \
   || no "a block was lifted on a repo merely missing from the plan, or denied"
 
-# --- keep.txt is read whole or not at all --- Every id on a line keeps its repo, and a list
-# that exists but cannot be read stops the run: read as empty, it would let every repo on it
-# be pruned again.
+# --- keep.txt is read whole or not at all --- Every id on a line counts. An unreadable list
+# stops the run, since read as empty it lets every repo on it be pruned again.
 build_fixture; assert_isolated
 mkdir -p "$AUDIT_DIR"
 printf 'zjunk1 rad:zbar8  # both\n- zbig2\n' > "$AUDIT_DIR/keep.txt"
@@ -2289,10 +2186,9 @@ else
   skip "running as root, which reads a mode-000 file anyway"
 fi
 
-# --- a quarantine the run cannot write stops it before the scan --- Every repo is unseeded and
-# blocked before it moves, so carrying on would leave the whole plan blocked and still in
-# storage, and an audit log of a plan that never ran would count as pruned on the next run. A
-# regular file where the quarantine goes defeats mkdir even for root.
+# --- a quarantine the run cannot write stops it before the scan --- Repos are blocked before
+# they move, so carrying on would leave the plan blocked and still in storage, and its log
+# would count as pruned next run. A file where the quarantine goes defeats mkdir even for root.
 build_fixture; assert_isolated
 before=$(ls "$STORAGE" | wc -l)
 mkdir -p "$AUDIT_DIR"; : > "$AUDIT_DIR/quarantine"
@@ -2328,7 +2224,7 @@ if [ "$(id -u)" != 0 ]; then
 else
   skip "running as root, which writes a read-only storage dir anyway"
 fi
-# Any value but 1 would delete outright, which a typo meant as "on" must not do.
+# Read as off, a typo meant as "on" would delete outright.
 out=$(QUARANTINE=yes DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply \
         </dev/null 2>&1); rc=$?
 { [ "$rc" = 2 ] && grep -q 'QUARANTINE must be 0 or 1' <<<"$out" \
@@ -2336,10 +2232,9 @@ out=$(QUARANTINE=yes DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --
   && ok "a mistyped QUARANTINE stops the run instead of deleting outright" \
   || no "QUARANTINE=yes was read as off (rc=$rc)"
 
-# --- quarantine --- The three floor-0 verdicts may prune the last copy the network is known to
-# hold, so "re-fetch it" is not an undo for exactly the repos that most need one.
-#
-# QUARANTINE=0 is the path with no undo, so it has to stop at exactly the plan.
+# --- quarantine --- The floor-0 verdicts may prune the network's last known copy, so
+# re-fetching is no undo for them. QUARANTINE=0 has no undo, so it must delete exactly the
+# plan.
 build_fixture; assert_isolated
 Q="$RSP_HOME/prune-audit/quarantine"
 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 QUARANTINE=0 "${NOTTY[@]}" "$SCRIPT" --apply \
@@ -2352,9 +2247,8 @@ done
   && ok "QUARANTINE=0 deletes the plan outright and nothing outside it" \
   || no "QUARANTINE=0 parked a copy, or deleted a repo outside the plan"
 
-# The quarantine subcommands. An operator who has just read a wrong verdict needs to act on
-# one repo, and the run that produced it is over: these are the only way to do that without
-# hand-moving directories under a live node's storage.
+# The quarantine subcommands let an operator act on one wrong verdict after its run is over,
+# without hand-moving directories under a live node's storage.
 build_fixture; assert_isolated
 Q="$RSP_HOME/prune-audit/quarantine"
 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null >/dev/null 2>&1
@@ -2367,12 +2261,11 @@ out=$("$SCRIPT" quarantine list 2>&1)
   && ok "quarantine list names what a past run pruned, why, and the repo's name" \
   || no "quarantine list did not show the quarantined repo, why it went, or its name"
 
-# Restoring has to do three things: the directory, the node's block policy, and the verdict
-# itself, or the very next run plans the same repo again. rad seed alone only ever rewrites an
-# existing policy row's scope, so on a blocked repo it reports success and changes nothing;
-# rad unseed deletes the row whatever policy it holds, which is what drops the block, and it
-# is the spelling that exists on every rad version. The prune above already called unseed, so
-# both stubs are emptied first: otherwise this would pass on the prune's own calls.
+# Restoring puts back the directory, the block policy and the verdict, or the next run plans
+# the repo again. rad seed only rewrites an existing policy row's scope, so on a blocked repo
+# it succeeds and changes nothing. rad unseed deletes the row whatever its policy, which
+# drops the block, and exists on every rad version.
+# Both stubs are emptied first so the prune's own calls cannot pass this.
 : > "$RSP_HOME/.stub_unseed"; : > "$RSP_HOME/.stub_seed"
 # The keep list's last line has no newline, as some editors save it.
 mkdir -p "$RSP_HOME/prune-audit"; printf 'zkeepme' > "$RSP_HOME/prune-audit/keep.txt"
@@ -2392,7 +2285,7 @@ grep -q 'zjunk1' <<<"$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 run)" \
   && no "a restored repo was planned for pruning all over again" \
   || ok "a repo on the keep list is left out of the next plan"
 
-# Deleting one on demand, rather than waiting out the window.
+# quarantine delete frees one repo's disk before its window runs out.
 build_fixture; assert_isolated
 Q="$RSP_HOME/prune-audit/quarantine"
 mkdir -p "$Q/zdead1" "$Q/zdead2"
@@ -2409,8 +2302,8 @@ echo zkeptd3 >> "$RSP_HOME/prune-audit/keep.txt"
   && ok "quarantine delete --all empties it, except a repo keep.txt lists" \
   || no "quarantine delete --all left a repo behind, or deleted a kept one"
 
-# Every verb builds a path from its argument, so an argument that is not a repo id must never
-# reach rm or mv.
+# Every verb builds a path from its argument, so one that is no repo id must never reach rm or
+# mv.
 build_fixture; assert_isolated
 Q="$RSP_HOME/prune-audit/quarantine"
 canary="$ROOT/canary"; mkdir -p "$canary"
@@ -2419,9 +2312,9 @@ out=$("$SCRIPT" quarantine delete "../../../../../..${canary}" 2>&1 || true)
   && ok "a quarantine verb refuses an argument that is not a repo id" \
   || no "a path argument reached rm through a quarantine verb"
 
-# The same window a run applies, on demand, so an operator can free the disk without waiting.
-# A copy is due three hours before its 7 days are up, so the next weekly run a few seconds, or
-# a daylight-saving hour, early still purges it. zedgeq1 is two hours short, zfreshq1 four.
+# purge applies a run's window on demand. A copy is due three hours early, so a weekly run a
+# few seconds or a daylight-saving hour early still purges it. zedgeq1 is two hours short,
+# zfreshq1 four.
 build_fixture; assert_isolated
 Q="$RSP_HOME/prune-audit/quarantine"
 mkdir -p "$Q/zexpq1" "$Q/zedgeq1" "$Q/zfreshq1"; touch -d "40 days ago" "$Q/zexpq1"
@@ -2440,9 +2333,8 @@ out=$("$SCRIPT" quarantine purge 2>&1)
   && ok "quarantine purge keeps a repo in keep.txt past its window, and list says so" \
   || no "quarantine purge deleted a repo in keep.txt, or list called it due"
 
-# --- the run cache --- Rules F and G read every repo's contents, and almost nothing changes
-# between weekly runs, so their per-repo output is kept and reused. The danger is not a slow
-# run, it is a verdict resting on evidence that has since stopped being true.
+# --- the run cache --- Rules F and G read every repo's contents and reuse their per-repo
+# output between runs. The danger is a verdict resting on evidence that is no longer true.
 build_fixture; assert_isolated
 first=$(DISK_AWARE=0 run)
 grep -qE "^zmediaone .*media-dump" <<<"$first" \
@@ -2453,8 +2345,7 @@ second=$(DISK_AWARE=0 run 2>&1)
   && ok "a second run reuses the first run's reading and plans the same repos" \
   || no "the warm cache changed the plan, or was never used"
 
-# The direction that matters on a deleter: a repo that has stopped looking like a dump must
-# not be pruned on last week's reading of it.
+# A repo that no longer looks like a dump must not be pruned on last week's reading.
 e_tree zmediaone 60 master "clip.mp4:40000:mp4" "README.md:9000"
 grep -qE "^zmediaone .*media-dump" <<<"$(DISK_AWARE=0 run)" \
   && no "a repo was condemned on cached evidence it no longer matches" \
@@ -2468,9 +2359,8 @@ out=$(DISK_AWARE=0 MEDIA_MIN_BYTES=999999999 "${NOTTY[@]}" "$SCRIPT" </dev/null 
   && ok "changing a threshold drops the whole cache" \
   || no "a tuned threshold reused verdicts measured under the old one"
 
-# A cold start throws the key files of EVERY cached rule away, not only those of the rules it
-# is about to rewrite. Stamping the new fingerprint once per rule instead left a run that died
-# between two rules looking fully warm while half its keys still belonged to the old settings.
+# A cold start drops the keys of EVERY cached rule. Stamping the fingerprint per rule would
+# leave a run that dies between two rules looking warm with half its keys from old settings.
 build_fixture; assert_isolated
 CACHEDIR="$RSP_HOME/prune-audit/cache"
 DISK_AWARE=0 run >/dev/null
@@ -2482,9 +2372,8 @@ DISK_AWARE=0 RULES=G MEDIA_MIN_BYTES=999999999 "${NOTTY[@]}" "$SCRIPT" \
   && ok "a cold start drops the keys of the rules it does not run, not just its own" \
   || no "a rule that sat out a cold run kept keys measured under the settings that changed"
 
-# STORAGE is an operator-supplied path, and the list of already-answered repos is built from
-# it. A '#' in it would end sed's own delimiter, which would both re-walk every repo and paste
-# its cached rows in beside the fresh ones.
+# STORAGE is operator-supplied and the already-answered list is built from it. A '#' in it ends
+# sed's delimiter, re-walking every repo and pasting its cached rows beside fresh ones.
 build_fixture; assert_isolated
 odd="$RSP_HOME/st#or&age"
 cp -r "$STORAGE" "$odd"
@@ -2494,9 +2383,8 @@ out=$(DISK_AWARE=0 STORAGE="$odd" "${NOTTY[@]}" "$SCRIPT" </dev/null 2>&1)
   && ok "a storage path holding shell and sed metacharacters still caches correctly" \
   || no "a '#' in STORAGE broke the already-read list"
 
-# Rule G judges a peer across the whole of storage, so its cached rows and its freshly walked
-# ones are added together. A repo counted twice, or one banked from a walk that never
-# finished, moves the byte totals the accusation rests on.
+# Rule G judges a peer across all storage, adding cached and fresh rows. A repo counted twice,
+# or banked from an unfinished walk, moves the byte totals the accusation rests on.
 build_fixture; assert_isolated
 export PARASITE_MIN_REPOS=3 PARASITE_MIN_BYTES=65536 PARASITE_TEXT_MAX_BYTES=4096
 cold=$(DISK_AWARE=0 run)
@@ -2508,13 +2396,12 @@ warm=$(DISK_AWARE=0 run 2>&1)
   || no "reusing rule G's reading changed which peers it accused"
 unset PARASITE_MIN_REPOS PARASITE_MIN_BYTES PARASITE_TEXT_MAX_BYTES
 
-# The window has to run from when the repo ARRIVED in quarantine. mv keeps the source mtime,
-# and rules B and C select repos nothing has touched for 90 to 730 days, so measuring from
-# that would purge their recovery copy on the very next run. zrot1 is the stale fixture.
+# The window runs from when the repo ARRIVED in quarantine. mv keeps the source mtime, and
+# rules B and C pick repos untouched for 90 to 730 days, so their copy would purge on the next
+# run. zrot1 is the stale fixture.
 build_fixture; assert_isolated
 Q="$RSP_HOME/prune-audit/quarantine"
-# Age the directory itself, or mv would carry a fresh mtime across and the check below could
-# not tell the fixed behaviour from the broken one.
+# Age the dir itself, or mv carries a fresh mtime and the check cannot tell fixed from broken.
 touch -d "200 days ago" "$STORAGE/zrot1"
 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 STALE_YEARS_DAYS=30 "${NOTTY[@]}" "$SCRIPT" --apply \
   </dev/null >/dev/null 2>&1
@@ -2526,8 +2413,8 @@ out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 STALE_YEARS_DAYS=30 "${NOTTY[@]}" "$SCRIP
   || no "quarantine measured the window from the repo's own mtime, so it purged immediately"
 
 # --- free space that something outside storage took --- Pressure reads one sample of free
-# space, so a run says when it fell by far more than storage and the quarantine grew. A last
-# line with free_gb=99999 is a drop from a disk that large; free_gb=0 is no drop at all.
+# space, so a run warns when it fell by far more than storage and the quarantine grew. A last
+# line with free_gb=99999 is a drop; free_gb=0 is none.
 build_fixture; assert_isolated
 calm_disk="DISK_AWARE=1 PRESSURE_RELAX_PCT=0 PRESSURE_RELAX_GB=0 PRESSURE_CRIT_PCT=0"
 calm_disk="$calm_disk PRESSURE_CRIT_GB=0 RULES=AB"
@@ -2551,16 +2438,16 @@ env $calm_disk "${NOTTY[@]}" "$SCRIPT" --apply </dev/null >/dev/null 2>&1
      | grep -qE $'\taudit=prune-[^\t]+\tfree_gb=[0-9.]+\tused_gb=[0-9.]+$'; } \
   && ok "a run records free space and warns when something outside storage took it" \
   || no "free space that left from outside storage went unrecorded or unwarned"
-# Rule B waited in that run, so its log must not say it could prune: the ratchet would read the
-# week as one in which B pruned nothing, and pull its usual down.
+# Rule B waited in that run. If its log said B was on, the ratchet would read the week as B
+# pruning nothing and pull its usual down.
 grep -q '  rules=A$' "$(ls "$AUDIT_DIR"/prune-*.log | tail -1)" \
   && ok "a run records a rule waiting for disk pressure as not on" \
   || no "a waiting rule was recorded as on, a zero sample for the ratchet"
 
-# --- pressure counts what the run's own purge frees --- A df that reports a 10 MB disk with
-# 1 MB free puts the disk under pressure, and a 3 MB copy due out of the quarantine lifts it
-# above the relaxed threshold of 2 MB, so the size and stale rules (B, C) wait. A df that
-# prints nothing is no reading at all, and full pressure would empty the quarantine.
+# --- pressure counts what the run's own purge frees --- The fake df shows a 10 MB disk with 1
+# MB free. A 3 MB copy due out of the quarantine lifts it past the 2 MB relaxed threshold, so B
+# and C wait. A df that prints nothing stops the run, since full pressure would empty the
+# quarantine.
 build_fixture; assert_isolated
 fakedf="$ROOT/fakedf"; mkdir -p "$fakedf"
 printf '#!/bin/sh\necho "Filesystem 1024-blocks Used Available Capacity Mounted"\n%s\n' \
@@ -2585,8 +2472,8 @@ rc=$?
   && ok "a disk whose size cannot be read stops the run, quarantine untouched" \
   || no "an unreadable disk size read as full pressure (rc=$rc)"
 
-# A seed that has caught up has an empty plan every week. If the purge only ran on weeks with
-# something to prune, quarantined disk would never come back at all.
+# A caught-up seed has an empty plan every week, so the purge runs then too, or quarantined
+# disk never comes back.
 build_fixture; assert_isolated
 Q="$RSP_HOME/prune-audit/quarantine"
 mkdir -p "$Q/zoldquar2"; touch -d "40 days ago" "$Q/zoldquar2"
@@ -2595,13 +2482,13 @@ out=$(DISK_AWARE=0 RULES='' "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1)
   && ok "an empty plan still purges quarantine past its window" \
   || no "a run with nothing to prune left expired quarantine on disk"
 
-# RULES= is set but empty, and on a deleter that has to mean NO rules. Read as unset it would
-# fall back to the default and run every rule, the one direction that cannot be undone.
+# RULES= set but empty means NO rules. Read as unset it would run every rule.
 { ! grep -qE '^z' <<<"$(RULES='' run)" && has "$(run)" "zjunk1"; } \
   && ok "RULES= means no rules, not the default set" \
   || no "an empty RULES fell back to running every rule"
 
-# At the critical free-space threshold a recovery copy is a luxury the disk cannot buy.
+# At the critical threshold the disk cannot afford recovery copies, so the whole quarantine
+# goes, window or not. keep.txt still holds.
 build_fixture; assert_isolated
 Q="$RSP_HOME/prune-audit/quarantine"
 mkdir -p "$Q/zfreshquar" "$Q/zkeptquar"
@@ -2614,15 +2501,15 @@ out=$(DISK_AWARE=1 PRESSURE_CRIT_PCT=100 PRESSURE_CRIT_GB=999999 ABS_SIZE_FLOOR_
 [ -d "$Q/zkeptquar" ] \
   && ok "a critical disk leaves a repo in keep.txt in the quarantine" \
   || no "a critical disk deleted a quarantined repo keep.txt keeps"
-# The critical free-space threshold here sits above the relaxed one, and the run must still
-# act, and say it acts, at full pressure.
+# The critical threshold here sits above the relaxed one, and the run must still act, and say
+# so, at full pressure.
 { grep -q ' pressure 100% ' <<<"$out" && grep -q 'WARN the relaxed free-space threshold' <<<"$out"; } \
   && ok "a critical disk is full pressure even with the free-space thresholds inverted" \
   || no "the banner said less than full pressure while the quarantine was emptied"
 
-# The keep list is written by hand, sometimes on Windows: a byte-order mark before the first id
-# must not cost that repo its protection. A repo's name and description are whatever its
-# delegates wrote, so an escape sequence in either must not reach the operator's terminal.
+# keep.txt is hand-written, sometimes on Windows, so a byte-order mark must not cost its first
+# id its protection. A repo's name and description are its delegates' text, so an escape
+# sequence in either must not reach the terminal.
 build_fixture; assert_isolated
 printf '\xef\xbb\xbfzmediaone\n' > "$RSP_HOME/keep.txt"
 sed -i "s/^zmediazip\t[^\t]*/zmediazip\tevil$(printf '\033')[2J$(printf '\302\233')name/" \
@@ -2636,12 +2523,12 @@ rm -f "$RSP_HOME/keep.txt"
   && ok "a control character in a repo's name never reaches the terminal" \
   || no "an escape sequence in a repo name reached the operator's terminal"
 
-# Where rad prints a description as is, a line break in it ends the row, and what follows reads
-# as rows of its own. zbatchodd's forges a junk name for zcode7, and rows for three members of
-# the flatten batch whose own descriptions are changed, so that dropping them would leave the
-# rest agreeing. Rows for repos outside storage agree with the batch. znodesc*'s rows say
-# "local" where the visibility goes, as rad does for a repo this node does not seed, and their
-# head must not read as a description all nine share.
+# rad prints a description as is, so a line break in it ends the row and what follows reads as
+# rows. zbatchodd's forges a junk name for zcode7, and rows for three flatten-batch members
+# whose own descriptions change, so dropping them would leave the rest agreeing. Rows for repos
+# outside storage agree with the batch. znodesc*'s rows say "local" for visibility, as rad does
+# for a repo this node does not seed, and their head must not read as a description all nine
+# share.
 build_fixture; assert_isolated
 forge(){   # $1 = the description zbatchodd gets, then rid=description pairs for others
   local d=$1; shift
@@ -2685,9 +2572,8 @@ out=$(SPAM_MIN_BATCH=13 "$SCRIPT" 2>&1)   # the flatten batch is 12 members
   && ok "a forged row does not count towards the size a batch needs" \
   || no "a forged row made a batch one member short big enough"
 
-# A repo with no identity ref has no row of its own that a forged one could be told from, so a
-# run must not believe a row naming it. zjunk1's refs are packed, refs/rad/id with them, and it
-# is still named.
+# A repo with no identity ref has no row of its own to tell a forged one from, so a row naming
+# it is not believed. zjunk1's refs are packed, refs/rad/id with them, and it keeps its name.
 build_fixture; assert_isolated
 GIT_DIR="$STORAGE/zcode7" git update-ref -d refs/rad/id; touch -d "90 days ago" "$STORAGE/zcode7"
 sed -i '/^zcode7\t/d' "$RSP_MANIFEST"
@@ -2703,22 +2589,20 @@ out=$("$SCRIPT" 2>&1)
   || no "packing refs/rad/id lost zjunk1 its name"
 
 # --- rule H: an identity whose repos read like a malware operation is named, not acted on ---
-# zcode4 and zcode6 are renamed and described like an operation and signed by one identity,
-# with zcode7, a plain project whose name holds "rat" inside a longer word: two of three repos
-# hit, and the one strong word among them is a plural. Their documents also name a victim,
-# first, who has signed refs there, as a clone or a copy of old signed refs would, but did not
-# sign the commit that created either repo. zrot1 and zrot2 carry only weak words, as a
-# security researcher's repos would. Three more identities each miss one bar: two words, two of
-# five repos, one repo. Single repos are judged next. zrot3 has the strong word in a path too,
-# and zfarm2 in a commit subject, both with a history as new as the repo; zrot3's sits on a
-# tag, and zfarm2's subject carries an escape sequence. zrot1 has one in a path but none in its
-# name, and zbatch1 one in its name alone, and in a stranger's branch. zbatch2's path holds one
-# as well, but its history is a year older than the repo, as a mirror's is, and zcode6, the
-# operation's, is left to the identity review.
+# zcode4 and zcode6 are renamed and described like an operation and signed by one identity, as
+# is zcode7, a plain project with "rat" inside a longer word: two of three hit, and the one
+# strong word is a plural. Their documents also name a victim, first, who signed refs there, as
+# a clone would, but did not sign the commit creating either repo. zrot1 and zrot2 carry only
+# weak words, like a security researcher's. Three more identities each miss one bar: two words,
+# two of five repos, one repo. Single repos next. zrot3 has the strong word in a path too, on a
+# tag, and zfarm2 in a commit subject with an escape sequence, both with history as new as the
+# repo. zrot1 has one in a path but not its name, zbatch1 one in its name alone, and in a
+# stranger's branch. zbatch2's path holds one, but its history is a year older than the repo,
+# as a mirror's is. zcode6, the operation's, is left to the identity review.
 build_fixture; assert_isolated
-# The signer, the first nid or else $SIGNER, also signs the commit that creates the document,
-# when new_key made its key, and has signed refs there. The document names its repo, as a
-# project's does, so no two documents are the same blob, which a repo id is named after.
+# The signer, the first nid or else $SIGNER, also signs the commit that creates the document
+# when new_key made its key, and has signed refs there. Each document names its repo, so no two
+# are the same blob, which a repo id is named after.
 set_delegate(){   # $1 = rid, then the nids its identity document names
   local rid=$1 w dids="" nid c signer=${SIGNER:-$2}; shift
   w=$(mktemp -d -p "$ROOT")
@@ -2763,9 +2647,9 @@ for r in zfarm1 zfarm2; do set_delegate "$r" "$FEW"; done
 for r in zbatch1 zbatch2 zbatch3 zpoison5 zpoison9; do set_delegate "$r" "$THIN"; done
 # zrot3's document also names this node, which never signs there.
 set_delegate zrot3 "$ONE" "$RSP_NID"
-# Radicle names a repo after the blob of its first identity document, and rule H credits a
-# founder only in a repo whose id names that blob. So each repo whose founder matters moves to
-# that id here, and is spelled $CODE4 for zcode4 and so on below.
+# Radicle names a repo after its first identity document's blob, and rule H credits a founder
+# only where the id names that blob. So each repo whose founder matters moves to that id,
+# spelled $CODE4 for zcode4 and so on.
 rehome(){   # $1 = rid; prints the id it moves to
   local blob new
   blob=$(GIT_DIR="$STORAGE/$1" git rev-parse "refs/rad/id:embeds/radicle.json")
@@ -2833,8 +2717,8 @@ mapfile -t edits < <(
   rename zheavy keylogger 'a tool'
   rename zdigit24 ransomware 'a tool')
 sed -i "${edits[@]}" "$RSP_MANIFEST"
-# An applying run with only rule H on, so nothing else is pruned: it reports, and blocks nobody.
-# Under a time limit, because zfarm2's subject would stall a strip that runs in passes.
+# Only rule H is on, so the applying run reports and blocks nobody. The time limit catches a
+# strip that would stall, pass by pass, on zfarm2's subject.
 out=$(RULES=H "${NOTTY[@]}" timeout 60 "$SCRIPT" --apply --block-peers --yes </dev/null 2>&1)
 rc=$?
 { [ "$rc" = 0 ] \
@@ -2891,8 +2775,8 @@ nosig=$(PATH="$ROOT/nosig:$PATH" "$SCRIPT" 2>&1)
   && ok "no founder signature checking out at all is called out" \
   || no "rule H went quiet without saying no signature checked out"
 # Under MALWARE_PRUNE=1 every repo the operation's identity is a delegate of is planned,
-# zcode7 too, whose name matched nothing. A single repo stays a review, and the repo it cannot
-# date stays a warning.
+# zcode7 too, whose name matched nothing. A single repo stays a review, an undatable one a
+# warning.
 out=$(MALWARE_PRUNE=1 "$SCRIPT" 2>&1); rc=$?
 want=$(printf '%s %s\n' "$CODE4" malware-op "$CODE6" malware-op zcode7 malware-op \
          | sort | tr '\n' ' ')
@@ -2904,8 +2788,8 @@ want=$(printf '%s %s\n' "$CODE4" malware-op "$CODE6" malware-op zcode7 malware-o
   && grep -q 'WARN 1 repo(s) hold a strong malware word' <<<"$out"; } \
   && ok "MALWARE_PRUNE=1 plans an operation's repos and only reports single repos" \
   || no "MALWARE_PRUNE=1 planned the wrong repos (rc=$rc): $(plan_h)"
-# The deny list blocks an identity, it does not vouch for one, so a co-delegate it lists who
-# signed refs in an operation's repo does not keep the operation's identity from a block.
+# The deny list blocks identities and vouches for none, so a listed co-delegate who signed refs
+# in an operation's repo does not spare the operation's identity a block.
 DENIED=$(new_key)
 first=$(GIT_DIR="$STORAGE/$CODE4" git rev-parse refs/rad/id)
 add_delegate "$CODE4" "$DENIED"
@@ -2918,9 +2802,9 @@ touch -d "10 days ago" "$STORAGE/$CODE4"
 { [ "$rc" = 0 ] && grep -qx "#          rad block $OPS" <<<"$out"; } \
   && ok "a deny-listed co-delegate does not spare the operation's identity a block" \
   || no "a deny-listed identity's signed refs kept the operation's identity unblocked (rc=$rc)"
-# A repo an identity this seed vouches for signed, here the pinned repo's delegate, is spared,
-# and the operation's identity, a delegate of it, is not blocked. Blocked by hand already, the
-# block is the operator's, so no run advises lifting it.
+# A repo signed by an identity this seed vouches for, the pinned repo's delegate, is spared,
+# and the operation's identity, its delegate, is not blocked. A hand-made block is the
+# operator's, so no run advises lifting it.
 PIN=$(dlg zpin6)
 set_delegate zcode7 "$OPS" "$PIN"
 GIT_DIR="$STORAGE/zcode7" git update-ref "refs/namespaces/$PIN/refs/rad/sigrefs" refs/rad/id
@@ -2950,9 +2834,8 @@ out=$(PATH="$ROOT/noed:$PATH" "$SCRIPT" check-mine 2>&1); rc=$?
   && ! grep -q 'out of RULES' <<<"$out"; } \
   && ok "check asks for OpenSSL 3, since it cannot leave rules out" \
   || no "check gave advice it cannot follow when openssl cannot check ed25519 (rc=$rc)"
-# A delegate can add anybody who cloned a repo as a co-delegate, and a clone signs refs of its
-# own. FRAMED is added that way to the operation's two repos, in a later revision of each
-# document.
+# A delegate can add anyone who cloned a repo as a co-delegate, and a clone signs its own refs.
+# FRAMED is added that way to the operation's two repos, in a later revision of each document.
 FRAMED=$(dlg zframed)
 for r in "$CODE4" "$CODE6"; do add_delegate "$r" "$FRAMED"; done
 out=$("$SCRIPT" 2>&1); rc=$?
@@ -3055,9 +2938,9 @@ trees=$(GIT_DIR="$STORAGE/zhexid23" git rev-parse 'refs/tags/v1^{tree}' 'master^
 ! grep -q '^#     rad:zspaced26 ' <<<"$out" \
   && ok "rule H reads a repo's paths only so far" \
   || no "rule H read past MALWARE_BYTES into a tree that repeats itself"
-# Under MALWARE_PRUNE=1 a private repo of a named identity is spared on its own: its delegate
-# keeps every other repo in the plan, and is not blocked, which would stop the private repo's
-# updates. Dropping a ref above may have rewritten packed-refs, which reads as a fetch in flight.
+# Under MALWARE_PRUNE=1 a named identity's private repo alone is spared: the rest stay planned,
+# and the delegate is not blocked, which would stop the private repo's updates. A dropped ref
+# above may have rewritten packed-refs, which reads as a fetch in flight.
 touch -d "10 days ago" "$STORAGE/$CODE4" "$STORAGE/$CODE6"
 out=$(MALWARE_PRUNE=1 "${NOTTY[@]}" "$SCRIPT" --block-peers --yes </dev/null 2>&1)
 { grep -q "$CODE4 malware-op" <<<"$(plan_h)" && ! grep -q 'zpriv7' <<<"$(plan_h)" \
@@ -3075,8 +2958,8 @@ rm -f "$AUDIT_DIR"/prune-*.log "$AUDIT_DIR/history.log"
   && [ -e "$STORAGE/$CODE4" ] && [ ! -e "$RSP_HOME/.stub_block" ]; } \
   && ok "a run that holds the malware rule (H) back blocks none of its identities" \
   || no "rule H blocked an identity while held back (rc=$rc)"
-# Without --block-peers an applying run prunes the operation's repos and blocks nobody. Every
-# repo it pruned is put back, and taken out of keep.txt again, for the run after.
+# Without --block-peers an applying run prunes the operation's repos and blocks nobody. Each
+# pruned repo is put back, and dropped from keep.txt, for the next run.
 MALWARE_PRUNE=1 RULES=H "${NOTTY[@]}" "$SCRIPT" --apply --yes </dev/null >/dev/null 2>&1
 { [ ! -e "$STORAGE/$CODE4" ] && ! grep -qxF "$OPS" "$RSP_HOME/.stub_block"; } \
   && ok "without --block-peers no identity the malware rule (H) names is blocked" \
@@ -3148,8 +3031,8 @@ failed=$(RSP_FOLLOW_FAIL=1 MALWARE_PRUNE=1 "$SCRIPT" 2>&1)
   && grep -q "rad unfollow $OPS" <<<"$failed"; } \
   && ok "the warning stops once the block is lifted, and says why when blocks cannot be listed" \
   || no "a lifted block was still reported, or an unreadable block list was silent"
-# --- a deny-list block that fails --- The listed identity stays unblocked, which wants a
-# person, so the run exits 1. Rule H alone plans nothing here, so the block is all it does.
+# --- a deny-list block that fails --- The identity stays unblocked, which wants a person, so
+# the run exits 1. Rule H alone plans nothing here, so the block is all the run does.
 build_fixture; assert_isolated
 printf 'did:key:%s\n' "$STRANGER_NID" > "$AUDIT_DIR/deny.txt"
 out=$(RSP_BLOCK_NODE_FAIL=1 RULES=H "${NOTTY[@]}" "$SCRIPT" --apply --yes </dev/null 2>&1)
@@ -3159,15 +3042,14 @@ rc=$?
   || no "a failed deny-list block went unreported in the exit code (rc=$rc)"
 
 # --- the deny list: a person's verdict, acted on wherever it turns up ---
-# zcode4 is listed by id. zfarm1 is listed through its delegate. The stranger who pushed into
-# zmediapeer, and whom its identity document thanks by did:key, is listed too, and the listing
-# must not prune that repo: only the document's delegates list counts. zpin6 is listed, and so
-# is its delegate; the pin wins, and the delegate is not blocked, since that would stop the
-# pinned repo's updates. One id names a repo this node has not fetched, which is blocked ahead
-# of it. This node's own identity is listed and must be ignored. zcode4 was just written, as a
-# repo still arriving is, and a listed one is pruned anyway. The file ends without a newline
-# and has a Windows line ending, as a hand-edited one may. A history where no rule plans far
-# above its usual shows the deny list is not held back like a rule.
+# zcode4 is listed by id, zfarm1 through its delegate. The stranger who pushed into zmediapeer,
+# and whom its document thanks by did:key, is listed and must not prune it: only the document's
+# delegates count. zpin6 and its delegate are listed; the pin wins, and the delegate is not
+# blocked, which would stop the pinned repo's updates. An unfetched repo id is blocked ahead of
+# it. This node's own identity is listed too, and must be ignored. zcode4 was just written,
+# as a repo still arriving is, and is pruned anyway. The file ends without a newline and has
+# a CRLF, as hand-edited ones may. A history where no rule plans far above its usual shows
+# the deny list is not held back.
 build_fixture; assert_isolated
 for i in 1 2 3 4; do past_run "$i" $USUAL_BUT_C stale:20; done
 touch "$STORAGE/zcode4"
@@ -3176,9 +3058,9 @@ printf '%s\n' "rad:zcode4            # by repo id" "did:key:$(dlg zfarm1)"$'\r' 
        > "$AUDIT_DIR/deny.txt"
 printf 'zUnfetchedRepo9' >> "$AUDIT_DIR/deny.txt"
 # Three documents heartwood accepts but does not write. zfarm1's opens with a "delegates"
-# nested in its payload, naming a decoy, and its listed delegate must be read from the top
-# level. zcode6's nests the listed delegate and names somebody else at the top level, so it is
-# not denied. zcode7's spells the listed delegate's "z" as an escape, which serde decodes.
+# nested in its payload, naming a decoy, so its delegate must come from the top level. zcode6's
+# nests the listed delegate and names somebody else on top, so it is not denied. zcode7's
+# spells the listed delegate's "z" as an escape, which serde decodes.
 iddoc(){   # $1 = rid, $2 = the document
   local d="$STORAGE/$1" blob c
   blob=$(printf '%s' "$2" | GIT_DIR="$d" git hash-object -w --stdin)
@@ -3230,8 +3112,8 @@ grep -q "not-an-id is neither a repo id nor an identity" <<<"$out" \
   && ok "the deny list never blocks this node's own identity" \
   || no "the deny list blocked this node itself, or said nothing"
 
-# The runaway caps measure what the rules picked. A deny list longer than the cap is still a
-# person's list, and counting it in would stop every unattended run until somebody forced one.
+# The runaway caps measure what the rules picked. A deny list over the cap is still a person's,
+# and counting it would stop every unattended run until somebody forced one.
 build_fixture; assert_isolated
 printf 'rad:zcode4\nrad:zcode6\nrad:zcode7\n' > "$AUDIT_DIR/deny.txt"
 out=$(RULES='' MAX_PRUNE_COUNT=1 MAX_PRUNE_GB=0 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
@@ -3240,11 +3122,11 @@ out=$(RULES='' MAX_PRUNE_COUNT=1 MAX_PRUNE_GB=0 "${NOTTY[@]}" "$SCRIPT" --apply 
   || no "a deny list longer than the cap stopped the run (rc=$rc)"
 
 # --- copies of denied files: the files deny-files.tsv lists, found again in another repo ---
-# "same" pads with zeros, so every repo given leak.mp4 at 6 MiB holds one blob, which no
-# other fixture repo holds. zcode4 has it at its tip, zcode6 only in history, zcode7 beside
-# four times its bytes of other files, zpin6 is pinned, and zvictimten has it only where a
-# stranger pushed it. zrot1 holds a second listed clip, under COPY_MIN_BYTES. zrot2's listed
-# file is not media at all, and a stranger pushed zrot1's clip into it, too small to look at.
+# "same" pads with zeros, so every repo given leak.mp4 at 6 MiB holds one blob no other fixture
+# holds. zcode4 has it at its tip, zcode6 only in history, zcode7 beside four times its bytes
+# of other files, zpin6 is pinned, and zvictimten has it only where a stranger pushed it. zrot1
+# holds a second listed clip, under COPY_MIN_BYTES. zrot2's listed file is not media, and a
+# stranger pushed zrot1's clip into it, too small to look at.
 build_fixture; assert_isolated
 e_tree zcode4 90 master "leak.mp4:6291456:same" "README.md:100"
 e_tree zcode6 90 master "leak.mp4:6291456:same"
@@ -3384,11 +3266,10 @@ out=$(RULES='' "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1)
   && ok "an entry that is no repo id is left alone, neither blocked nor removed" \
   || no "--apply blocked or removed a storage entry that is no repo id"
 
-# A row naming a restored repo stops condemning. A row missing its size column must not read
-# its date as the source and slip past that. The cache is warm here, so the list changing is
-# what has to send each repo to be checked again. zcode7 has lost the object of its other
-# file, and zcode6 the commit of its other branch, so a listing of their branches stops
-# part-way and would leave the leak as all they hold.
+# A row naming a restored repo stops condemning, and a row missing its size column must not
+# read its date as the source. The cache is warm, so the list changing must send each repo to
+# be checked again. zcode7 has lost the object of its other file, and zcode6 the commit of its
+# other branch, so a listing of their branches stops part-way and would leave only the leak.
 build_fixture; assert_isolated
 e_tree zcode4 90 master "leak.mp4:6291456:same" "README.md:100"
 e_tree zcode7 90 master "leak.mp4:6291456:same" "own.mp4:25165824:mp4"
@@ -3429,9 +3310,9 @@ out=$("$SCRIPT" quarantine files zrot2 2>/dev/null); rc=$?
   && ok "quarantine files prints a row for its delegates' media and nothing else" \
   || no "quarantine files missed the delegates' media, or listed more (rc=$rc)"
 
-# --- the ratchet: each rule against what that rule usually prunes --- A weekly cron whose plan
-# doubles every month never touches a fixed cap, so the baseline is the audit logs the tool
-# already writes. It is per rule so that one rule's wave holds back that rule alone.
+# --- the ratchet: each rule against what that rule usually prunes --- A weekly plan that
+# doubles every month never hits a fixed cap, so the baseline is the past audit logs. Per rule,
+# so one rule's wave holds back only that rule.
 build_fixture; assert_isolated
 for i in 1 2 3 4; do past_run "$i" $USUAL_BUT_C; done
 dry=$(RATCHET_FLOOR=0 "$SCRIPT" 2>&1)
@@ -3465,7 +3346,7 @@ out=$("${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
   && ok "a rule under RATCHET_FLOOR is never held, however small its usual" \
   || no "the ratchet held back a handful of repos from a rule that usually prunes none (rc=$rc)"
 
-# Too little history is no baseline: two runs must not be treated as a norm to measure against.
+# Two past runs are too little history to be a baseline.
 build_fixture; assert_isolated
 for i in 1 2; do past_run "$i" junk-name:1; done
 out=$(RATCHET_FLOOR=0 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
@@ -3473,9 +3354,9 @@ out=$(RATCHET_FLOOR=0 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
   && ok "two past runs are not enough history to ratchet against" \
   || no "the ratchet fired on a baseline too thin to mean anything (rc=$rc)"
 
-# A run that held a rule back pruned none of that rule because it was not allowed to, and a run
-# with the rule switched off could not prune any, so neither is a sample of what the rule
-# usually does. Counted as zeros, the three of each below would drag C's median of 4 down to 2.
+# A run that held a rule back, or ran with it off, could prune nothing for that rule, so it
+# is no sample of the rule's usual.
+# Counted as zeros, the three of each below would drag C's median of 4 down to 2.
 build_fixture; assert_isolated
 for i in 1 2 3; do past_run "$i" $REST stale:4; done
 for i in 4 5 6; do past_run "$i" $REST held:C; done
@@ -3508,7 +3389,8 @@ out=$(RATCHET_FLOOR=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
   || no "repeat prunes in past runs set the usual a wave is measured against (rc=$rc)"
 
 # Two samples are no median: after six held weeks and one forced run, C's window holds that
-# forced wave and one ordinary week, and three times their mean would wave the next wave through.
+# forced wave and one ordinary week, and three times their mean would wave the next wave
+# through.
 build_fixture; assert_isolated
 for i in 1 2 3 4 5 6; do past_run "$i" $REST held:C; done
 past_run 7 $REST stale:490
@@ -3535,8 +3417,8 @@ out=$(MAX_PRUNE_COUNT=37 RATCHET_FLOOR=0 "${NOTTY[@]}" "$SCRIPT" --apply </dev/n
   && ok "a held wave does not trip the caps for the rest of the plan" \
   || no "the caps counted repos the ratchet had already held back (rc=$rc)"
 
-# Rotated logs leave the ratchet with less to go on, said out loud since under three readable
-# logs it holds nothing at all.
+# Rotated logs thin the ratchet's baseline, and under three readable logs it holds nothing, so
+# the run says so.
 build_fixture; assert_isolated
 for i in 1 2 3 4; do past_run "$i" $USUAL_BUT_C; done
 rm "$AUDIT_DIR"/prune-20260103T000000Z.log "$AUDIT_DIR"/prune-20260104T000000Z.log
@@ -3557,8 +3439,8 @@ done
   && ok "a setting with a value it cannot mean stops the run, quarantine verbs included" \
   || no "these settings were read anyway:$bad"
 
-# --- a run that stops leaves the quarantine as it found it --- The stop is what makes a human
-# look, and what they look at includes the last runs' verdicts, which only the quarantine has.
+# --- a run that stops leaves the quarantine as it found it --- The stop makes a human look,
+# and the last runs' verdicts they look at live only in the quarantine.
 build_fixture; assert_isolated
 Q="$AUDIT_DIR/quarantine"; mkdir -p "$Q/zexpired"; touch -d "30 days ago" "$Q/zexpired"
 out=$(MAX_PRUNE_COUNT=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
@@ -3574,7 +3456,7 @@ out=$(RATCHET_FLOOR=0 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
   && ok "a run whose whole plan is held back prunes nothing, and still purges what expired" \
   || no "a fully held run pruned something, or kept the quarantine's expired disk (rc=$rc)"
 
-# interactive prompt via a pty (needs util-linux `script`): n aborts, y applies.
+# The prompt through a pty (needs util-linux `script`). n aborts, y applies.
 if command -v script >/dev/null 2>&1; then
   build_fixture; assert_isolated
   b=$(ls "$STORAGE" | wc -l)
@@ -3586,21 +3468,19 @@ if command -v script >/dev/null 2>&1; then
     && ok "interactive --apply + n aborts, nothing deleted, nothing purged" \
     || no "interactive + n aborts"
 
-  # The line a human answers has to say what the run really does. Under quarantine the disk
-  # does not come back today, so a prompt promising to reclaim it is asking for a wrong yes.
+  # The prompt must say what the run does. Under quarantine the disk does not come back today,
+  # so a prompt promising to reclaim it asks for a wrong yes.
   { grep -q 'quarantine' "$ROOT/n.out" && ! grep -q 'reclaiming' "$ROOT/n.out"; } \
     && ok "the confirmation prompt says quarantine, not reclaim, while quarantine is on" \
     || no "the apply prompt promised disk the quarantine is still holding"
 
-  # A quarantine is a recovery copy, and at the critical free-space threshold the run empties
-  # it whole rather than wait out the window. If it were emptied before the human is asked
-  # anything, answering no would destroy every recovery copy in a run that prunes nothing.
+  # At the critical threshold the run empties the whole quarantine. If that happened before
+  # the prompt, answering no would destroy every recovery copy in a run that prunes nothing.
   CRIT="env DISK_AWARE=1 PRESSURE_CRIT_PCT=100 PRESSURE_CRIT_GB=999999 ABS_SIZE_FLOOR_MB=1"
   build_fixture; assert_isolated
   Q="$RSP_HOME/prune-audit/quarantine"; mkdir -p "$Q/zkeepme"
   printf 'n\n' | script -qec "$CRIT '$SCRIPT' --apply" /dev/null >"$ROOT/ncrit.out" 2>&1
-  # pressure=100% is how the banner shows the critical threshold, so it is what keeps this from
-  # passing on a run that was never at the threshold.
+  # "pressure 100%" in the banner proves the run was at the critical threshold.
   { grep -q aborted "$ROOT/ncrit.out" && grep -q ' pressure 100% ' "$ROOT/ncrit.out" \
     && [ -d "$Q/zkeepme" ]; } \
     && ok "answering no leaves the quarantine standing, critical free-space threshold or not" \
@@ -3620,9 +3500,9 @@ else
   echo "skip - interactive prompt tests (no util-linux 'script' for a pty)"
 fi
 
-# The script runs from / so a launch directory it cannot read does not fail every find, and
-# that must not change what a RELATIVE RAD_HOME/STORAGE/RAD meant to the caller. The keep list
-# under a relative AUDIT_DIR is read too: zjunk1 is on it, and zbig2 shows the plan is real.
+# The script runs from / so an unreadable launch dir cannot fail every find, and that must not
+# change what a RELATIVE RAD_HOME/STORAGE/RAD meant to the caller. The keep list under a
+# relative AUDIT_DIR is read too: zjunk1 is on it, and zbig2 shows the plan is real.
 build_fixture; assert_isolated
 mkdir -p "$RSP_HOME/prune-audit"; printf 'zjunk1\n' > "$RSP_HOME/prune-audit/keep.txt"
 out=$(cd "$ROOT" && env RAD_HOME="./rad-home" STORAGE="./rad-home/storage" \
@@ -3633,16 +3513,14 @@ out=$(cd "$ROOT" && env RAD_HOME="./rad-home" STORAGE="./rad-home/storage" \
   && ok "relative RAD_HOME/STORAGE/RAD/AUDIT_DIR survive the cwd anchor" \
   || no "relative paths survive cd / (rc=$rc)"
 
-# Undo: which blocks a run lifts. A lifted block lets a repo back onto this seed, so every
-# block that is a person's verdict, or that no audit log explains, must stay. zundohand was
-# blocked by hand; deny.txt names zundodeny, and the delegate recorded beside zundonid;
-# zundospam's verdict did not change;
-# zundonew was pruned by a version that already had the change; zundogone's block is gone;
+# Undo: which blocks a run lifts. A lift lets a repo back onto this seed, so a block that is a
+# person's verdict, or that no audit log explains, stays. zundohand was blocked by hand;
+# deny.txt names zundodeny, and the delegate recorded beside zundonid; zundospam's verdict did
+# not change; zundonew was pruned by a version that had the change; zundogone's block is gone;
 # zundoprior was blocked before rad-prune pruned it; zjunk1 is logged and blocked, yet in
-# storage.
-# zundotiny and zundobig were pruned for media by an older version, zundobig above the size
-# that may come back, and zundofarm by the link-farm rule (E), which is gone. zundoquiet and
-# zundoheavy were pruned by the stale rule (C), and zundohuge by the size rule (B), before
+# storage. zundotiny and zundobig were pruned for media by an older version, zundobig above the
+# size that may come back, and zundofarm by the link-farm rule (E), which is gone. zundoquiet
+# and zundoheavy were pruned by the stale rule (C), and zundohuge by the size rule (B), before
 # those rules waited for disk pressure. The pardoned repo is lifted whatever its size and the
 # budget; LIFTONE, listed in UNDO_LIFT, within the budget.
 build_fixture; assert_isolated
@@ -3812,10 +3690,10 @@ out1=$(RULES=H RSP_UNSEED_FAIL=1 RSP_SEED_SCOPED=1 "${NOTTY[@]}" "$SCRIPT" --app
   && ok "a run whose only lift fails exits 1" \
   || no "a run whose only lift fails exited $rc"
 
-# Undo from the quarantine: the repo goes back into storage, and the next run judges it.
-# zjunk1 is still junk-named; zbwid9 is spared by the current rules. A run stopped by a runaway
-# cap lifts nothing, so both stay in the quarantine, blocked, with the window they had. Neither
-# goes on the keep list, since a later verdict may be right.
+# Undo from the quarantine puts the repo back in storage for the next run to judge. zjunk1 is
+# still junk-named; zbwid9 is spared by the current rules. A run a runaway cap stops lifts
+# nothing, so both stay quarantined, blocked, with their window. Neither goes on the keep list,
+# since a later verdict may be right.
 build_fixture; assert_isolated
 Q="$AUDIT_DIR/quarantine"; mkdir -p "$Q"
 mv "$STORAGE/zjunk1" "$STORAGE/zbwid9" "$Q/"
@@ -3845,13 +3723,12 @@ DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null >/de
   && ok "the next run judges a repo back from the quarantine, and keeps none" \
   || no "a repo back from the quarantine went unjudged, or landed on the keep list"
 
-# Revival: a repo pruned for being left alone comes back when one of its delegates pushes. The
-# node signs nothing for anyone else, so only a node announcing its own refs counts: a stranger
-# relaying the delegate's refs, refs the delegate already had at the prune, an announcement
-# from before the prune, a node that is not a recorded delegate pushing its own refs
-# (zrvstranger), and a verdict a push says nothing about all leave the block. A block
-# from a version that recorded no delegates lifts on any node's own announcement after it, and
-# not on a node relaying another's refs (zrvhearsay).
+# Revival: a repo pruned as left alone comes back when one of its delegates pushes. The node
+# signs nothing for anyone else, so only a node announcing its own refs counts. These leave the
+# block: a stranger relaying the delegate's refs, refs the delegate already had at the prune,
+# an announcement from before the prune, a non-delegate pushing its own refs (zrvstranger), and
+# a verdict a push says nothing about. A block from a version that recorded no delegates lifts
+# on any node's own announcement after it, and not on a relay of another's refs (zrvhearsay).
 build_fixture; assert_isolated
 if command -v sqlite3 >/dev/null 2>&1; then
   K1=$(printf '1%.0s' {1..64}); N1=z6Mkfbt52NAcPcYKV36L6eWTnyfxyGrGrxvJBxF5pjjCctGQ
@@ -4045,9 +3922,8 @@ fi
 # --- colour --- on a terminal the output is coloured by one filter, and the text under the
 # colour is the text a pipe gets. FORCE_COLOR stands in for the terminal.
 build_fixture; assert_isolated
-# No cache, so each run reads repos as the one before did. A run reports what changed since
-# the last one, so the coloured run is compared with the plain run after it, which follows a
-# run too.
+# No cache, so every run reads every repo afresh. A run reports changes since the last one, so
+# the coloured run is compared with the plain run after it, which also follows a run.
 plain=$(CACHE=0 DISK_AWARE=0 run)
 coloured=$(FORCE_COLOR=1 CACHE=0 DISK_AWARE=0 run)
 plain_again=$(CACHE=0 DISK_AWARE=0 run)
@@ -4068,11 +3944,10 @@ nocolour=$(NO_COLOR=1 FORCE_COLOR=1 DISK_AWARE=0 run)
   && ok "NO_COLOR wins over FORCE_COLOR" \
   || no "NO_COLOR left colour in the output"
 
-# --- lint --- shellcheck's warnings, over the script and the suite's own shell. An rm -rf
-# whose path can expand to "/", or a variable set and never read, is a bug this tool can afford
-# least. shellcheck does not parse the worker code the script keeps in quoted heredocs.
-# --norc and no SHELLCHECK_OPTS, so nothing on this machine can turn a check off.
-# The fixture build only opens the section.
+# --- lint --- shellcheck warnings over the script and the suite's shell. An rm -rf that can
+# expand to "/", or a variable set and never read, is a bug this tool can least afford. The
+# worker code in quoted heredocs is beyond shellcheck. --norc and no SHELLCHECK_OPTS, so
+# nothing on this machine can turn a check off. The fixture build only opens the section.
 build_fixture
 if command -v shellcheck >/dev/null; then
   if lint=$(env -u SHELLCHECK_OPTS shellcheck --norc -S warning \
