@@ -391,6 +391,9 @@ _fixture_env(){
   export AUDIT_DIR="$RSP_HOME/prune-audit"
   unset OUR_NID   # read from the stub's `rad self --did`, so that path runs in every test
   export SERVICE="rsp-test-does-not-exist.service"
+  # Colour is a terminal's, and some shells and CI runners export FORCE_COLOR. A test that
+  # wants colour asks for it.
+  unset FORCE_COLOR NO_COLOR
   # Hermetic git: ignore the user's global/system config, so fixture commits never use their
   # signing key (gpgsign) or identity, and the host config can't change behaviour.
   export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
@@ -924,7 +927,7 @@ for spec in zjunk1:20 zbar8:12; do
   touch -d "10 days ago" "$d"
 done
 plan=$(run)
-{ ! has "$plan" "zjunk1" && grep -qE '^#   zjunk1 +test-old$' <<<"$plan" \
+{ ! has "$plan" "zjunk1" && grep -qE '^#        zjunk1 +test-old$' <<<"$plan" \
   && [ "$(grep -v '^#' "$AUDIT_DIR/last-run/A-junk-name-kept-imports.tsv")" = "$(printf 'zjunk1\ttest-old')" ]; } \
   && ok "rule A spares a junk-named import, and names it" \
   || no "rule A spares a junk-named import"
@@ -949,7 +952,7 @@ spamhits=$(grep -cE "^zspam[1-9] .*spam-batch" <<<"$plan" || true)
 printf 'zspam3\t%s\n' "$(date -u -d "800 days ago" +%s)" >> "$AUDIT_DIR/first-seen.tsv"
 plan_orig=$(run)
 { ! has "$plan_orig" "zspam3" && grep -qE "^zspam4 .*spam-batch" <<<"$plan_orig" \
-  && grep -q 'spared 1 repo(s) .*rad:zspam3' <<<"$plan_orig"; } \
+  && grep -q 'spared 1 repo as the first.*rad:zspam3' <<<"$plan_orig"; } \
   && ok "the batch member this seed saw before every other one is spared" \
   || no "a spam batch took along the repo it was shaped after"
 decoyhits=$(grep -cE "^zdecoy[1-9] " <<<"$plan" || true)
@@ -1107,14 +1110,14 @@ grep -qE "^zmediaspc .*media-dump" <<<"$plan" \
   || no "a file called \"notes 0\" passes as a COB op payload"
 # The fragment left by a half-finished listing holds the clip and not the README, so judging it
 # would delete the repo on the evidence that failed to arrive.
-{ ! has "$plan" "zmediatorn" && grep -q 'left 1 repo(s) unjudged' <<<"$plan"; } \
+{ ! has "$plan" "zmediatorn" && grep -q 'could not judge 1 repo,' <<<"$plan"; } \
   && ok "a repo whose listing dies part-way is left unjudged, not pruned on the fragment" \
   || no "rule F judges a repo on a partial listing"
 # zmediacut is the same broken listing behind a README that already clears the widest budget.
 # Only zmediatorn is unjudged, so the walk must have stopped at that README and never reached
 # the break: the verdict was settled, and the rest of the repo was never read. Reading on
 # regardless makes this count 2.
-{ ! has "$plan" "zmediacut" && grep -q 'left 1 repo(s) unjudged' <<<"$plan"; } \
+{ ! has "$plan" "zmediacut" && grep -q 'could not judge 1 repo,' <<<"$plan"; } \
   && ok "rule F stops reading a repo once its text clears the widest budget" \
   || no "the walk read past the point where the verdict was already settled"
 # Only a delegate can move a branch or a tag, so what one holds is this repo's own content
@@ -1188,7 +1191,7 @@ plan=$(run)
 ! has "$plan" "zmediapeer" \
   && ok "a stranger's op a delegate replied to is not the repo's, whoever it names as author" \
   || no "rule F counted a stranger's op reached through a delegate's reply"
-{ ! has "$plan" "zmediacob" && grep -q 'left 3 repo(s) unjudged' <<<"$plan"; } \
+{ ! has "$plan" "zmediacob" && grep -q 'could not judge 3 repos ' <<<"$plan"; } \
   && ok "a branch whose tip is gone leaves the repo unjudged, not judged on the rest" \
   || no "rule F judged a repo on the branches it could still read"
 grep -qE "^zmediapast .*media-dump" <<<"$plan" \
@@ -1267,8 +1270,8 @@ plan_fz=$(MEDIA_MIN_SEEDS=1 run)
   || no "MEDIA_MIN_SEEDS is vacuous"
 # Sparing it silently would make the seed floor a permanent hiding place, so a run that raised
 # the floor says what it saw and left alone.
-{ grep -q '^# review: 1 media dump(s) no other node seeds, kept:' <<<"$plan_fz" \
-    && grep -qE '^#   zmediazero +media-dump' <<<"$plan_fz"; } \
+{ grep -qx '# REVIEW 1 media dump no other node seeds, not pruned' <<<"$plan_fz" \
+    && grep -qE '^#        zmediazero +media-dump' <<<"$plan_fz"; } \
   && ok "the dump it kept is named for a human to look at" \
   || no "the review list names what it kept"
 
@@ -1318,17 +1321,17 @@ nof=$(RULES=ABCD run)
 # Refusing the letter would prune nothing until somebody read the error.
 withe=$(RULES=ABCDEFGH "$SCRIPT" 2>&1); rc=$?
 { [ "$rc" = 0 ] && grep -qE '^zspam1 .* spam-batch ' <<<"$withe" \
-  && grep -qxF '# WARN: the link-farm rule (E) was removed in 0.8.0; E in RULES is ignored.' \
+  && grep -qxF '# WARN the link-farm rule (E) was removed in 0.8.0; E in RULES is ignored.' \
        <<<"$withe"; } \
   && ok "an E in RULES is ignored with a warning, and the other rules still plan" \
   || no "an E in RULES stopped the run, planned nothing, or went unmentioned (rc=$rc)"
 dflt=$(env -u RULES "$SCRIPT" 2>&1)
-{ ! grep -q 'DISABLED: not in RULES' <<<"$dflt" && ! grep -q 'link-farm' <<<"$dflt" \
+{ ! grep -q 'off: not in RULES' <<<"$dflt" && ! grep -q 'link-farm' <<<"$dflt" \
   && has "$dflt" "zjunk1"; } \
   && ok "the default RULES runs every rule" \
   || no "the default RULES leaves a rule out, names E, or runs nothing at all"
 onlye=$(RULES=E "$SCRIPT" 2>&1); rc=$?
-{ [ "$rc" = 0 ] && grep -qxF '# WARN: without the E, RULES is empty, so no rule runs.' <<<"$onlye" \
+{ [ "$rc" = 0 ] && grep -qxF '# WARN without the E, RULES is empty, so no rule runs.' <<<"$onlye" \
   && ! grep -qE '^z' <<<"$onlye"; } \
   && ok "RULES naming only E says no rule runs" \
   || no "RULES naming only E ran a rule, failed, or ran none without saying so (rc=$rc)"
@@ -1343,7 +1346,7 @@ tight=$(DISK_AWARE=1 PRESSURE_RELAX_PCT=100 PRESSURE_RELAX_GB=0 PRESSURE_CRIT_PC
           PRESSURE_CRIT_GB=0 ABS_SIZE_FLOOR_MB_AGG=1 REL_PCTL_AGG=95 OUTLIER_STALE_DAYS_AGG=90 \
           run)
 { ! has "$calm" "zbig2" && ! has "$calm" "ztwoyr3" && has "$calm" "zjunk1" \
-  && grep -q 'B size.*\[WAITING: no disk pressure\]' <<<"$calm" \
+  && grep -q 'B size .*waiting: no disk pressure$' <<<"$calm" \
   && grep -qE "^zbig2 .* size-outlier " <<<"$tight" \
   && grep -qE "^ztwoyr3 .* stale " <<<"$tight"; } \
   && ok "rules B and C wait for disk pressure, and act once there is some" \
@@ -1408,18 +1411,23 @@ mkdir -p "$AUDIT_DIR"; echo zpin6 > "$AUDIT_DIR/deny.txt"
 audit_before=$(find "$AUDIT_DIR" -type f -exec sha1sum {} + | sort)
 out=$("$SCRIPT" check-mine 2>"$ROOT/check.err"); rc=$?
 { [ "$rc" = 6 ] && ! grep -q 'WARN' "$ROOT/check.err" \
-  && grep -qxE 'would-prune +clipdump +rad:zmediaone +as media-dump' <<<"$out" \
+  && grep -qxE 'would-prune +clipdump +rad:zmediaone +media-dump' <<<"$out" \
   && grep -qxE ' +39 KiB  master  clip\.mp4' <<<"$out" \
   && grep -qxE ' +1 B +master  cd\.mp4' <<<"$out" \
   && ! grep -qF $'\033' <<<"$out" && ! grep -qF $'\302\233' <<<"$out" \
-  && grep -qxE 'would-prune +newclip +rad:zmediafresh +as media-dump' <<<"$out" \
-  && grep -qxE 'would-prune +flatten-1-[0-9a-f]+ +rad:zspam1 +as spam-batch' <<<"$out" \
+  && grep -qxE 'would-prune +newclip +rad:zmediafresh +media-dump' <<<"$out" \
+  && grep -qxE 'would-prune +flatten-1-[0-9a-f]+ +rad:zspam1 +spam-batch' <<<"$out" \
   && grep -qxE 'ok +pinnedproj +rad:zpin6' <<<"$out" \
   && grep -qxE 'unjudged +myproj +rad:zown22' <<<"$out" \
-  && grep -qxE 'would-prune +test-old +rad:zjunk1 +as junk-name' <<<"$out" \
+  && grep -qxE 'would-prune +test-old +rad:zjunk1 +junk-name' <<<"$out" \
   && [ "$(grep -cE '^(ok|would-prune|unjudged) ' <<<"$out")" = 6 ]; } \
   && ok "check judges the public repos you are a delegate of, pinned and young ones too" \
   || no "check misjudged your repos, judged a fork or somebody else's, warned, or exited $rc"
+coloured=$(FORCE_COLOR=1 "$SCRIPT" check-mine 2>/dev/null)
+{ grep -qF $'\033[' <<<"$coloured" \
+  && [ "$(sed $'s/\033\\[[0-9;]*m//g' <<<"$coloured")" = "$out" ]; } \
+  && ok "check in colour is the same text as check in a pipe" \
+  || no "check's coloured text differs from its plain text, or carries no colour"
 { [ "$(find "$AUDIT_DIR" -type f -exec sha1sum {} + | sort)" = "$audit_before" ] \
   && [ ! -s "$RSP_HOME/.stub_policy" ] && [ ! -s "$RSP_HOME/.stub_unseed" ]; } \
   && ok "check writes nothing to the audit dir and changes no policy" \
@@ -1427,7 +1435,7 @@ out=$("$SCRIPT" check-mine 2>"$ROOT/check.err"); rc=$?
 # A repo the media rule (F) cannot read in full is not one the check can call ok.
 out=$(MEDIA_MAX_REFS=1 "$SCRIPT" check-mine 2>/dev/null); rc=$?
 { [ "$rc" = 6 ] && grep -qxE 'unjudged +clipdump +rad:zmediaone' <<<"$out" \
-  && grep -q '^  The media rule (F) could not judge it' <<<"$out"; } \
+  && grep -q '^             The media rule (F) could not judge it' <<<"$out"; } \
   && ok "check calls a repo the media rule (F) could not read unjudged" \
   || no "check judged, or called ok, a repo the media rule (F) could not read (rc=$rc)"
 out=$("$SCRIPT" check-mine --apply 2>&1); rc=$?
@@ -1454,7 +1462,7 @@ build_fixture; assert_isolated
 # reach the script it launches.
 export PARASITE_MIN_REPOS=3 PARASITE_MIN_BYTES=65536 PARASITE_TEXT_MAX_BYTES=4096
 gplan=$(run)
-grep -q "PARASITE PEERS: 1" <<<"$gplan" && grep -q "$PARA" <<<"$gplan" \
+grep -q "REVIEW 1 parasite peer the" <<<"$gplan" && grep -q "$PARA" <<<"$gplan" \
   && ok "a peer posting one file into repos it is not a delegate of is reported (rule G)" \
   || no "rule G missed a peer republishing one file across repos it is not a delegate of"
 ! grep -q "$CONTRIB" <<<"$gplan" \
@@ -1530,8 +1538,7 @@ plan_fs2=$(run)
   || no "a torn ledger line is skipped"
 
 # --- what the run left alone is counted in the report, not silently absent ---
-skipped_re='^# skipped: [0-9]+ unreadable, 1 written in the last 2d,'
-skipped_re="$skipped_re"' [0-9]+ with no readable refs'
+skipped_re='^# skipped (.*, )?1 written in the last 2 days$'
 { ! has "$plan" "zinfetch" \
     && grep -qE "$skipped_re" <<<"$plan"; } \
   && ok "a repo written mid-run is skipped and counted in the report" \
@@ -1583,7 +1590,7 @@ c=$(GIT_DIR="$d" GIT_AUTHOR_DATE="@$ts +0000" GIT_COMMITTER_DATE="@$ts +0000" \
 GIT_DIR="$d" git update-ref refs/rad/id "$c"; rm -rf "$w"; touch -d "10 days ago" "$d"
 printf 'did:key:%s\n' "$(dlg zpriv7)" > "$AUDIT_DIR/deny.txt"
 out=$(RSP_NO_LS=1 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 run)
-{ grep -q "WARN: .*returned no repos" <<<"$out" && ! grep -qE '^zspam[1-9] ' <<<"$out"; } \
+{ grep -q "WARN .*returned no repos" <<<"$out" && ! grep -qE '^zspam[1-9] ' <<<"$out"; } \
   && ok "an empty repo listing is reported, not silently read as 'no spam'" \
   || no "empty repo listing warns"
 # With no names, zmediahost's hostname cannot spare its logo, so its size has to.
@@ -1622,7 +1629,7 @@ out=$(OUR_NID=z6Mknotanid DISK_AWARE=0 "$SCRIPT" 2>&1); rc=$?
   || no "a malformed node id did not abort (got exit $rc)"
 out=$(RSP_NO_ROUTING=1 DISK_AWARE=0 "$SCRIPT" 2>&1); rc=$?
 { [ "$rc" = 5 ] && grep -q 'routing table empty' <<<"$out" \
-    && ! grep -q '# PLAN:' <<<"$out"; } \
+    && ! grep -q '# PLAN ' <<<"$out"; } \
   && ok "empty routing table aborts (exit 5, no plan)" \
   || no "empty routing aborts (got exit $rc)"
 
@@ -1638,10 +1645,10 @@ touch -d "10 days ago" "$STORAGE/ztwoyr3"
 # below
 out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 MAX_SCAN_FAIL_PCT=50 "$SCRIPT" 2>&1); rc=$?
 chmod 755 "$STORAGE/ztwoyr3/unreadable"; rmdir "$STORAGE/ztwoyr3/unreadable"
-{ [ "$rc" = 0 ] && grep -q '# PLAN:' <<<"$out"; } \
+{ [ "$rc" = 0 ] && grep -q '# PLAN ' <<<"$out"; } \
   && ok "unreadable repo does not abort the scan" \
   || no "unreadable repo does not abort the scan (got exit $rc)"
-grep -qE '^# WARN: [0-9]+ scan error' <<<"$out" \
+grep -qE '^# WARN [0-9]+ scan error' <<<"$out" \
   && ok "scan errors are reported, not swallowed" \
   || no "scan errors reported"
 { ! has "$out" "ztwoyr3" && has "$out" "zjunk1"; } \
@@ -1670,7 +1677,7 @@ L="$RSP_HOME/prune-audit/last-run"
 short=$(DISK_AWARE=0 PLAN_COLLAPSE_ROWS=2 PLAN_FULL=0 run)
 # Counted against the plan's own total, not against a number written here: a file holding
 # every row but one would pass any comparison with what the screen happened to print.
-planned=$(sed -n 's/^# PLAN: prune \([0-9]*\) repos.*/\1/p' <<<"$short")
+planned=$(sed -n 's/^# PLAN   prune \([0-9]*\) repo.*/\1/p' <<<"$short")
 screenrows=$(grep -cE '^z[1-9A-HJ-NP-Za-km-z]+ ' <<<"$short")
 cols=$(printf '# rid\tsize_bytes\tother_seeds\tlast_activity_unix\treason')
 cols=$cols$(printf '\tname\tage_from_unix\tnear_threshold')
@@ -1682,7 +1689,7 @@ for f in "$L"/*; do
   grep -qE '^# [0-9-]+T[0-9:]+Z  version=[0-9][0-9a-z.-]*  mode=DRY-RUN  rules=[A-H]+  storage=/' \
        "$f" || stamped=0
 done
-{ grep -q "the untrimmed plan and the evidence behind it: $L/" <<<"$short" \
+{ grep -q "^# files  $L/   plan.tsv" <<<"$short" \
   && grep -qxF "$cols" "$L/plan.tsv" \
   && [ "$(ls "$L" | wc -l)" -ge 14 ] \
   && [ "$(grep -vc '^#' "$L/plan.tsv")" = "${planned:-0}" ] \
@@ -1699,44 +1706,44 @@ build_fixture; assert_isolated
 L="$RSP_HOME/prune-audit/last-run"
 for i in 1 2 3 4 5 6; do cp -a "$STORAGE/zmediamd" "$STORAGE/zmediacopy$i"; done
 screen=$(DISK_AWARE=0 MEDIA_MIN_SEEDS=99 PLAN_FULL=0 run)
-kept=$(sed -n 's/^# review: \([0-9]*\) media dump.*/\1/p' <<<"$screen")
+kept=$(sed -n 's/^# REVIEW \([0-9]*\) media dump.*/\1/p' <<<"$screen")
 # The rows the review table itself printed, which is what the cap acts on. The "...and N more"
 # line wears the same indent as a row and would otherwise count as one.
-reviewrows() { awk '/^# review:/ { inb = 1; next }
-                    inb && /^#   \.\.\.and/ { next }
-                    inb && /^#   / { n++; next }
+reviewrows() { awk '/^# REVIEW [0-9]+ media dump/ { inb = 1; next }
+                    inb && /^#        \.\.\.and/ { next }
+                    inb && /^#        / { n++; next }
                     inb { inb = 0 }
                     END { print n + 0 }'; }
 { [ "${kept:-0}" -gt 5 ] \
   && [ "$(grep -vc '^#' "$L/F-media-kept-few-seeds.tsv")" = "$kept" ] \
   && grep -qxF "$(printf '# rid\tverdict\tname')" "$L/F-media-kept-few-seeds.tsv" \
   && [ "$(reviewrows <<<"$screen")" = 5 ] \
-  && grep -q "^#   ...and $((kept - 5)) more (PLAN_FULL=1 lists them)" <<<"$screen"; } \
+  && grep -q "^#        ...and $((kept - 5)) more (PLAN_FULL=1 lists them)" <<<"$screen"; } \
   && ok "an evidence table the screen cut at five is written out in full" \
   || no "the evidence file was cut down to the same rows the screen showed"
 
 # A count of repos rule F gave up on is a warning nobody can act on until it names them. Every
 # repo in the fixture is over the ref ceiling below, so the walk gives up on all of them.
 unj=$(DISK_AWARE=0 MEDIA_MAX_REFS=0 CACHE=0 run)
-nunj=$(sed -n 's/^# WARN: the media rule (F) left \([0-9]*\) repo(s) unjudged.*/\1/p' <<<"$unj")
+nunj=$(sed -n 's/^# WARN the media rule (F) could not judge \([0-9]*\) repo.*/\1/p' <<<"$unj")
 { [ "${nunj:-0}" -gt 0 ] \
-  && grep -q "^#   the $nunj repo(s) the media rule (F) left unjudged: $L/F-media-unjudged.tsv$" <<<"$unj" \
+  && grep -q "^# files  $L/   .*F-media-unjudged.tsv" <<<"$unj" \
   && [ "$(grep -vc '^#' "$L/F-media-unjudged.tsv")" = "$nunj" ] \
   && grep -qE "^zmediamd"$'\t'"[0-9]+$" "$L/F-media-unjudged.tsv" \
-  && grep -qx '#   zmediamd' <<<"$unj"; } \
+  && grep -qE '^#      (.* )?zmediamd( |$)' <<<"$unj"; } \
   && ok "the repos rule F gave up on are named, not only counted" \
   || no "rule F warned about $nunj unjudged repos and named none of them"
 # The same repos next run are the ones the warning already named, so they get a note instead.
 again=$(DISK_AWARE=0 MEDIA_MAX_REFS=0 CACHE=0 run)
-{ ! grep -q 'WARN: the media rule (F)' <<<"$again" \
-  && grep -q "^# the media rule (F) left $nunj repo(s) unjudged, all of them listed" <<<"$again"; } \
+{ ! grep -q 'WARN the media rule (F)' <<<"$again" \
+  && grep -q "^# the media rule (F) could not judge $nunj repos, all listed" <<<"$again"; } \
   && ok "repos rule F could not judge last run either are a note, not a warning" \
   || no "rule F warned again about the same unjudged repos"
 # 0.7.0 wrote that list under another name, and the first run after an upgrade reads it.
 grep -v '^#' "$L/F-media-unjudged.tsv" | cut -f1 > "$L/media-unjudged.tsv"
 rm "$L/F-media-unjudged.tsv"
 upgraded=$(DISK_AWARE=0 MEDIA_MAX_REFS=0 CACHE=0 run)
-! grep -q 'WARN: the media rule (F)' <<<"$upgraded" \
+! grep -q 'WARN the media rule (F)' <<<"$upgraded" \
   && ok "the first run after an upgrade reads 0.7.0's list of unjudged repos" \
   || no "the first run after an upgrade called every unjudged repo new"
 
@@ -1786,7 +1793,7 @@ out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 MAX_SCAN_FAIL_PCT=1 "$SCRIPT" 2>&1); rc=$
 for r in zjunk1 zbig2 zbar8; do chmod 755 "$STORAGE/$r"; done
 { [ "$rc" = 5 ] && grep -q "could not judge 3 of $NREPOS repos" <<<"$out" \
     && grep -q "0 vanished, 3 unreadable, 0 with no readable refs\." <<<"$out" \
-    && ! grep -q '# PLAN:' <<<"$out"; } \
+    && ! grep -q '# PLAN ' <<<"$out"; } \
   && ok "blind scan aborts instead of reporting a small plan" \
   || no "blind scan aborts (got exit $rc)"
 
@@ -1796,10 +1803,10 @@ for r in zjunk1 zbig2 zbar8; do chmod 755 "$STORAGE/$r"; done
 shimdir="$ROOT/shim"; mkdir -p "$shimdir"
 cp "$HERE/find-shim" "$shimdir/find"; chmod +x "$shimdir/find"
 out=$(PATH="$shimdir:$PATH" DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" 2>&1); rc=$?
-{ [ "$rc" = 0 ] && grep -q "# scanning $NREPOS repos" <<<"$out" && has "$out" "zjunk1"; } \
+{ [ "$rc" = 0 ] && grep -qE "^# \[1/[0-9]+\] sizes +$NREPOS repos " <<<"$out" && has "$out" "zjunk1"; } \
   && ok "a failing find in the scan is survived, not fatal" \
   || no "failing find survived (got exit $rc)"
-grep -qE '^# WARN: [0-9]+ scan error' <<<"$out" \
+grep -qE '^# WARN [0-9]+ scan error' <<<"$out" \
   && ok "a failing find is still reported as a scan error" \
   || no "failing find reported"
 
@@ -1810,7 +1817,7 @@ chmod 000 "$STORAGE"
 out=$(DISK_AWARE=0 "$SCRIPT" 2>&1); rc=$?
 chmod 755 "$STORAGE"
 { [ "$rc" = 1 ] && grep -q 'cannot read storage dir' <<<"$out" \
-    && ! grep -q '# PLAN:' <<<"$out"; } \
+    && ! grep -q '# PLAN ' <<<"$out"; } \
   && ok "unreadable storage dir aborts (no empty plan)" \
   || no "unreadable storage aborts (got exit $rc)"
 
@@ -1858,7 +1865,7 @@ nolife="$ROOT/nolife"; mkdir -p "$nolife"
 cp "$HERE/no-life-xargs-shim" "$nolife/xargs"; chmod +x "$nolife/xargs"
 out=$(PATH="$nolife:$PATH" DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" 2>&1); rc=$?
 { [ "$rc" = 5 ] && grep -q 'with no readable refs\.' <<<"$out" \
-    && ! grep -q '# PLAN:' <<<"$out"; } \
+    && ! grep -q '# PLAN ' <<<"$out"; } \
   && ok "a scan with no ref dates aborts (no empty plan)" \
   || no "ref-less scan aborts (got exit $rc)"
 
@@ -1869,7 +1876,8 @@ git init -q --bare "$STORAGE/zinflightfetch"
 touch "$STORAGE/zinflightfetch"
 out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" 2>&1); rc=$?
 rm -rf "$STORAGE/zinflightfetch"
-{ [ "$rc" = 0 ] && grep -q '^# skipped: .*, 0 with no readable refs$' <<<"$out"; } \
+{ [ "$rc" = 0 ] && grep -q '^# skipped .*written in the last' <<<"$out" \
+  && ! grep -q 'with no readable refs' <<<"$out"; } \
   && ok "a repo with no refs yet counts as freshly written, not as ageless" \
   || no "an in-flight fetch counted against the blind-scan limit (got exit $rc)"
 
@@ -1883,24 +1891,24 @@ slowdu="$ROOT/slowdu"; mkdir -p "$slowdu"
 cp "$HERE/slow-du-shim" "$slowdu/du"; chmod +x "$slowdu/du"
 PATH="$slowdu:$PATH" RSP_DU_CALLS="$ROOT/du-calls" RSP_DU_SLEEPS="2 2 20" JOBS=1 \
   PROGRESS_SECS=1 RULES=A DISK_AWARE=0 "${NOTTY[@]}" "$SCRIPT" </dev/null >"$ROOT/slow.out" 2>&1
-sizes=$(grep '^#   \[1/[0-9]*\] sizes: ' "$ROOT/slow.out")
-{ grep -qx "#   \[1/[0-9]*\] sizes: 64 of $NREPOS repos, [0-9]*s elapsed" <<<"$sizes" \
-  && ! grep -E ' sizes: [0-9]{1,2} of ' <<<"$sizes" | grep -qE '%|left'; } \
+sizes=$(grep '^# \[1/[0-9]*\] sizes  ' "$ROOT/slow.out")
+{ grep -qx "# \[1/[0-9]*\] sizes  *64 of $NREPOS repos, [0-9]*s elapsed" <<<"$sizes" \
+  && ! grep -E ' sizes +[0-9]{1,2} of ' <<<"$sizes" | grep -qE '%|left'; } \
   && ok "a phase too few repos into its walk shows neither a share done nor a time left" \
   || no "a phase too few repos into its walk projected a time left"
 share=$(( 128 * 100 / NREPOS ))
-grep -qx "#   \[1/[0-9]*\] sizes: 128 of $NREPOS repos ($share%), [0-9]*s elapsed, <10s left" \
+grep -qx "# \[1/[0-9]*\] sizes  *128 of $NREPOS repos ($share%), [0-9]*s elapsed, <10s left" \
      <<<"$sizes" \
   && ok "a phase far enough into its walk shows its share done and a time left" \
   || no "a phase far enough into its walk shows no time left"
-grep -qx "#   \[1/[0-9]*\] sizes: 128 of $NREPOS repos, [0-9]*s elapsed, last done 1[5-9]s ago" \
+grep -qx "# \[1/[0-9]*\] sizes  *128 of $NREPOS repos, [0-9]*s elapsed, last done 1[5-9]s ago" \
      <<<"$sizes" \
   && ok "a phase stuck on one repo says how long instead of a time left" \
   || no "a phase stuck on one repo kept showing a time left"
 
 # --- fail-safe: node down aborts --apply before touching anything ---
 out=$(RSP_NODE_DOWN=1 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "$SCRIPT" --apply 2>&1); rc=$?
-{ [ "$rc" = 5 ] && ! grep -q '# PLAN:' <<<"$out"; } \
+{ [ "$rc" = 5 ] && ! grep -q '# PLAN ' <<<"$out"; } \
   && ok "node-down aborts --apply (exit 5, no plan)" \
   || no "node-down aborts --apply (got exit $rc)"
 
@@ -1939,19 +1947,19 @@ build_fixture; assert_isolated
 RSP_BLOCK_FAIL=1 DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null \
   >"$ROOT/blockfail.out" 2>&1
 bout=$(cat "$ROOT/blockfail.out")
-planned=$(sed -n 's/^# PLAN: prune \([0-9]*\) repos.*/\1/p' <<<"$bout")
+planned=$(sed -n 's/^# PLAN   prune \([0-9]*\) repo.*/\1/p' <<<"$bout")
 kept=1
 for r in zjunk1 zbig2 ztwoyr3; do [ -e "$STORAGE/$r" ] || kept=0; done
 { [ -n "$planned" ] && [ "$kept" = 1 ] \
-  && grep -q "^# pruning: 0 of $planned repos in" <<<"$bout" \
-  && grep -q "^# WARN: $planned of $planned deletions failed" <<<"$bout" \
+  && grep -qE "^# \[[0-9]+/[0-9]+\] pruning +0 of $planned repos " <<<"$bout" \
+  && grep -q "^# WARN $planned of $planned deletions failed" <<<"$bout" \
   && grep -q '^#   WARN block failed, skipping delete: ' <<<"$bout"; } \
   && ok "an apply that blocked nothing deletes nothing and reports 0 of the plan pruned" \
   || no "a failed apply deleted repos or reported the whole plan as pruned"
 
 # The quarantine advice is about what THIS run put there, so a run that put nothing there does
 # not print it and does not point at a delete --all that would delete earlier runs' repos.
-{ grep -q '^# DONE: quarantined 0 repos' <<<"$bout" \
+{ grep -q '^# DONE   quarantined 0 repos' <<<"$bout" \
   && ! grep -q 'quarantine delete --all' <<<"$bout"; } \
   && ok "a run that quarantined nothing leaves out the quarantine advice" \
   || no "quarantine advice printed after a run that quarantined nothing"
@@ -1967,10 +1975,10 @@ cp "$HERE/failing-touch-shim" "$notouch/touch"; chmod +x "$notouch/touch"
 PATH="$notouch:$PATH" DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply \
   </dev/null >"$ROOT/undated.out" 2>&1
 uout=$(cat "$ROOT/undated.out")
-uplanned=$(sed -n 's/^# PLAN: prune \([0-9]*\) repos.*/\1/p' <<<"$uout")
+uplanned=$(sed -n 's/^# PLAN   prune \([0-9]*\) repo.*/\1/p' <<<"$uout")
 { [ -n "$uplanned" ] \
-  && grep -q "^# DONE: quarantined $uplanned repos" <<<"$uout" \
-  && grep -q "^# $uplanned of them kept their own date, so their window runs from it and may" \
+  && grep -q "^# DONE   quarantined $uplanned repo" <<<"$uout" \
+  && grep -q "^#        $uplanned of them kept their own date, so their window runs from it and may" \
        <<<"$uout" \
   && grep -q 'kept its own date in quarantine' <<<"$uout" \
   && ! grep -q 'deletions failed' <<<"$uout"; } \
@@ -2104,7 +2112,7 @@ if command -v script >/dev/null 2>&1; then
     || no "--block-peers did nothing without --apply"
   { [ "$(ls "$STORAGE" | wc -l)" = "$before" ] \
     && [ ! -s "$RSP_HOME/.stub_unseed" ] \
-    && grep -q "no repos were pruned" "$ROOT/gsolo.out"; } \
+    && grep -q "no repo was pruned" "$ROOT/gsolo.out"; } \
     && ok "--block-peers on its own prunes nothing" \
     || no "--block-peers pruned repos without --apply"
 else
@@ -2123,8 +2131,8 @@ out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/nul
 chmod 755 "$STORAGE"/z*
 after=$(ls "$STORAGE" | wc -l)
 { [ "$rc" = 1 ] && [ "$before" = "$after" ] && grep -q 'WARN quarantine failed' <<<"$out" \
-    && grep -qE 'WARN: [0-9]+ of [0-9]+ deletions failed' <<<"$out" \
-    && grep -q 'DONE: quarantined 0 repos' <<<"$out" \
+    && grep -qE 'WARN [0-9]+ of [0-9]+ deletions failed' <<<"$out" \
+    && grep -q 'DONE   quarantined 0 repos' <<<"$out" \
     && [ "$(tail -1 <<<"$out")" = '# exit 1' ] \
     && [ "$(tail -1 "$(ls "$AUDIT_DIR"/prune-*.log | tail -1)")" = '# exit 1' ]; } \
   && ok "a failed quarantine move is reported, not counted as reclaimed, and exits 1" \
@@ -2197,7 +2205,7 @@ else
 fi
 path_without "$ROOT/noflock" flock
 qout=$(PATH="$ROOT/noflock" "$SCRIPT" quarantine purge 2>&1); qrc=$?
-{ [ "$qrc" = 0 ] && grep -q 'WARN: flock is not installed' <<<"$qout" \
+{ [ "$qrc" = 0 ] && grep -q 'WARN flock is not installed' <<<"$qout" \
     && [ ! -e "$AUDIT_DIR/quarantine/zlockq" ]; } \
   && ok "without flock a run says it is not kept apart from another, and goes ahead" \
   || no "a missing flock stopped the run, or went unsaid (rc=$qrc)"
@@ -2440,7 +2448,7 @@ first=$(DISK_AWARE=0 run)
 grep -qE "^zmediaone .*media-dump" <<<"$first" \
   || no "the cold run never condemned zmediaone, so the cache checks below are moot"
 second=$(DISK_AWARE=0 run 2>&1)
-{ grep -q 'cache: media reuses' <<<"$second" \
+{ grep -q 'cache  media reuses' <<<"$second" \
   && [ "$(grep -c 'media-dump' <<<"$first")" = "$(grep -c 'media-dump' <<<"$second")" ]; } \
   && ok "a second run reuses the first run's reading and plans the same repos" \
   || no "the warm cache changed the plan, or was never used"
@@ -2456,7 +2464,7 @@ grep -qE "^zmediaone .*media-dump" <<<"$(DISK_AWARE=0 run)" \
 build_fixture; assert_isolated
 DISK_AWARE=0 run >/dev/null
 out=$(DISK_AWARE=0 MEDIA_MIN_BYTES=999999999 "${NOTTY[@]}" "$SCRIPT" </dev/null 2>&1)
-{ grep -q 'cache: cold' <<<"$out" && ! has "$out" "zmediaone"; } \
+{ grep -q 'cache  cold' <<<"$out" && ! has "$out" "zmediaone"; } \
   && ok "changing a threshold drops the whole cache" \
   || no "a tuned threshold reused verdicts measured under the old one"
 
@@ -2482,7 +2490,7 @@ odd="$RSP_HOME/st#or&age"
 cp -r "$STORAGE" "$odd"
 DISK_AWARE=0 STORAGE="$odd" "${NOTTY[@]}" "$SCRIPT" </dev/null >/dev/null 2>&1
 out=$(DISK_AWARE=0 STORAGE="$odd" "${NOTTY[@]}" "$SCRIPT" </dev/null 2>&1)
-{ ! grep -q 'unknown option' <<<"$out" && grep -q 'cache: media reuses' <<<"$out"; } \
+{ ! grep -q 'unknown option' <<<"$out" && grep -q 'cache  media reuses' <<<"$out"; } \
   && ok "a storage path holding shell and sed metacharacters still caches correctly" \
   || no "a '#' in STORAGE broke the already-read list"
 
@@ -2493,9 +2501,9 @@ build_fixture; assert_isolated
 export PARASITE_MIN_REPOS=3 PARASITE_MIN_BYTES=65536 PARASITE_TEXT_MAX_BYTES=4096
 cold=$(DISK_AWARE=0 run)
 warm=$(DISK_AWARE=0 run 2>&1)
-{ grep -q 'cache: peer reuses' <<<"$warm" \
-  && grep -q "PARASITE PEERS: 1" <<<"$cold" \
-  && [ "$(grep -c 'PARASITE PEERS: 1' <<<"$warm")" = 1 ]; } \
+{ grep -q 'cache  peer reuses' <<<"$warm" \
+  && grep -q "REVIEW 1 parasite peer the" <<<"$cold" \
+  && [ "$(grep -c 'REVIEW 1 parasite peer the' <<<"$warm")" = 1 ]; } \
   && ok "a warm run reaches rule G's verdict from cached rows unchanged" \
   || no "reusing rule G's reading changed which peers it accused"
 unset PARASITE_MIN_REPOS PARASITE_MIN_BYTES PARASITE_TEXT_MAX_BYTES
@@ -2536,9 +2544,9 @@ printf '%s\tdeleted=0\tfree_gb=99999.0\tused_gb=0.0\taudit=x.log\n' \
   "$(date -u -d "30 days ago" +%Y-%m-%dT%H:%M:%SZ)" > "$AUDIT_DIR/history.log"
 stale=$(env $calm_disk "$SCRIPT" 2>&1)
 env $calm_disk "${NOTTY[@]}" "$SCRIPT" --apply </dev/null >/dev/null 2>&1
-{ grep -q "WARN: free space fell from 99999.0 to .* since $fresh," <<<"$dropped" \
-  && ! grep -q 'WARN: free space fell' <<<"$steady" \
-  && ! grep -q 'WARN: free space fell' <<<"$stale" \
+{ grep -q "WARN free space fell from 99999.0 to .* since $fresh," <<<"$dropped" \
+  && ! grep -q 'WARN free space fell' <<<"$steady" \
+  && ! grep -q 'WARN free space fell' <<<"$stale" \
   && tail -1 "$AUDIT_DIR/history.log" \
      | grep -qE $'\taudit=prune-[^\t]+\tfree_gb=[0-9.]+\tused_gb=[0-9.]+$'; } \
   && ok "a run records free space and warns when something outside storage took it" \
@@ -2565,9 +2573,9 @@ squeezed=$(env PATH="$fakedf:$PATH" $small "$SCRIPT" 2>&1)
 mkdir -p "$Q/zdueq1"; head -c 3000000 /dev/zero > "$Q/zdueq1/pack"
 touch -d "10 days ago" "$Q/zdueq1"
 relieved=$(env PATH="$fakedf:$PATH" $small "$SCRIPT" 2>&1)
-{ ! grep -q 'B size.*WAITING' <<<"$squeezed" \
-  && grep -q 'B size.*\[WAITING: no disk pressure\]' <<<"$relieved" \
-  && grep -q '^# disk: .*GB due out of quarantine' <<<"$relieved"; } \
+{ ! grep -q 'B size .*waiting' <<<"$squeezed" \
+  && grep -q 'B size .*waiting: no disk pressure$' <<<"$relieved" \
+  && grep -q '^# disk   .*GB due out of quarantine' <<<"$relieved"; } \
   && ok "pressure counts the quarantine a run is about to purge as free" \
   || no "a copy due out of the quarantine left the disk under pressure"
 printf '#!/bin/sh\nexit 1\n' > "$fakedf/df"
@@ -2608,7 +2616,7 @@ out=$(DISK_AWARE=1 PRESSURE_CRIT_PCT=100 PRESSURE_CRIT_GB=999999 ABS_SIZE_FLOOR_
   || no "a critical disk deleted a quarantined repo keep.txt keeps"
 # The critical free-space threshold here sits above the relaxed one, and the run must still
 # act, and say it acts, at full pressure.
-{ grep -q ' pressure=100% ' <<<"$out" && grep -q 'WARN: the relaxed free-space threshold' <<<"$out"; } \
+{ grep -q ' pressure 100% ' <<<"$out" && grep -q 'WARN the relaxed free-space threshold' <<<"$out"; } \
   && ok "a critical disk is full pressure even with the free-space thresholds inverted" \
   || no "the banner said less than full pressure while the quarantine was emptied"
 
@@ -2830,11 +2838,11 @@ sed -i "${edits[@]}" "$RSP_MANIFEST"
 out=$(RULES=H "${NOTTY[@]}" timeout 60 "$SCRIPT" --apply --block-peers --yes </dev/null 2>&1)
 rc=$?
 { [ "$rc" = 0 ] \
-  && grep -q 'REVIEW, MALWARE OPERATIONS: 1 identity(s), from the malware rule (H)' <<<"$out" \
-  && grep -q "#   $OPS: 2 of its 3 repos match:" <<<"$out" \
-  && grep -q "#       rad:$CODE4  # c2-panel (c2,panel,loader)" <<<"$out" \
-  && grep -qx "#     did:key:$OPS" <<<"$out" \
-  && ! grep -q 'WARN: no signature on the first identity revision' <<<"$out"; } \
+  && grep -q 'REVIEW 1 identity the malware rule (H) named. Nothing' <<<"$out" \
+  && grep -q "#        $OPS: 2 of its 3 repos match:" <<<"$out" \
+  && grep -q "#          rad:$CODE4  # c2-panel (c2,panel,loader)" <<<"$out" \
+  && grep -qx "#          did:key:$OPS" <<<"$out" \
+  && ! grep -q 'WARN no signature on the first identity revision' <<<"$out"; } \
   && ok "an identity whose repos read like a malware operation is named for review" \
   || no "rule H missed the operation's identity"
 ! grep -q "$VIC" <<<"$out" \
@@ -2843,16 +2851,16 @@ rc=$?
 ! grep -qE "$RES|$FEW|$THIN|$ONE" <<<"$out" \
   && ok "no strong word, two words, two repos of five, or one repo: nobody else is named" \
   || no "rule H named an identity under one of its bars"
-{ grep -q 'REVIEW, MALWARE REPOS: 2 repo(s) the malware rule (H) named' <<<"$out" \
-  && grep -qxF "#     rad:$ROT3  # hvnc-panel (hvnc,panel,loader; path: src/hvnc/client.py)" \
+{ grep -q 'REVIEW 2 repos the malware rule (H) flagged' <<<"$out" \
+  && grep -qxF "#        rad:$ROT3  # hvnc-panel (hvnc,panel,loader; path: src/hvnc/client.py)" \
        <<<"$out" \
   && grep -qxF \
-       "#     rad:$FARM2  # stealer (stealer; subject: feat(stealers): save[2J2J results)" \
+       "#        rad:$FARM2  # stealer (stealer; subject: feat(stealers): save[2J2J results)" \
        <<<"$out" \
   && ! grep -q $'\033' <<<"$out" && ! grep -q $'\302\233' <<<"$out"; } \
   && ok "one repo with a strong word in its name and its files or commits is named" \
   || no "rule H missed a single malware repo, or named a mirror or an operation's repo again"
-{ grep -q 'WARN: 1 repo(s) hold a strong malware word' <<<"$out" \
+{ grep -q 'WARN 1 repo(s) hold a strong malware word' <<<"$out" \
   && grep -qxF '#   rad:zheavy  # keylogger (keylogger; path: keylogger.c)' <<<"$out"; } \
   && ok "a repo with words and evidence but no commit dates to judge by is called out" \
   || no "rule H passed over a repo it could not date without a word, or warned with no evidence"
@@ -2878,8 +2886,8 @@ printf '#!/bin/sh\ncase "$*" in *founder/sig*) exit 1 ;; esac\nexec %s "$@"\n' \
   "$(command -v openssl)" > "$ROOT/nosig/openssl"
 chmod +x "$ROOT/nosig/openssl"
 nosig=$(PATH="$ROOT/nosig:$PATH" "$SCRIPT" 2>&1)
-{ grep -q 'WARN: no signature on the first identity revision of' <<<"$nosig" \
-  && ! grep -q 'REVIEW, MALWARE OPERATIONS' <<<"$nosig"; } \
+{ grep -q 'WARN no signature on the first identity revision of' <<<"$nosig" \
+  && ! grep -q 'REVIEW [0-9]* identit' <<<"$nosig"; } \
   && ok "no founder signature checking out at all is called out" \
   || no "rule H went quiet without saying no signature checked out"
 # Under MALWARE_PRUNE=1 every repo the operation's identity is a delegate of is planned,
@@ -2889,11 +2897,11 @@ out=$(MALWARE_PRUNE=1 "$SCRIPT" 2>&1); rc=$?
 want=$(printf '%s %s\n' "$CODE4" malware-op "$CODE6" malware-op zcode7 malware-op \
          | sort | tr '\n' ' ')
 { [ "$rc" = 0 ] && [ "$(plan_h)" = "$want" ] \
-  && grep -qx "#     rad block $OPS" <<<"$out" \
-  && grep -q 'REVIEW, MALWARE REPOS: 2 repo(s)' <<<"$out" \
-  && grep -qxF "#     rad:$ROT3  # hvnc-panel (hvnc,panel,loader; path: src/hvnc/client.py)" \
+  && grep -qx "#          rad block $OPS" <<<"$out" \
+  && grep -q 'REVIEW 2 repos the malware' <<<"$out" \
+  && grep -qxF "#        rad:$ROT3  # hvnc-panel (hvnc,panel,loader; path: src/hvnc/client.py)" \
        <<<"$out" \
-  && grep -q 'WARN: 1 repo(s) hold a strong malware word' <<<"$out"; } \
+  && grep -q 'WARN 1 repo(s) hold a strong malware word' <<<"$out"; } \
   && ok "MALWARE_PRUNE=1 plans an operation's repos and only reports single repos" \
   || no "MALWARE_PRUNE=1 planned the wrong repos (rc=$rc): $(plan_h)"
 # The deny list blocks an identity, it does not vouch for one, so a co-delegate it lists who
@@ -2907,7 +2915,7 @@ rm -f "$AUDIT_DIR/deny.txt"
 GIT_DIR="$STORAGE/$CODE4" git update-ref -d "refs/namespaces/$DENIED/refs/rad/sigrefs"
 GIT_DIR="$STORAGE/$CODE4" git update-ref refs/rad/id "$first"
 touch -d "10 days ago" "$STORAGE/$CODE4"
-{ [ "$rc" = 0 ] && grep -qx "#     rad block $OPS" <<<"$out"; } \
+{ [ "$rc" = 0 ] && grep -qx "#          rad block $OPS" <<<"$out"; } \
   && ok "a deny-listed co-delegate does not spare the operation's identity a block" \
   || no "a deny-listed identity's signed refs kept the operation's identity unblocked (rc=$rc)"
 # A repo an identity this seed vouches for signed, here the pinned repo's delegate, is spared,
@@ -2921,7 +2929,7 @@ touch -d "10 days ago" "$STORAGE/zcode7"
 out=$(MALWARE_PRUNE=1 "${NOTTY[@]}" "$SCRIPT" --block-peers --yes </dev/null 2>&1); rc=$?
 rm -f "$RSP_HOME/.stub_block"; sed -i "/ $OPS\$/d" "$RSP_HOME/.stub_policy"
 { [ "$rc" = 0 ] && [ "$(plan_h)" = "${want/zcode7 malware-op /}" ] \
-  && ! grep -qx "#     rad block $OPS" <<<"$out" \
+  && ! grep -qx "#          rad block $OPS" <<<"$out" \
   && ! grep -q "rad unfollow $OPS" <<<"$out"; } \
   && ok "a repo a vouched identity signed is spared, and its named delegate is not blocked" \
   || no "rule H planned a repo a vouched identity signed, or blocked its delegate (rc=$rc)"
@@ -2931,7 +2939,7 @@ set_delegate zcode7 "$OPS"
 sed -i "s/^\($ROT3\t[^\t]*\t[^\t]*\t[^\t]*\t\)0/\11/" "$RSP_MANIFEST"
 out=$("$SCRIPT" check-mine 2>/dev/null); rc=$?
 sed -i "s/^\($ROT3\t[^\t]*\t[^\t]*\t[^\t]*\t\)1/\10/" "$RSP_MANIFEST"
-{ [ "$rc" = 6 ] && grep -qxE "flagged +hvnc-panel +rad:$ROT3 +as possible malware" <<<"$out" \
+{ [ "$rc" = 6 ] && grep -qxE "flagged +hvnc-panel +rad:$ROT3 +possible malware" <<<"$out" \
   && grep -q 'A seed lists it for its operator to read' <<<"$out"; } \
   && ok "check names a repo of yours that seeds list for review as possible malware" \
   || no "check missed a single malware repo of yours (rc=$rc)"
@@ -2949,12 +2957,12 @@ FRAMED=$(dlg zframed)
 for r in "$CODE4" "$CODE6"; do add_delegate "$r" "$FRAMED"; done
 out=$("$SCRIPT" 2>&1); rc=$?
 { [ "$rc" = 0 ] && ! grep -q "$FRAMED" <<<"$out" \
-  && grep -q "#   $OPS: 2 of its 3 repos match:" <<<"$out"; } \
+  && grep -q "#        $OPS: 2 of its 3 repos match:" <<<"$out"; } \
   && ok "an identity added as a co-delegate after a repo was created is not named for it" \
   || no "rule H named an identity only added as a co-delegate later"
 # The fixture's own repos have made-up ids, so some start from a document their id does not
 # name already.
-foreign=$(sed -n 's/^# WARN: \([0-9]*\) repo(s) start from another repo.s first.*/\1/p' \
+foreign=$(sed -n 's/^# WARN \([0-9]*\) repo(s) start from another repo.s first.*/\1/p' \
             <<<"$out")
 for r in "$CODE4" "$CODE6"; do
   GIT_DIR="$STORAGE/$r" git update-ref refs/rad/id refs/rad/id~1
@@ -2969,8 +2977,8 @@ GIT_DIR="$d" git fetch -q "$STORAGE/$CODE4" +refs/rad/id:refs/rad/id
 GIT_DIR="$d" git update-ref "refs/namespaces/$OPS/refs/rad/sigrefs" refs/rad/id
 touch -d "10 days ago" "$d"
 out=$("$SCRIPT" 2>&1); rc=$?
-{ [ "$rc" = 0 ] && grep -q "#   $OPS: 2 of its 3 repos match:" <<<"$out" \
-  && grep -q "WARN: $((foreign + 1)) repo(s) start from another repo's first identity" \
+{ [ "$rc" = 0 ] && grep -q "#        $OPS: 2 of its 3 repos match:" <<<"$out" \
+  && grep -q "WARN $((foreign + 1)) repo(s) start from another repo's first identity" \
        <<<"$out"; } \
   && ok "a first revision copied into a repo with another id counts for nobody, and is named" \
   || no "a copied first revision counted for its signer, or went unmentioned"
@@ -2999,7 +3007,7 @@ GIT_DIR="$STORAGE/$FARM2" git update-ref -d "refs/namespaces/$VIC/refs/rad/sigre
 printf '%s\n' "did:key:$OPS" "rad:$ROT3" "did:key:$VIC" > "$AUDIT_DIR/deny.txt"
 out=$("$SCRIPT" 2>&1); rc=$?
 rm -f "$AUDIT_DIR/deny.txt"
-{ [ "$rc" = 0 ] && ! grep -q 'REVIEW, MALWARE OPERATIONS' <<<"$out" \
+{ [ "$rc" = 0 ] && ! grep -q 'REVIEW [0-9]* identit' <<<"$out" \
   && ! grep -q "^#     rad:$ROT3 " <<<"$out" && ! grep -q "^#     rad:$FARM2 " <<<"$out"; } \
   && ok "an identity or a repo the deny list names or prunes is not named again" \
   || no "rule H named an identity or repo the deny list names, or a repo it prunes"
@@ -3009,7 +3017,7 @@ set_delegate zpriv7 "$OPS"
 sed -i "s/^\($ROT3\t[^\t]*\t[^\t]*\t\)public/\1private/" "$RSP_MANIFEST"
 out=$("$SCRIPT" 2>&1); rc=$?
 { [ "$rc" = 0 ] \
-  && grep -q "#   $OPS: 2 of its 4 repos match:" <<<"$out"; } \
+  && grep -q "#        $OPS: 2 of its 4 repos match:" <<<"$out"; } \
   && ok "an identity delegating a private repo is still named" \
   || no "a private repo kept its delegate from rule H"
 ! grep -q "^#     rad:$ROT3 " <<<"$out" \
@@ -3040,7 +3048,7 @@ chmod +x "$ROOT/one-tree"
 out=$("$ROOT/one-tree" 2>&1)
 trees=$(GIT_DIR="$STORAGE/zhexid23" git rev-parse 'refs/tags/v1^{tree}' 'master^{tree}')
 { grep -q '^MALWARE_TREES=1 ' "$ROOT/one-tree" && [ "$(sort <<<"$trees")" = "$trees" ] \
-  && grep -qE '^#     rad:zhexid23  # crypter \(crypter; \.\.\.deep/.*/crypter\.c\)$' \
+  && grep -qE '^#        rad:zhexid23  # crypter \(crypter; \.\.\.deep/.*/crypter\.c\)$' \
        <<<"$out"; } \
   && ok "branches are read before tags, and a long path is cut around its word" \
   || no "MALWARE_TREES dropped the branch's tree, or the cut lost the word"
@@ -3053,7 +3061,7 @@ trees=$(GIT_DIR="$STORAGE/zhexid23" git rev-parse 'refs/tags/v1^{tree}' 'master^
 touch -d "10 days ago" "$STORAGE/$CODE4" "$STORAGE/$CODE6"
 out=$(MALWARE_PRUNE=1 "${NOTTY[@]}" "$SCRIPT" --block-peers --yes </dev/null 2>&1)
 { grep -q "$CODE4 malware-op" <<<"$(plan_h)" && ! grep -q 'zpriv7' <<<"$(plan_h)" \
-  && ! grep -qx "#     rad block $OPS" <<<"$out" && ! grep -q "WARN: $OPS" <<<"$out"; } \
+  && ! grep -qx "#          rad block $OPS" <<<"$out" && ! grep -q "WARN $OPS" <<<"$out"; } \
   && ok "a private repo of a named identity is spared, and the identity is not blocked" \
   || no "rule H planned a private repo, or meant to block a delegate of one"
 set_delegate zpriv7 "$(dlg zpriv7)"
@@ -3081,7 +3089,7 @@ touch -d "10 days ago" "$STORAGE"/z*
 out=$(RSP_BLOCK_NODE_FAIL=1 MALWARE_PRUNE=1 RULES=H "${NOTTY[@]}" "$SCRIPT" --apply \
         --block-peers --yes </dev/null 2>&1); rc=$?
 { [ "$rc" = 1 ] \
-  && grep -q "WARN: could not block $OPS, and no later run will try again.* rad block $OPS" \
+  && grep -q "WARN could not block $OPS, and no later run will try again.* rad block $OPS" \
        <<<"$out" \
   && [ -d "$AUDIT_DIR/quarantine/$CODE4" ] \
   && ! grep -q '^blocked-malware' "$AUDIT_DIR"/prune-*.log; } \
@@ -3127,7 +3135,7 @@ touch -d "10 days ago" "$STORAGE/$CODE4"
   && ok "restoring a malware-op repo names the identity it clears, and how to lift its block" \
   || no "quarantine restore left the identity's block unmentioned"
 out=$(MALWARE_PRUNE=1 "$SCRIPT" 2>&1)
-n=$(grep -c "WARN: an earlier run blocked $OPS as malware.*rad unfollow $OPS" <<<"$out")
+n=$(grep -c "WARN an earlier run blocked $OPS as malware.*rad unfollow $OPS" <<<"$out")
 [ "$n" = 1 ] \
   && ok "a run warns about an identity an earlier run blocked as malware and that is cleared" \
   || no "a run said nothing about the block on an identity rule H now clears"
@@ -3136,7 +3144,7 @@ n=$(grep -c "WARN: an earlier run blocked $OPS as malware.*rad unfollow $OPS" <<
 out=$(MALWARE_PRUNE=1 "$SCRIPT" 2>&1)
 failed=$(RSP_FOLLOW_FAIL=1 MALWARE_PRUNE=1 "$SCRIPT" 2>&1)
 { ! grep -q "rad unfollow $OPS" <<<"$out" \
-  && grep -q "WARN: '.*follow' failed" <<<"$failed" \
+  && grep -q "WARN '.*follow' failed" <<<"$failed" \
   && grep -q "rad unfollow $OPS" <<<"$failed"; } \
   && ok "the warning stops once the block is lifted, and says why when blocks cannot be listed" \
   || no "a lifted block was still reported, or an unreadable block list was silent"
@@ -3146,7 +3154,7 @@ build_fixture; assert_isolated
 printf 'did:key:%s\n' "$STRANGER_NID" > "$AUDIT_DIR/deny.txt"
 out=$(RSP_BLOCK_NODE_FAIL=1 RULES=H "${NOTTY[@]}" "$SCRIPT" --apply --yes </dev/null 2>&1)
 rc=$?
-{ [ "$rc" = 1 ] && grep -q "WARN: could not block denied identity $STRANGER_NID" <<<"$out"; } \
+{ [ "$rc" = 1 ] && grep -q "WARN could not block denied identity $STRANGER_NID" <<<"$out"; } \
   && ok "a deny-list block that fails makes the run exit 1" \
   || no "a failed deny-list block went unreported in the exit code (rc=$rc)"
 
@@ -3187,8 +3195,8 @@ iddoc zcode6 "$(nested "$(dlg zfarm1)")$(top "$(dlg zdecoy)")"
 escaped="did:key:\\u007a$(dlg zfarm1 | cut -c2-)"
 iddoc zcode7 "{\"delegates\":[\"$escaped\"],\"payload\":{},\"threshold\":1}"
 dry=$(RATCHET_FLOOR=0 "$SCRIPT" 2>&1)
-{ [ ! -e "$RSP_HOME/.stub_block" ] && grep -q '#   deny list: block 3 id(s)' <<<"$dry" \
-  && grep -qx '#     rad:zUnfetchedRepo9' <<<"$dry" \
+{ [ ! -e "$RSP_HOME/.stub_block" ] && grep -q 'The deny list blocks 3 ids' <<<"$dry" \
+  && grep -qx '#          rad:zUnfetchedRepo9' <<<"$dry" \
   && grep -qx "zfarm1"$'\t'"delegate $(dlg zfarm1)" "$AUDIT_DIR/last-run/deny-repos.tsv"; } \
   && ok "a dry run lists what the deny list would block and why, and blocks nothing" \
   || no "a dry run blocked something, or hid what --apply would block"
@@ -3312,7 +3320,7 @@ out=$(RULES='' MAX_PRUNE_COUNT=1 "${NOTTY[@]}" "$SCRIPT" --apply \
   || no "copies of denied files got past the runaway caps (rc=$rc)"
 for i in 1 2 3 4; do past_run "$i" $USUAL_BUT_C stale:20; done
 plan=$(RATCHET_FLOOR=0 run)
-grep -q '^#     rule denied-copy: 2 repos' <<<"$plan" \
+grep -q '^#          rule denied-copy: 2 repos' <<<"$plan" \
   && ok "copies far above their usual are held back like a rule" \
   || no "the ratchet did not count copies of denied files"
 # zpoison5 holds the clip too, and this seed saw it before the repo the clip is listed from,
@@ -3406,7 +3414,7 @@ echo zgonesrc > "$AUDIT_DIR/keep.txt"
 printf '%s\trad:zgonesrc\t2026-10-02\n' "$leak" >> "$AUDIT_DIR/deny-files.tsv"
 plan=$(run)
 { ! grep -qE "^zcode4 .* denied-copy " <<<"$plan" \
-  && grep -q '1 row(s) ignored as their source is in .*keep.txt' <<<"$plan" \
+  && grep -q '1 row ignored as their source is kept' <<<"$plan" \
   && grep -qF 'is not "<object id> <bytes or -> <source> [date]"' <<<"$plan"; } \
   && ok "the rows of a restored repo are ignored, and a row missing a field is named" \
   || no "a restored repo's rows still condemned a copy, or a short row slipped through"
@@ -3427,8 +3435,8 @@ out=$("$SCRIPT" quarantine files zrot2 2>/dev/null); rc=$?
 build_fixture; assert_isolated
 for i in 1 2 3 4; do past_run "$i" $USUAL_BUT_C; done
 dry=$(RATCHET_FLOOR=0 "$SCRIPT" 2>&1)
-grep -q 'HELD BACK unless --force' <<<"$dry" && grep -q '#     the stale rule (C): ' <<<"$dry" \
-  && ! grep -q '#     the junk-name rule (A): ' <<<"$dry" \
+grep -q 'HELD BACK as these rules' <<<"$dry" && grep -q '#          the stale rule (C): ' <<<"$dry" \
+  && ! grep -q '#          the junk-name rule (A): ' <<<"$dry" \
   && ok "a dry run says which rule an unattended apply would hold back" \
   || no "the dry run did not name the rule the ratchet would hold"
 out=$(RATCHET_FLOOR=0 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null 2>&1); rc=$?
@@ -3593,7 +3601,7 @@ if command -v script >/dev/null 2>&1; then
   printf 'n\n' | script -qec "$CRIT '$SCRIPT' --apply" /dev/null >"$ROOT/ncrit.out" 2>&1
   # pressure=100% is how the banner shows the critical threshold, so it is what keeps this from
   # passing on a run that was never at the threshold.
-  { grep -q aborted "$ROOT/ncrit.out" && grep -q ' pressure=100% ' "$ROOT/ncrit.out" \
+  { grep -q aborted "$ROOT/ncrit.out" && grep -q ' pressure 100% ' "$ROOT/ncrit.out" \
     && [ -d "$Q/zkeepme" ]; } \
     && ok "answering no leaves the quarantine standing, critical free-space threshold or not" \
     || no "an aborted run had already emptied the whole quarantine before asking"
@@ -3621,7 +3629,7 @@ out=$(cd "$ROOT" && env RAD_HOME="./rad-home" STORAGE="./rad-home/storage" \
         CONFIG="./rad-home/config.json" AUDIT_DIR="./rad-home/prune-audit" \
         RAD="./bin/rad" "$SCRIPT" 2>&1); rc=$?
 { [ "$rc" = 0 ] && grep -qE '^zbig2 ' <<<"$out" && ! grep -qE '^zjunk1 ' <<<"$out" \
-    && grep -q '# PLAN:' <<<"$out"; } \
+    && grep -q '# PLAN ' <<<"$out"; } \
   && ok "relative RAD_HOME/STORAGE/RAD/AUDIT_DIR survive the cwd anchor" \
   || no "relative paths survive cd / (rc=$rc)"
 
@@ -3697,7 +3705,8 @@ tight=$(undo_state zundoquiet)
         "pressure: '$tight') or kept on a disk with room ('$calm')"
 # Lifted repos must not use that room up, or the rules prune them again under pressure. The
 # relaxed threshold is set 1 to 2 GB under free space, which the 2 GB repo would cross.
-avail_gb=$(df -P -B1000000000 "$STORAGE" | awk 'NR == 2 { print $4 }')
+# Rounded down: df rounds its own block counts up, which would leave under 1 GB of room.
+avail_gb=$(df -P -B1 "$STORAGE" | awk 'NR == 2 { print int($4 / 1e9) }')
 if [ "$avail_gb" -ge 3 ]; then
   DISK_AWARE=1 PRESSURE_RELAX_PCT=0 PRESSURE_RELAX_GB=$(( avail_gb - 1 )) PRESSURE_CRIT_PCT=0 \
     PRESSURE_CRIT_GB=0 ABS_SIZE_FLOOR_MB=1 run >/dev/null
@@ -3792,14 +3801,14 @@ out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 RSP_SEED_LIST_FAIL=1 "${NOTTY[@]}" "$SCRI
 # rc.12 lists a blocked repo with its scope, so this run reads that form of the listing.
 out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 RSP_UNSEED_FAIL=1 RSP_SEED_SCOPED=1 "${NOTTY[@]}" \
         "$SCRIPT" --apply </dev/null 2>&1)
-{ grep -q 'unblocked 0 repo(s); 1 failed' <<<"$out" \
+{ grep -q 'unblocked 0 repos, 1 failed' <<<"$out" \
   && ! grep -q '^# unblocked: rad:zundotiny' "$AUDIT_DIR"/prune-20[1-9]*.log; } \
   && ok "a lift that fails is reported and not logged as a lift" \
   || no "a failed lift was logged as done, or not reported"
 # A repo left blocked by mistake wants a person, so the run exits 1 though it pruned nothing.
 out1=$(RULES=H RSP_UNSEED_FAIL=1 RSP_SEED_SCOPED=1 "${NOTTY[@]}" "$SCRIPT" --apply \
          </dev/null 2>&1); rc=$?
-{ [ "$rc" = 1 ] && grep -q 'unblocked 0 repo(s); 1 failed' <<<"$out1"; } \
+{ [ "$rc" = 1 ] && grep -q 'unblocked 0 repos, 1 failed' <<<"$out1"; } \
   && ok "a run whose only lift fails exits 1" \
   || no "a run whose only lift fails exited $rc"
 
@@ -4032,6 +4041,32 @@ EOF
 else
   skip "the B or C lift headroom (under 4 GB free here)"
 fi
+
+# --- colour --- on a terminal the output is coloured by one filter, and the text under the
+# colour is the text a pipe gets. FORCE_COLOR stands in for the terminal.
+build_fixture; assert_isolated
+# No cache, so each run reads repos as the one before did. A run reports what changed since
+# the last one, so the coloured run is compared with the plain run after it, which follows a
+# run too.
+plain=$(CACHE=0 DISK_AWARE=0 run)
+coloured=$(FORCE_COLOR=1 CACHE=0 DISK_AWARE=0 run)
+plain_again=$(CACHE=0 DISK_AWARE=0 run)
+[ -z "${RSP_DUMP_COLOUR:-}" ] || { printf "%s\n" "$coloured" > "$RSP_DUMP_COLOUR"; printf "%s\n" "$plain" > "$RSP_DUMP_COLOUR.plain"; }
+esc=$'\033'
+# The title's clock and the phases' timings differ between two runs.
+untimed() { grep -v -e '^# rad-prune ' -e '^# \[' ; }
+stripped=$(sed "s/$esc\[[0-9;]*m//g" <<<"$coloured")
+{ ! grep -q "$esc" <<<"$plain" \
+  && grep -q "^${esc}\[2m#${esc}\[0m ${esc}\[1mrad-prune [^ ]*${esc}\[0m  ${esc}\[1m${esc}\[32mDRY RUN" \
+       <<<"$coloured" \
+  && grep -qE "^${esc}\[2mzjunk1${esc}\[0m .*${esc}\[31mjunk-name${esc}\[0m" <<<"$coloured" \
+  && [ "$(untimed <<<"$stripped")" = "$(untimed <<<"$plain_again")" ]; } \
+  && ok "FORCE_COLOR colours the run, over the same text a pipe gets" \
+  || no "the coloured run differs from the plain one, or carries no colour"
+nocolour=$(NO_COLOR=1 FORCE_COLOR=1 DISK_AWARE=0 run)
+! grep -q "$esc" <<<"$nocolour" \
+  && ok "NO_COLOR wins over FORCE_COLOR" \
+  || no "NO_COLOR left colour in the output"
 
 # --- lint --- shellcheck's warnings, over the script and the suite's own shell. An rm -rf
 # whose path can expand to "/", or a variable set and never read, is a bug this tool can afford

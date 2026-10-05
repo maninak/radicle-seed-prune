@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1259" height="951" viewBox="0 0 1259 951">
+<style>
+  svg { --bg: #151a17; --fg: #d6ddd8; --d: #78847d; --w: #ffffff; --r: #ef7b74;
+        --g: #8fcf8a; --y: #e2c06a; --c: #6cc6c9; --bar: #2a312d }
+  @media (prefers-color-scheme: light) {
+    svg { --bg: #fbfbf8; --fg: #2a2f2c; --d: #8a928d; --w: #000000; --r: #b3261e;
+          --g: #2c7a2c; --y: #9a6a00; --c: #00707a; --bar: #e6e8e3 } }
+  text { font: 14px ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace;
+         fill: var(--fg); white-space: pre }
+  .d { fill: var(--d) } .w { fill: var(--w) } .b { font-weight: 700 } .r { fill: var(--r) }
+  .g { fill: var(--g) } .y { fill: var(--y) } .c { fill: var(--c) }
+  .bg { fill: var(--bg) } .bar { fill: var(--bar) }
+</style>
+<rect class="bg" width="1259" height="951" rx="8"/>
+<rect class="bar" width="1259" height="28" rx="8"/>
+<rect class="bar" y="20" width="1259" height="8"/>
+<circle cx="18" cy="14" r="5" fill="#ef6b5f"/><circle cx="36" cy="14" r="5" fill="#f5bd4f"/><circle cx="54" cy="14" r="5" fill="#61c454"/>
+<text x="18" y="54" xml:space="preserve">$ rad prune</text>
+<text x="18" y="73" xml:space="preserve"><tspan class="d">#</tspan> <tspan class="w b">rad-prune 0.8.0</tspan>  <tspan class="g b">DRY RUN</tspan>  <tspan class="d">2026-10-04 04:16:49 UTC</tspan></text>
+<text x="18" y="92" xml:space="preserve"><tspan class="d"># home   </tspan>/var/lib/radicle   audit /var/lib/radicle/prune-audit</text>
+<text x="18" y="111" xml:space="preserve"><tspan class="d"># disk   </tspan>125.5 GB free (46.5%)   pressure 0% (rises under 54 GB free, full at 2 GB)</text>
+<text x="18" y="130" xml:space="preserve"><tspan class="d"># rules  </tspan>A junk-name     &gt;30d  seeds&gt;=1  spares imports: history starts &gt;14d before rad init  random-id names: seeds&gt;=0</text>
+<text x="18" y="149" xml:space="preserve"><tspan class="d">#        </tspan>B size          &gt;500MiB &amp; &gt;=P95  &gt;90d  seeds&gt;=3                 <tspan class="y">waiting: no disk pressure</tspan></text>
+<text x="18" y="168" xml:space="preserve"><tspan class="d">#        </tspan>C stale         &gt;730d  seeds&gt;=3                                 <tspan class="y">waiting: no disk pressure</tspan></text>
+<text x="18" y="187" xml:space="preserve"><tspan class="d">#        </tspan>D spam-batch    batch&gt;=5  same desc&gt;=80%  &gt;7d  seeds&gt;=0</text>
+<text x="18" y="206" xml:space="preserve"><tspan class="d">#        </tspan>F media         &gt;7d  seeds&gt;=0  dump: &gt;=64KiB, other&lt;2KiB  ratio: &gt;=6MiB, other&lt;1/1000 of media  batch: &gt;=5 repos, other&lt;64KiB</text>
+<text x="18" y="225" xml:space="preserve"><tspan class="d">#        </tspan>G parasite-peer &gt;=10 repos  &gt;=1MiB media  other&lt;16KiB           reports only; --block-peers asks per peer</text>
+<text x="18" y="244" xml:space="preserve"><tspan class="d">#        </tspan>H malware       identity: words&gt;=3 in &gt;=2 &amp; &gt;=50% of its repos  reports only; MALWARE_PRUNE=1 prunes an identity's repos</text>
+<text x="18" y="263" xml:space="preserve"><tspan class="d"># spared </tspan>9 pinned, 6 private, 0 own, 0 in keep.txt</text>
+<text x="18" y="282" xml:space="preserve"><tspan class="d"># spam   </tspan>10 templates matching 999 repos, before the age and seed checks:</text>
+<text x="18" y="301" xml:space="preserve"><tspan class="d">#          </tspan>111  template-a-*-*</text>
+<text x="18" y="320" xml:space="preserve"><tspan class="d">#          </tspan>105  template-b-*-*</text>
+<text x="18" y="339" xml:space="preserve"><tspan class="d">#          </tspan>104  template-c-*-*</text>
+<text x="18" y="358" xml:space="preserve"><tspan class="d">#          </tspan>103  template-d-*-*</text>
+<text x="18" y="377" xml:space="preserve"><tspan class="d">#          </tspan>102  template-e-*-*</text>
+<text x="18" y="396" xml:space="preserve"><tspan class="d">#        </tspan>...and 5 more (PLAN_FULL=1 lists them)</text>
+<text x="18" y="415" xml:space="preserve"><tspan class="d"># skipped 1218 written in the last 2 days</tspan></text>
+<text x="18" y="434" xml:space="preserve"></text>
+<text x="18" y="453" xml:space="preserve"><tspan class="w b">RID                                     SIZE  SEEDS   AGE(d) REASON        NEAR            NAME</tspan></text>
+<text x="18" y="472" xml:space="preserve"><tspan class="d">zEXAMPLEREPOaaaaaaaaaaaaaaa</tspan>          330.8MB     13      191 <tspan class="r">media-dump</tspan>    -               example-media-repo-1</text>
+<text x="18" y="491" xml:space="preserve"><tspan class="d">zEXAMPLEREPObbbbbbbbbbbbbbb</tspan>          192.7MB     12      191 <tspan class="r">media-dump</tspan>    -               example-media-repo-2</text>
+<text x="18" y="510" xml:space="preserve"><tspan class="d">zEXAMPLEREPOccccccccccccccc</tspan>           50.5MB      7      187 <tspan class="r">media-dump</tspan>    -               example-media-repo-3</text>
+<text x="18" y="529" xml:space="preserve"><tspan class="d">zEXAMPLEREPOddddddddddddddd</tspan>           44.5MB     10      191 <tspan class="r">media-dump</tspan>    -               example-media-repo-4</text>
+<text x="18" y="548" xml:space="preserve"><tspan class="d">zEXAMPLEREPOeeeeeeeeeeeeeee</tspan>           42.1MB     14      243 <tspan class="r">media-dump</tspan>    -               example-media-repo-5</text>
+<text x="18" y="567" xml:space="preserve"><tspan class="d">zEXAMPLEREPOfffffffffffffff</tspan>           30.8MB      7      191 <tspan class="r">media-dump</tspan>    -               example-media-repo-6</text>
+<text x="18" y="586" xml:space="preserve"><tspan class="d">zEXAMPLEREPOggggggggggggggg</tspan>           21.8MB     12      540 <tspan class="r">media-dump</tspan>    -               example-media-repo-7</text>
+<text x="18" y="605" xml:space="preserve"><tspan class="d">zEXAMPLEREPOhhhhhhhhhhhhhhh</tspan>           12.3MB      9      184 <tspan class="r">media-dump</tspan>    -               example-media-repo-8</text>
+<text x="18" y="624" xml:space="preserve"><tspan class="d">zEXAMPLEREPOjjjjjjjjjjjjjjj</tspan>            8.9MB     22      191 <tspan class="r">media-dump</tspan>    -               example-media-repo-9</text>
+<text x="18" y="643" xml:space="preserve">[... 17 more single-repo rows ...]</text>
+<text x="18" y="662" xml:space="preserve"><tspan class="d">zEXAMPLEREPOxxxxxxxxxxxxxxx</tspan>          128.9KB      9       30 <tspan class="r">junk-name</tspan>     <tspan class="y b">age</tspan>             example-demo-repo</text>
+<text x="18" y="681" xml:space="preserve"><tspan class="d">zEXAMPLEREPOyyyyyyyyyyyyyyy</tspan>           75.0KB     10       30 <tspan class="r">junk-name</tspan>     <tspan class="y b">age</tspan>             example-hello-world</text>
+<text x="18" y="700" xml:space="preserve"><tspan class="d">zEXAMPLEREPOwwwwwwwwwwwwwww</tspan>           73.9KB     13       31 <tspan class="r">junk-name</tspan>     <tspan class="y b">age</tspan>             example-test-2</text>
+<text x="18" y="719" xml:space="preserve"><tspan class="d">(440 repos)</tspan>                           50.8MB                 <tspan class="r">spam-batch</tspan>    0 near          same pattern across many repos; PLAN_FULL=1 lists them</text>
+<text x="18" y="738" xml:space="preserve"><tspan class="d">(23 repos)</tspan>                             1.3GB                 <tspan class="r">media-batch</tspan>   0 near          same pattern across many repos; PLAN_FULL=1 lists them</text>
+<text x="18" y="757" xml:space="preserve"></text>
+<text x="18" y="776" xml:space="preserve"><tspan class="d"># </tspan><tspan class="w b">PLAN</tspan><tspan class="w b">   prune 492 repos, 2.08 GiB</tspan></text>
+<text x="18" y="795" xml:space="preserve"><tspan class="d">#          </tspan>junk-name         6 repos      0.00 GiB</text>
+<text x="18" y="814" xml:space="preserve"><tspan class="d">#          </tspan>media-batch      23 repos      1.29 GiB</text>
+<text x="18" y="833" xml:space="preserve"><tspan class="d">#          </tspan>media-dump       23 repos      0.75 GiB</text>
+<text x="18" y="852" xml:space="preserve"><tspan class="d">#          </tspan>spam-batch      440 repos      0.05 GiB</text>
+<text x="18" y="871" xml:space="preserve"><tspan class="d">#        </tspan><tspan class="y">8 of them cleared a threshold by under 20%</tspan>, named in the NEAR column.</text>
+<text x="18" y="890" xml:space="preserve"><tspan class="d">#        </tspan>Pruned repos wait in the quarantine for 7 days, then a later --apply run deletes them.</text>
+<text x="18" y="909" xml:space="preserve"><tspan class="d"># files  /var/lib/radicle/prune-audit/last-run/   plan.tsv</tspan></text>
+<text x="18" y="928" xml:space="preserve"><tspan class="d"># </tspan><tspan class="g b">DRY RUN</tspan> nothing changed. Add --apply to carry out this plan.</text>
+</svg>

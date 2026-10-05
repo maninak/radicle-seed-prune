@@ -81,57 +81,15 @@ sudo -u <node-user> env RAD_HOME=/var/lib/radicle rad-prune   # as the user the 
 
 A dry run against a seed of 12,292 repos:
 
-```
-# radicle-seed-prune 0.8.0  2026-10-04T04:16:49Z   mode=DRY-RUN
-# home=/var/lib/radicle  audit=/var/lib/radicle/prune-audit
-# disk: 125.5GB free (46.5%)  pressure=0% [relax>=54GB crit<=2GB]
-# rules: A junk(>30d, seeds>=1, spare-import>14d; id-names seeds>=0)  B size(>500MB & >=P95, >90d, seeds>=3) [WAITING: no disk pressure]  C stale(>730d, seeds>=3) [WAITING: no disk pressure]  D spam(batch>=5 & desc>=80%, >7d, seeds>=0)
-# rule F media-dump(>=64KB of media and <2048B of anything else, no source or build file, >7d, seeds>=0)  media-ratio(>=6144KB of images+video+audio at the tips, anything else <1/1000 of that, no archive, nothing else at the tips but <=1 README)  media-batch(>=64KB of media held by >=5 repos, <65536B of anything else)
-# rule G parasite-peer(one file of theirs in >=10 repos they are not a delegate of, >=1MB media, <16384B of anything else) [reports only; --block-peers asks per peer]
-# rule H malware-op(>=3 malware words, one strong, in the names and descriptions of >=2 and >=50% of the repos an identity signed as a delegate) [reports only; MALWARE_PRUNE=1 prunes]  malware-repo(a strong word in one repo's name or description and in a file path or commit subject, first commit <=7d before its rad init) [reports only]
-# excluded: 9 pinned, 6 private, 0 own, 0 kept; 0 identity(s) cleared of the malware rule (H)
-# spam batches: 10 template(s) matching 999 repos, before the age and seed checks:
-#     111  template-a-*-*
-#     105  template-b-*-*
-#     104  template-c-*-*
-#     103  template-d-*-*
-#     102  template-e-*-*
-#   ...and 5 more (PLAN_FULL=1 lists them)
-# repos=12292  sizes P50=0M P90=8M P95=28M P99=186M rel-cut(P95)=28M  abs-cut=500M
-# skipped: 0 unreadable, 1218 written in the last 2d, 0 with no readable refs
+![A dry run of rad-prune, in colour](docs/example-run.svg)
 
-RID                                     SIZE  SEEDS   AGE(d) REASON        NEAR            NAME
-zEXAMPLEREPOaaaaaaaaaaaaaaa          330.8MB     13      191 media-dump    -               example-media-repo-1
-zEXAMPLEREPObbbbbbbbbbbbbbb          192.7MB     12      191 media-dump    -               example-media-repo-2
-zEXAMPLEREPOccccccccccccccc           50.5MB      7      187 media-dump    -               example-media-repo-3
-zEXAMPLEREPOddddddddddddddd           44.5MB     10      191 media-dump    -               example-media-repo-4
-zEXAMPLEREPOeeeeeeeeeeeeeee           42.1MB     14      243 media-dump    -               example-media-repo-5
-zEXAMPLEREPOfffffffffffffff           30.8MB      7      191 media-dump    -               example-media-repo-6
-zEXAMPLEREPOggggggggggggggg           21.8MB     12      540 media-dump    -               example-media-repo-7
-zEXAMPLEREPOhhhhhhhhhhhhhhh           12.3MB      9      184 media-dump    -               example-media-repo-8
-zEXAMPLEREPOjjjjjjjjjjjjjjj            8.9MB     22      191 media-dump    -               example-media-repo-9
-[... 17 more single-repo rows ...]
-zEXAMPLEREPOxxxxxxxxxxxxxxx          128.9KB      9       30 junk-name     age             example-demo-repo
-zEXAMPLEREPOyyyyyyyyyyyyyyy           75.0KB     10       30 junk-name     age             example-hello-world
-zEXAMPLEREPOwwwwwwwwwwwwwww           73.9KB     13       31 junk-name     age             example-test-2
-(440 repos)                           50.8MB                 spam-batch    0 near          same pattern across many repos; PLAN_FULL=1 lists them
-(23 repos)                             1.3GB                 media-batch   0 near          same pattern across many repos; PLAN_FULL=1 lists them
-
-# PLAN: prune 492 repos, 2.08 GiB out of storage but still on disk for 7d, until a later --apply run deletes them
-#   junk-name         6 repos      0.00 GiB
-#   media-batch      23 repos      1.29 GiB
-#   media-dump       23 repos      0.75 GiB
-#   spam-batch      440 repos      0.05 GiB
-#   8 of them cleared a threshold by under 20%: see the NEAR column, which names the threshold that was close. Read those rows first.
-# the untrimmed plan and the evidence behind it: /var/lib/radicle/prune-audit/last-run/
-# DRY-RUN: nothing in storage changed. Re-run with --apply to execute.
-```
+*The same output as text: [example-run.txt](docs/example-run.txt)*
 
 `AGE(d)` is the age the matching rule measured: days since last activity for the junk-name (A), size (B) and stale (C) rules, days since creation for the spam-batch (D) and media (F) rules.
 
 `NEAR` names each threshold the row cleared by less than `NEAR_PCT` (20%) of that threshold, and is `-` when the row cleared them all by more. Read the rows it marks first.
 
-The plan goes to stdout and everything else, progress included, to stderr, so `> plan.txt` keeps them apart.
+The plan goes to stdout and everything else, progress included, to stderr, so `> plan.txt` keeps them apart. On a terminal the output is in colour. `NO_COLOR=1` turns colour off, and `FORCE_COLOR=1` turns colour on in a pipe or a file too.
 
 ### Exit codes
 
@@ -149,17 +107,9 @@ The plan goes to stdout and everything else, progress included, to stderr, so `>
 
 `rad prune check-mine` lists which of your public repos a seed running rad-prune would prune or list as possible malware, why, and what to change. It changes nothing.
 
-```text
-$ rad prune check-mine
-# 2 public repo(s) of yours, judged by the junk-name (A), spam-batch (D), media (F) and malware (H) rules as a seed would judge them once old enough
-would-prune  example-clips  rad:z<rid>  as media-dump
-  It holds images, video, audio or archives, no source or build file, and under 2048 bytes of anything else.
-  Fix: add what the media belongs to, such as its source, its build files or pages that use it, or host the media elsewhere and link to it.
-  Biggest files on its branches and tags. The media rule (F) also counts the delegates' issue and patch attachments and the other delegates' branches, not listed here:
-       48.0 MiB  main  assets/intro.mp4
-ok           example-project  rad:z<rid>
-# Not checked: the size (B), stale (C) and parasite-peer (G) rules, ...
-```
+![rad prune check-mine, in colour](docs/example-check-mine.svg)
+
+*The same output as text: [example-check-mine.txt](docs/example-check-mine.txt)*
 
 It judges every public repo on this node that you are a delegate of, however new, so you can run it as soon as you publish one.
 
@@ -220,7 +170,7 @@ Copies are pruned like repos the deny list names by id, and no identity is block
 - **G, parasite-peer**: names peers who use repos they are not a delegate of as file hosting, and prunes nothing ([more](#rule-g-parasite-peers)).
 - **H, malware**: names identities and single repos that look like a malware operation, and by default prunes nothing ([more](#rule-h-malware-operations)).
 
-The size (B) and stale (C) rules prune only under [disk pressure](#disk-pressure), and the run's output header marks them `WAITING` until then. A repo that a rule left out of `RULES` would have matched falls through to the next rule.
+The size (B) and stale (C) rules prune only under [disk pressure](#disk-pressure), and the run's output header marks them `waiting` until then. Leaving a rule out of `RULES` does not spare the repos it would have matched, since another rule can still prune them. For example, the stale rule (C) can prune an old media dump while the media rule (F) is off.
 
 A rule that prunes asks for **something about the repo**, and most also ask that it is old enough *and* that enough other nodes still hold it. Defaults shown.
 
@@ -526,7 +476,7 @@ The first holder is the repo this seed saw first. If copies reached this seed be
 
 Archives count as media. A file with an extension the rule does not know is judged by its first bytes, so renaming a video to `.dat` does not hide it. Only the repo's own content counts: its canonical branches and tags, and what its delegates pushed or signed, issue and patch attachments included. A repo the rule cannot read in full is left unjudged and listed in `last-run/F-media-unjudged.tsv`.
 
-`MEDIA_MIN_SEEDS=1` keeps a dump no other node announces and lists it under `# review:` for a person to look at. To spare a repo the rule got wrong, add its repo id to `keep.txt`.
+`MEDIA_MIN_SEEDS=1` keeps a dump no other node announces and lists it under `# REVIEW` for a person to look at. To spare a repo the rule got wrong, add its repo id to `keep.txt`.
 
 ## Rule G: parasite peers
 

@@ -552,6 +552,24 @@ case "$RULES" in
   *[!ABCDFGH]*) echo "# RULES takes the letters ABCDFGH, not '$RULES'." >&2; exit 2 ;;
 esac
 rule_on(){ case "$RULES" in (*"$1"*) return 0 ;; (*) return 1 ;; esac; }
+
+# A header line: a label in a column of its own, then the value. An empty label continues the
+# line above, so a reader scanning the left edge finds each setting by its name.
+header_line() { printf '# %-6s %s\n' "$1" "${*:2}"; }
+
+# "1 repo", "5 repos": a count with its noun, so a line reads as a sentence would.
+count() { if [ "$1" = 1 ]; then echo "1 $2"; else echo "$1 $3"; fi; }
+
+# A byte threshold as the header prints it: in the largest unit that divides it evenly, so
+# 6291456 reads as 6MiB and 2048 as 2KiB.
+header_bytes() {
+  local b=$1
+  if   [ $((b % 1048576)) = 0 ]; then echo "$((b / 1048576))MiB"
+  elif [ $((b % 1024)) = 0 ];    then echo "$((b / 1024))KiB"
+  else                                echo "${b}B"
+  fi
+}
+
 # How the output names a rule: by what it does, and by the letter RULES takes.
 rule_label() {
   case $1 in
@@ -1115,6 +1133,218 @@ if [ "$CMD" = check-mine ] && [ $((APPLY + YES + FORCE + RESTART + BLOCK_PEERS))
        "--block-peers" >&2
   exit 2
 fi
+# ------------------------------------------------------------------------------------- colour
+# On a terminal, colour says what each line is for, with one meaning per colour:
+#   red     deleted or blocked: the REASON column, an APPLY run, ABORT
+#   yellow  read this first: WARN, a NEAR value, a rule waiting on disk pressure
+#   cyan    a line to copy: keep and deny lines, rad block, the restore command
+#   green   safe or undoing: a DRY RUN, blocks being lifted, a repo that is ok
+#   dim     background: the # margin, labels, repo ids, progress, rules that are off
+#   bold    the title, section names, counts
+# Applied by one filter on the way out rather than at each print site, so the lines the code
+# prints, and the ones tests and logs read, are the same plain text either way.
+#
+# NO_COLOR turns it off (no-color.org). FORCE_COLOR=1 turns it on where stdout is not a
+# terminal, for the tests and the README's example.
+colour=0
+if [ -n "${NO_COLOR:-}" ]; then colour=0
+elif [ "${FORCE_COLOR:-0}" != 0 ]; then colour=1
+elif [ -t 1 ] && [ "${TERM:-dumb}" != dumb ]; then colour=1
+fi
+# Read before the filter takes stderr over, after which it is a pipe either way. The progress
+# ticker redraws its line in place only on a terminal.
+stderr_tty=0
+if [ -t 2 ]; then stderr_tty=1; fi
+
+c_dim=$'\033[2m'; c_bold=$'\033[1m'; c_off=$'\033[0m'
+c_red=$'\033[31m'; c_yellow=$'\033[33m'; c_green=$'\033[32m'; c_cyan=$'\033[36m'
+
+# The patterns colour_line matches, named so each arm below reads as what it looks for.
+re_title='^# (rad-prune [^ ]+)  (DRY RUN|APPLY)  (.*)$'
+re_label='^(# (home|disk|rules|deny|log|spared|undo|spam|sizes|kept|copies|tip) +)(.*)$'
+re_more='^(#  +)(.*)$'
+re_flag='^(#[ ]+)(WARN|HELD BACK|ABORT[^ ]*|ERROR:|DRY RUN|DONE|PLAN|REVIEW)( .*)?$'
+re_rule='^(# rules  |#        )([A-H] .*)(waiting: .*)$'
+re_copy='^(#  +)(rad:z[^ ]+  # .*|did:key:.*|rad block .*|rad:z[^ ]+)$'
+re_row='^(z[0-9A-Za-z]+)( +[^ ]+ +[^ ]+ +[^ ]+ )([a-z-]+)( +)([^ ]+)(.*)$'
+re_fold='^(\([0-9]+ repos\))( +[^ ]+ +)([a-z-]+)( +)([0-9]+ near)(.*)$'
+re_near='^(#  +)([0-9]+ of them cleared a threshold by under [0-9]+%)(.*)$'
+re_mine='^# (check-mine)  (.*)$'
+re_exit='^(# .*)( \(exit [0-9]+\))$'
+re_quar='^(z[0-9A-Za-z]+)( .* )(due|kept|unknown|[0-9]+d)$'
+re_check='^(would-prune|flagged|unjudged|ok)( +.* )(rad:[^ ]+)(  (.*))?$'
+re_cmd='^(.*: )([^ ]+ quarantine [a-z]+.*)$'
+
+# Prints one line of output in colour. Anything it does not recognise goes out as it came. The
+# first character picks the patterns to try, so a plan row, which a large plan has thousands
+# of, is matched against the row patterns alone.
+colour_line() {
+  local line=$1 lead="" m
+  local d=$c_dim b=$c_bold o=$c_off
+  # The live bar is taken off the screen with these before the line that follows it.
+  if [[ $line =~ ^($'\r'|$'\033'\[K)+ ]]; then
+    lead=${BASH_REMATCH[0]}; line=${line#"$lead"}
+  fi
+  printf '%s' "$lead"
+  case $line in
+    "#"*) colour_comment "$line" ;;
+    z*)
+      if [[ $line =~ $re_row ]]; then
+        m=${BASH_REMATCH[5]}
+        [ "$m" = - ] || m=$c_yellow$b$m$o
+        printf '%s%s%s%s%s%s%s%s%s%s\n' "$d" "${BASH_REMATCH[1]}" "$o" "${BASH_REMATCH[2]}" \
+               "$c_red" "${BASH_REMATCH[3]}" "$o" "${BASH_REMATCH[4]}" "$m" "${BASH_REMATCH[6]}"
+      elif [[ $line =~ $re_quar ]]; then
+        m=$c_yellow; [ "${BASH_REMATCH[3]}" = kept ] && m=$c_green
+        [[ ${BASH_REMATCH[3]} == *d ]] && m=""
+        printf '%s%s%s%s%s%s%s\n' "$d" "${BASH_REMATCH[1]}" "$o" "${BASH_REMATCH[2]}" \
+               "$m" "${BASH_REMATCH[3]}" "$o"
+      else
+        printf '%s\n' "$line"
+      fi ;;
+    "("*)
+      if [[ $line =~ $re_fold ]]; then
+        m=${BASH_REMATCH[5]}
+        [ "$m" = "0 near" ] || m=$c_yellow$b$m$o
+        printf '%s%s%s%s%s%s%s%s%s%s\n' "$d" "${BASH_REMATCH[1]}" "$o" "${BASH_REMATCH[2]}" \
+               "$c_red" "${BASH_REMATCH[3]}" "$o" "${BASH_REMATCH[4]}" "$m" "${BASH_REMATCH[6]}"
+      else
+        printf '%s\n' "$line"
+      fi ;;
+    "RID "*) printf '%s%s%s\n' "$b" "$line" "$o" ;;
+    would-prune*|flagged*|unjudged*|ok*)
+      if [[ $line =~ $re_check ]]; then
+        case ${BASH_REMATCH[1]} in
+          would-prune)      m=$c_red ;;
+          flagged|unjudged) m=$c_yellow ;;
+          ok)               m=$c_green ;;
+        esac
+        printf '%s%s%s%s%s%s%s' "$m$b" "${BASH_REMATCH[1]}" "$o" "${BASH_REMATCH[2]}" \
+               "$d" "${BASH_REMATCH[3]}" "$o"
+        [ -z "${BASH_REMATCH[4]}" ] || printf '  %s%s%s' "$m" "${BASH_REMATCH[5]}" "$o"
+        printf '\n'
+      else
+        printf '%s\n' "$line"
+      fi ;;
+    " "*)
+      if [[ $line =~ ^(\ +)(Fix:)(.*)$ ]]; then
+        printf '%s%s%s%s%s\n' "${BASH_REMATCH[1]}" "$b" "${BASH_REMATCH[2]}" "$o" \
+               "${BASH_REMATCH[3]}"
+      else
+        printf '%s\n' "$line"
+      fi ;;
+    *) printf '%s\n' "$line" ;;
+  esac
+}
+
+# The lines that open with "#": the header, the running commentary and everything said about
+# the plan.
+colour_comment() {
+  local line=$1 m
+  local d=$c_dim b=$c_bold o=$c_off
+  if [[ $line =~ $re_title ]]; then
+    m=$c_green; [ "${BASH_REMATCH[2]}" = APPLY ] && m=$c_red
+    printf '%s#%s %s%s%s  %s%s%s%s  %s%s%s\n' "$d" "$o" "$b" "${BASH_REMATCH[1]}" "$o" \
+           "$b" "$m" "${BASH_REMATCH[2]}" "$o" "$d" "${BASH_REMATCH[3]}" "$o"
+  elif [[ $line =~ $re_flag ]]; then
+    case ${BASH_REMATCH[2]} in
+      WARN|"HELD BACK") m=$c_yellow$b ;;
+      ABORT*|ERROR:) m=$c_red$b ;;
+      "DRY RUN")     m=$c_green$b ;;
+      *)             m=$b ;;
+    esac
+    # A plan's own line carries the two numbers the run is about, so they stand out too.
+    if [ "${BASH_REMATCH[2]}" = PLAN ]; then
+      printf '%s%s%s%s%s%s%s%s%s\n' "$d" "${BASH_REMATCH[1]}" "$o" "$m" "${BASH_REMATCH[2]}" \
+             "$o" "$b" "${BASH_REMATCH[3]}" "$o"
+    else
+      printf '%s%s%s%s%s%s%s\n' "$d" "${BASH_REMATCH[1]}" "$o" "$m" "${BASH_REMATCH[2]}" "$o" \
+             "${BASH_REMATCH[3]}"
+    fi
+  elif [[ $line == "# ["[0-9]* || $line == "# skipped "* || $line == "# cache "* \
+          || $line == "# files "* || $line == *"off: not in RULES" ]]; then
+    printf '%s%s%s\n' "$d" "$line" "$o"
+  elif [[ $line =~ $re_rule ]]; then
+    printf '%s%s%s%s%s%s%s\n' "$d" "${BASH_REMATCH[1]}" "$o" "${BASH_REMATCH[2]}" \
+           "$c_yellow" "${BASH_REMATCH[3]}" "$o"
+  elif [[ $line =~ $re_near ]]; then
+    printf '%s%s%s%s%s%s%s\n' "$d" "${BASH_REMATCH[1]}" "$o" "$c_yellow" "${BASH_REMATCH[2]}" \
+           "$o" "${BASH_REMATCH[3]}"
+  elif [[ $line =~ $re_mine ]]; then
+    printf '%s#%s %s%s%s  %s%s%s\n' "$d" "$o" "$b" "${BASH_REMATCH[1]}" "$o" "$d" \
+           "${BASH_REMATCH[2]}" "$o"
+  elif [[ $line =~ $re_exit ]]; then
+    printf '%s%s%s%s\n' "${BASH_REMATCH[1]}" "$d" "${BASH_REMATCH[2]}" "$o"
+  elif [[ $line =~ $re_copy ]]; then
+    printf '%s%s%s%s%s%s\n' "$d" "${BASH_REMATCH[1]}" "$o" "$c_cyan" "${BASH_REMATCH[2]}" "$o"
+  elif [[ $line =~ $re_cmd ]]; then
+    printf '%s%s%s%s\n' "${BASH_REMATCH[1]}" "$c_cyan" "${BASH_REMATCH[2]}" "$o"
+  elif [[ $line == "# undo   lift "* ]]; then
+    printf '%s# undo   %s%s%s%s\n' "$d" "$o" "$c_green" "${line#"# undo   "}" "$o"
+  elif [[ $line =~ $re_label ]]; then
+    printf '%s%s%s%s\n' "$d" "${BASH_REMATCH[1]}" "$o" "${BASH_REMATCH[3]}"
+  elif [[ $line =~ $re_more ]]; then
+    printf '%s%s%s%s\n' "$d" "${BASH_REMATCH[1]}" "$o" "${BASH_REMATCH[2]}"
+  else
+    printf '%s\n' "$line"
+  fi
+}
+
+# Copies its input to its output, a line at a time, through colour_line. A line still open
+# after a tenth of a second, such as a prompt waiting for an answer or the live progress bar,
+# goes out as it is, so nothing waits on a newline that comes only after the answer.
+colourise() {
+  local line rc
+  # A Ctrl-C reaches every process on the terminal. The filter outlives it, so the lines the
+  # run prints as it stops still reach the screen.
+  trap '' INT
+  while :; do
+    line=""; rc=0
+    IFS= read -r -t 0.1 line || rc=$?
+    if [ "$rc" = 0 ]; then
+      colour_line "$line"
+    elif [ "$rc" -gt 128 ]; then
+      printf '%s' "$line"
+    else
+      printf '%s' "$line"
+      return 0
+    fi
+  done
+}
+
+# The filter prints what is left in its pipe once nothing holds the pipe open. Waited for at
+# exit, so the shell prompt comes back after the run's last line, not in the middle of it. At
+# most 30 seconds a filter, so a child still holding the pipe cannot keep the run from ending.
+# The filter colours about 5000 plan rows a second, so a full plan of 100k repos still fits.
+colour_wait() {
+  [ "${#colour_pids[@]}" -gt 0 ] || return 0
+  exec 1>&- 2>&- 3>&-
+  local pid
+  for pid in "${colour_pids[@]}"; do
+    for _ in {1..300}; do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+  done
+}
+# Both streams on one terminal share one filter, so a warning lands between the lines it was
+# printed between. Two filters would each print when they got to it.
+colour_pids=()
+if [ "$colour" = 1 ]; then
+  if [ -t 1 ] && [ "$stderr_tty" = 1 ]; then
+    exec > >(colourise) 2>&1
+    colour_pids+=("$!")
+  else
+    exec > >(colourise)
+    colour_pids+=("$!")
+    # Warnings sent to a file stay plain text there, unless colour was asked for.
+    if [ "$stderr_tty" = 1 ] || [ "${FORCE_COLOR:-0}" != 0 ]; then
+      exec 2> >(colourise >&2)
+      colour_pids+=("$!")
+    fi
+  fi
+  # Until on_exit takes over further down, which calls it too. It replaces the trap that
+  # removes check-mine's directory, so it removes it too.
+  trap '[ -z "$CHECK_DIR" ] || rm -rf "$CHECK_DIR"; colour_wait' EXIT
+fi
+
 # The scan's own report is written for an operator, so a check keeps it off stdout and prints
 # its answer to fd 3 once the plan is made. Warnings still reach stderr.
 if [ "$CMD" = check-mine ]; then exec 3>&1 1>/dev/null; fi
@@ -1125,8 +1355,8 @@ case "$QVERB" in
   --help|-h) usage; exit 0 ;;
 esac
 if [ "$rules_named_e" = 1 ] && [ "$CMD" != quarantine ]; then
-  echo "# WARN: the link-farm rule (E) was removed in 0.8.0; E in RULES is ignored." >&2
-  [ -n "$RULES" ] || echo "# WARN: without the E, RULES is empty, so no rule runs." >&2
+  echo "# WARN the link-farm rule (E) was removed in 0.8.0; E in RULES is ignored." >&2
+  [ -n "$RULES" ] || echo "# WARN without the E, RULES is empty, so no rule runs." >&2
 fi
 
 # A per-repo command that fails is ordinary here (a repo can vanish or turn unreadable under
@@ -1142,6 +1372,7 @@ if [ "$CMD" != quarantine ]; then
   need="$need iconv uniq wc xargs"
 fi
 if [ "$QVERB" = files ]; then need="$need awk git jq od"; fi
+if [ "$QVERB" = list ]; then need="$need numfmt"; fi
 if [ "$CMD" != quarantine ] && rule_on F; then need="$need base64 gzip openssl"; fi
 if [ "$CMD" != quarantine ] && rule_on H; then need="$need base64 openssl"; fi
 missing=
@@ -1301,10 +1532,10 @@ fi
 lock_file="$AUDIT_DIR/run.lock"
 if [ "$lock_needed" = 1 ] && [ -d "$AUDIT_DIR" ]; then
   if ! command -v flock >/dev/null 2>&1; then
-    echo "# WARN: flock is not installed, so nothing stops a second rad prune run changing" \
+    echo "# WARN flock is not installed, so nothing stops a second rad prune run changing" \
          "storage or the quarantine while this one does." >&2
   elif ! { exec {lock_fd}>> "$lock_file"; } 2>/dev/null; then
-    echo "# WARN: cannot open $lock_file, so nothing stops a second rad prune run changing" \
+    echo "# WARN cannot open $lock_file, so nothing stops a second rad prune run changing" \
          "storage or the quarantine while this one does." >&2
   else
     lock_rc=0
@@ -1314,13 +1545,13 @@ if [ "$lock_needed" = 1 ] && [ -d "$AUDIT_DIR" ]; then
            "$lock_file). Nothing was touched." >&2
       exit 5
     elif [ "$lock_rc" != 0 ]; then
-      echo "# WARN: cannot lock $lock_file ($lock_err), so nothing stops a second rad prune" \
+      echo "# WARN cannot lock $lock_file ($lock_err), so nothing stops a second rad prune" \
            "run changing storage or the quarantine while this one does." >&2
     fi
   fi
 fi
 [ -n "$OUR_NID" ] \
-  || echo "# WARN: could not determine our NID; seed counts will include us" >&2
+  || echo "# WARN could not determine our NID; seed counts will include us" >&2
 
 now=$(date +%s)
 fresh_cut=$(( now - FRESH_GUARD_DAYS*86400 ))
@@ -1376,7 +1607,7 @@ keep_add() {
       "Repos rad prune never prunes, one repo id per line. Edit it by hand at any time." \
       "A did:key: line instead clears that identity of the malware rule (H)." \
       "rad prune quarantine restore adds each repo it puts back." \
-      || echo "# WARN: could not write the header of a new $KEEP_FILE" >&2
+      || echo "# WARN could not write the header of a new $KEEP_FILE" >&2
   fi
   # Read the way a run reads it, so an id already there with a comment or a rad: prefix is not
   # added twice.
@@ -1465,7 +1696,7 @@ quar_cut=$(( now - QUARANTINE_DAYS*86400 + QUAR_SLACK_SECS ))
 quar_expired() {
   local d born kept
   if ! kept=$(keep_ids); then
-    echo "# WARN: cannot read $KEEP_FILE, so nothing is deleted from the quarantine." >&2
+    echo "# WARN cannot read $KEEP_FILE, so nothing is deleted from the quarantine." >&2
     return 0
   fi
   for d in "$quar"/z*; do
@@ -1497,7 +1728,7 @@ quar_purge_all_if_critical() {
     && awk -v a="$free_eff" -v c="$crit_free" 'BEGIN{exit !(a <= c)}' || return 0
   local d purged=0 spared=0 kept
   if ! kept=$(keep_ids); then
-    echo "# WARN: cannot read $KEEP_FILE, so the quarantine is not emptied." >&2
+    echo "# WARN cannot read $KEEP_FILE, so the quarantine is not emptied." >&2
     return 0
   fi
   for d in "$quar"/z*; do
@@ -1517,11 +1748,11 @@ quar_purge_all_if_critical() {
 if [ "$CMD" = quarantine ]; then
   case "$QVERB" in
     list)
-      found=0
+      found=0; total_bytes=0
       # The purge deletes nothing in the keep file, and none at all while it cannot be read.
       if ! kept=$(keep_ids); then
         kept=unreadable
-        echo "# WARN: cannot read $KEEP_FILE, so nothing is deleted from the quarantine." >&2
+        echo "# WARN cannot read $KEEP_FILE, so nothing is deleted from the quarantine." >&2
       fi
       for d in "$quar"/z*; do
         [ -d "$d" ] || continue
@@ -1539,11 +1770,20 @@ if [ "$CMD" = quarantine ]; then
           # Rounded up, so "1d" means it goes some time today rather than a day from now.
           left="$(( (born - quar_cut + 86399) / 86400 ))d"
         fi
+        # Disk use, not file bytes: what deleting it gives back.
+        bytes=$(du -sB1 "$d" 2>/dev/null | cut -f1)
         printf '%-34s %8s %8s %10s\n' "$(basename "$d")" \
-               "$(du -sh "$d" 2>/dev/null | cut -f1)" "$held" "$left"
+               "$(numfmt --to=iec --suffix=B "${bytes:-0}")" "$held" "$left"
         found=$((found+1))
+        total_bytes=$((total_bytes + ${bytes:-0}))
       done
-      [ "$found" -gt 0 ] || echo "# nothing in quarantine ($quar)"
+      if [ "$found" -gt 0 ]; then
+        echo
+        echo "# $(count "$found" repo repos), $(numfmt --to=iec --suffix=B "$total_bytes")." \
+             "To put one back: $(basename "$0") quarantine restore <rid>"
+      else
+        echo "# nothing in quarantine ($quar)"
+      fi
       ;;
     restore)
       [ "${#QARGS[@]}" -gt 0 ] \
@@ -1555,7 +1795,7 @@ if [ "$CMD" = quarantine ]; then
       hnamed=$( { malware_op_nids; printf '%s\n' "$hblocked"; } | sort -u)
       nblocked=""
       if [ -n "$hblocked" ] && ! nblocked=$(nodes_blocked_now); then
-        echo "# WARN: '$RAD follow' failed, so a block named below may be lifted already." >&2
+        echo "# WARN '$RAD follow' failed, so a block named below may be lifted already." >&2
         nblocked=$hblocked
       fi
       for rid in "${QARGS[@]}"; do
@@ -1749,7 +1989,7 @@ p=$(awk -v av="$free_eff" -v r="$relax_free" -v c="$crit_free" -v on="$DISK_AWAR
   x=(r-av)/(r-c); if(x<0)x=0; if(x>1)x=1; printf "%.3f",x }')
 if [ "$DISK_AWARE" = 1 ] \
    && awk -v r="$relax_free" -v c="$crit_free" 'BEGIN{exit !(r<=c)}'; then
-  awk -v r="$relax_free" -v c="$crit_free" 'BEGIN{printf "# WARN: the relaxed free-space" \
+  awk -v r="$relax_free" -v c="$crit_free" 'BEGIN{printf "# WARN the relaxed free-space" \
     " threshold (PRESSURE_RELAX_*, %.1f GB free) is not above the critical one (PRESSURE_CRIT_*," \
     " %.1f GB), so pressure is either 0%% or 100%%.\n", r/1e9, c/1e9}' >&2
 fi
@@ -1796,13 +2036,15 @@ fi
 
 run_mode=$([ "$APPLY" = 1 ] && echo APPLY || echo DRY-RUN)
 [ "$CMD" != check-mine ] || run_mode=CHECK
-echo "# radicle-seed-prune $VERSION  $run_ts   mode=$run_mode"
+
+title_ts=${run_ts%Z}
+echo "# rad-prune $VERSION  ${run_mode/-/ }  ${title_ts/T/ } UTC"
 # Named at the top and not only at the end: the plan, the per-run log and the quarantine are
 # all under it, and they are what an operator goes looking for while the run is still going.
-echo "# home=$RAD_HOME  audit=$AUDIT_DIR"
+header_line home "$RAD_HOME   audit $AUDIT_DIR"
 
-# The header is what a reader checks the run against, so every threshold it acted on is printed
-# at its effective (post-pressure) value.
+# The header is what a reader checks the run against, so each rule's main thresholds are
+# printed at their effective (post-pressure) value. The README names the rest.
 free_gb=$(awk  -v a="$disk_avail" 'BEGIN{printf "%.1f",a/1e9}')
 free_pct=$(awk -v a="$disk_avail" -v t="$disk_total" 'BEGIN{printf "%.1f",(t>0)?100*a/t:0}')
 press_pct=$(awk -v p="$p" 'BEGIN{printf "%.0f",p*100}')
@@ -1810,56 +2052,61 @@ relax_gb=$(awk -v r="$relax_free" 'BEGIN{printf "%.0f",r/1e9}')
 crit_gb=$(awk  -v c="$crit_free" 'BEGIN{printf "%.0f",c/1e9}')
 due_note=""
 [ "${quar_due:-0}" = 0 ] \
-  || due_note=$(awk -v q="$quar_due" 'BEGIN{printf " + %.1fGB due out of quarantine",q/1e9}')
-echo "# disk: ${free_gb}GB free (${free_pct}%)${due_note}  pressure=${press_pct}%" \
-     "[relax>=${relax_gb}GB crit<=${crit_gb}GB]"
-
-rule_a="A junk(>${eff_junk_days}d, seeds>=${JUNK_MIN_SEEDS}, spare-import>${IMPORT_SPARE_DAYS}d;"
-rule_a="$rule_a id-names seeds>=${JUNK_ID_MIN_SEEDS})"
-rule_b="B size(>${eff_abs_mb}MB & >=P${eff_pctl}, >${eff_outlier_days}d, seeds>=${eff_seeds})"
-rule_c="C stale(>${eff_stale_days}d, seeds>=${eff_seeds})"
-rule_d="D spam(batch>=${SPAM_MIN_BATCH} & desc>=${SPAM_DESC_AGREE_PCT}%,"
-rule_d="$rule_d >${eff_spam_days}d, seeds>=${SPAM_MIN_SEEDS})"
-rule_on A || rule_a="$rule_a [DISABLED: not in RULES]"
-if ! rule_on B; then rule_b="$rule_b [DISABLED: not in RULES]"
-elif [ "$space_rules" = 0 ]; then rule_b="$rule_b [WAITING: no disk pressure]"; fi
-if ! rule_on C; then rule_c="$rule_c [DISABLED: not in RULES]"
-elif [ "$space_rules" = 0 ]; then rule_c="$rule_c [WAITING: no disk pressure]"; fi
-rule_on D || rule_d="$rule_d [DISABLED: not in RULES]"
-echo "# rules: $rule_a  $rule_b  $rule_c  $rule_d"
-
-rule_f="F media-dump(>=$((MEDIA_MIN_BYTES/1024))KB of media and"
-rule_f="$rule_f <${MEDIA_TEXT_MAX_BYTES}B of anything else, no source or build file,"
-rule_f="$rule_f >${MEDIA_STALE_DAYS}d, seeds>=${MEDIA_MIN_SEEDS})"
-rule_f="$rule_f  media-ratio(>=$((MEDIA_RATIO_MIN_BYTES/1024))KB of images+video+audio"
-rule_f="$rule_f at the tips, anything else <${MEDIA_RATIO_TEXT_PER_MILLE}/1000 of that,"
-rule_f="$rule_f no archive, nothing else at the tips but <=${MEDIA_RATIO_MAX_FILES} README)"
-rule_f="$rule_f  media-batch(>=$((MEDIA_MIN_BYTES/1024))KB of media"
-rule_f="$rule_f held by >=${MEDIA_MIN_BATCH} repos,"
-rule_f="$rule_f <${MEDIA_TEXT_CEIL_BYTES}B of anything else)"
-rule_on F      || rule_f="$rule_f [DISABLED: not in RULES]"
-echo "# rule $rule_f"
-rule_g="G parasite-peer(one file of theirs in >=${PARASITE_MIN_REPOS} repos"
-rule_g="$rule_g they are not a delegate of,"
-rule_g="$rule_g >=$((PARASITE_MIN_BYTES/1048576))MB media,"
-rule_g="$rule_g <${PARASITE_TEXT_MAX_BYTES}B of anything else)"
-rule_on G         || rule_g="$rule_g [DISABLED: not in RULES]"
-[ "$BLOCK_PEERS" = 1 ] || rule_g="$rule_g [reports only; --block-peers asks per peer]"
-echo "# rule $rule_g"
-rule_h="H malware-op(>=${MALWARE_MIN_WORDS} malware words, one strong, in the names and"
-rule_h="$rule_h descriptions of >=${MALWARE_MIN_REPOS} and >=${MALWARE_MIN_SHARE_PCT}%"
-rule_h="$rule_h of the repos an identity signed as a delegate)"
-rule_h_op=""
-if [ "$MALWARE_PRUNE" = 0 ]; then rule_h_op=" [reports only; MALWARE_PRUNE=1 prunes]"
-elif [ "$BLOCK_PEERS" = 0 ]; then rule_h_op=" [blocks no identity without --block-peers]"
+  || due_note=$(awk -v q="$quar_due" 'BEGIN{printf ", +%.1f GB due out of quarantine",q/1e9}')
+if [ "$DISK_AWARE" = 1 ]; then
+  pressure="pressure ${press_pct}% (rises under ${relax_gb} GB free, full at ${crit_gb} GB)"
+else
+  pressure="pressure off (DISK_AWARE=0)"
 fi
-rule_h_repo=" [reports only]"
-if ! rule_on H; then rule_h_op=""; rule_h_repo=""; fi
-rule_h="$rule_h$rule_h_op  malware-repo(a strong word in one repo's name or description and"
-rule_h="$rule_h in a file path or commit subject, first commit <=${MALWARE_ORIGINAL_DAYS}d"
-rule_h="$rule_h before its rad init)$rule_h_repo"
-rule_on H || rule_h="$rule_h [DISABLED: not in RULES]"
-echo "# rule $rule_h"
+header_line disk "${free_gb} GB free (${free_pct}%)${due_note}   $pressure"
+
+# One rule per line: its letter and name, its thresholds, then whether it acts this run. The
+# status sits in a column of its own, so a rule that is off or waiting stands out.
+rule_line() {
+  local label=$1 letter=$2 name=$3 settings=$4 status=${5:-}
+  rule_on "$letter" || status="off: not in RULES"
+  if [ -n "$status" ]; then
+    printf '# %-6s %s %-13s %-46s  %s\n' "$label" "$letter" "$name" "$settings" "$status"
+  else
+    printf '# %-6s %s %-13s %s\n' "$label" "$letter" "$name" "$settings"
+  fi
+}
+waiting=""
+[ "$space_rules" = 1 ] || waiting="waiting: no disk pressure"
+rule_a=">${eff_junk_days}d  seeds>=${JUNK_MIN_SEEDS}"
+rule_a="$rule_a  spares imports: history starts >${IMPORT_SPARE_DAYS}d before rad init"
+rule_a="$rule_a  random-id names: seeds>=${JUNK_ID_MIN_SEEDS}"
+rule_line rules A junk-name "$rule_a"
+rule_b=">${eff_abs_mb}MiB & >=P${eff_pctl}  >${eff_outlier_days}d  seeds>=${eff_seeds}"
+rule_line "" B size "$rule_b" "$waiting"
+rule_line "" C stale ">${eff_stale_days}d  seeds>=${eff_seeds}" "$waiting"
+rule_d="batch>=${SPAM_MIN_BATCH}  same desc>=${SPAM_DESC_AGREE_PCT}%  >${eff_spam_days}d"
+rule_d="$rule_d  seeds>=${SPAM_MIN_SEEDS}"
+rule_line "" D spam-batch "$rule_d"
+rule_f=">${MEDIA_STALE_DAYS}d  seeds>=${MEDIA_MIN_SEEDS}"
+rule_f="$rule_f  dump: >=$(header_bytes "$MEDIA_MIN_BYTES"),"
+rule_f="$rule_f other<$(header_bytes "$MEDIA_TEXT_MAX_BYTES")"
+rule_f="$rule_f  ratio: >=$(header_bytes "$MEDIA_RATIO_MIN_BYTES"),"
+rule_f="$rule_f other<${MEDIA_RATIO_TEXT_PER_MILLE}/1000 of media"
+rule_f="$rule_f  batch: >=${MEDIA_MIN_BATCH} repos,"
+rule_f="$rule_f other<$(header_bytes "$MEDIA_TEXT_CEIL_BYTES")"
+rule_line "" F media "$rule_f"
+rule_g_status=""
+[ "$BLOCK_PEERS" = 1 ] || rule_g_status="reports only; --block-peers asks per peer"
+rule_g=">=${PARASITE_MIN_REPOS} repos  >=$(header_bytes "$PARASITE_MIN_BYTES") media"
+rule_g="$rule_g  other<$(header_bytes "$PARASITE_TEXT_MAX_BYTES")"
+rule_line "" G parasite-peer "$rule_g" "$rule_g_status"
+rule_h_status=""
+# A single repo it flags is only ever reported, so only an identity's repos can be pruned.
+if [ "$MALWARE_PRUNE" = 0 ]; then
+  rule_h_status="reports only; MALWARE_PRUNE=1 prunes an identity's repos"
+else
+  rule_h_status="prunes an identity's repos, only reports a single repo"
+  [ "$BLOCK_PEERS" = 1 ] || rule_h_status="$rule_h_status; blocks with --block-peers"
+fi
+rule_h="identity: words>=${MALWARE_MIN_WORDS} in >=${MALWARE_MIN_REPOS} &"
+rule_h="$rule_h >=${MALWARE_MIN_SHARE_PCT}% of its repos"
+rule_line "" H malware "$rule_h" "$rule_h_status"
 
 # ------------------------------------------------------------------------------------ progress
 # Each phase that reads every repo hands its workers to xargs and waits, printing nothing until
@@ -1945,9 +2192,15 @@ progress_start() {
   progress_pid=""
   [ "$PROGRESS_SECS" -gt 0 ] || return 0
   [ "$total" -gt 0 ] || return 0
+  # A log gets a line as each phase starts, since its first reading is a whole PROGRESS_SECS
+  # away. A terminal shows the bar within a second.
+  if [ "$stderr_tty" = 0 ]; then
+    printf '# [%d/%d] %-15s started on %d repos\n' "$progress_n" "$progress_phases" \
+           "$phase" "$total" >&2
+  fi
   local files=("$@") parent=$$ started=$SECONDS n=$progress_n
   local every=$PROGRESS_SECS live=0 cols=80
-  if [ -t 2 ]; then
+  if [ "$stderr_tty" = 1 ]; then
     every=$progress_redraw_secs; live=1
     # Held to the terminal's width, because a line that wraps cannot be redrawn: the carriage
     # return goes to the start of the LAST physical line, leaving the first one on screen.
@@ -2025,11 +2278,11 @@ progress_start() {
         fi
         printf '\r\033[K%.*s' "$cols" "$line" >&2
       elif [ "$sure" = 1 ]; then
-        printf '#   [%d/%d] %s: %d of %d repos (%d%%), %s elapsed%s\n' \
+        printf '# [%d/%d] %-15s %d of %d repos (%d%%), %s elapsed%s\n' \
                "$n" "$progress_phases" "$phase" "$done_n" "$total" "$pct" \
                "$(duration "$elapsed")" "$rest" >&2
       else
-        printf '#   [%d/%d] %s: %d of %d repos, %s elapsed%s\n' \
+        printf '# [%d/%d] %-15s %d of %d repos, %s elapsed%s\n' \
                "$n" "$progress_phases" "$phase" "$done_n" "$total" \
                "$(duration "$elapsed")" "$rest" >&2
       fi
@@ -2048,14 +2301,14 @@ progress_kill() {
   progress_pid=""
   # Take the redrawn line off the terminal, so what stays on screen is whatever is printed
   # next rather than a bar frozen at the last reading.
-  if [ -t 2 ]; then printf '\r\033[K' >&2; fi
+  if [ "$stderr_tty" = 1 ]; then printf '\r\033[K' >&2; fi
 }
 
 # A phase that prints while its ticker redraws gets its message written into the middle of the
 # bar. Take the bar off first, so the message starts at column 0 and the next redraw follows
 # it.
 progress_warn() {
-  if [ -t 2 ]; then printf '\r\033[K' >&2; fi
+  if [ "$stderr_tty" = 1 ]; then printf '\r\033[K' >&2; fi
   echo "$@" >&2
 }
 
@@ -2076,10 +2329,12 @@ progress_stop() {
       read_n=$( { cat "${progress_files[@]}" 2>/dev/null || true; } | wc -l )
     fi
     if [ "$read_n" -ge 0 ] && [ "$read_n" -lt "$progress_total" ]; then
-      echo "# $progress_phase: $read_n of $progress_total repos in $cost" >&2
+      read_n="$read_n of $progress_total"
     else
-      echo "# $progress_phase: $progress_total repos in $cost" >&2
+      read_n=$progress_total
     fi
+    printf '# [%d/%d] %-15s %6s repos   %s\n' "$progress_n" "$progress_phases" \
+           "$progress_phase" "$read_n" "$cost" >&2
   fi
   progress_phase=""; progress_total=0; progress_files=()
 }
@@ -2097,6 +2352,7 @@ on_exit() {
     echo "# exit $rc" >&2
     [ -z "${audit:-}" ] || { printf '# exit %s\n' "$rc" >> "$audit"; } 2>/dev/null || true
   fi
+  colour_wait
 }
 trap on_exit EXIT
 
@@ -2134,7 +2390,7 @@ elif [ -e "$KEEP_FILE" ]; then
       id=${tok#rad:}; id=${id#did:key:}
       if   [[ $id =~ ^z[1-9A-HJ-NP-Za-km-z]{40,}$ ]]; then printf '%s\n' "$id" >> "$tmp/kept-nids"
       elif [[ $id =~ ^z[1-9A-HJ-NP-Za-km-z]+$ ]];     then printf '%s\n' "$id" >> "$tmp/kept"
-      else printf '# WARN: %s: %q is neither a repo id nor an identity; it keeps nothing.\n' \
+      else printf '# WARN %s: %q is neither a repo id nor an identity; it keeps nothing.\n' \
              "$KEEP_FILE" "$tok" >&2
       fi
     done
@@ -2171,7 +2427,7 @@ deny_unreadable=0
 if { [ -e "$DENY_FILE" ] || [ -L "$DENY_FILE" ]; } \
    && { [ ! -f "$DENY_FILE" ] || [ ! -r "$DENY_FILE" ]; }; then
   deny_unreadable=1
-  echo "# WARN: cannot read $DENY_FILE; nothing on it is pruned or blocked this run, and no" \
+  echo "# WARN cannot read $DENY_FILE; nothing on it is pruned or blocked this run, and no" \
        "block is lifted, since the list may name a repo whose block must stay." >&2
 elif [ -e "$DENY_FILE" ]; then
   # `|| [ -n "$line" ]` reads a last line that has no newline, and the carriage return and
@@ -2185,10 +2441,10 @@ elif [ -e "$DENY_FILE" ]; then
       # `rad ls` having listed them as our own. %q because the list may come from somebody
       # else, and a token is echoed to a terminal.
       if   [ "$id" = "$OUR_NID" ]; then
-        echo "# WARN: $DENY_FILE lists this node's own identity; ignored." >&2
+        echo "# WARN $DENY_FILE lists this node's own identity; ignored." >&2
       elif [[ $id =~ ^z[1-9A-HJ-NP-Za-km-z]{40,}$ ]]; then printf '%s\n' "$id" >> "$tmp/deny-nids"
       elif [[ $id =~ ^z[1-9A-HJ-NP-Za-km-z]+$ ]];     then printf '%s\n' "$id" >> "$tmp/deny-rids"
-      else printf '# WARN: %s: %q is neither a repo id nor an identity; ignored.\n' \
+      else printf '# WARN %s: %q is neither a repo id nor an identity; ignored.\n' \
              "$DENY_FILE" "$tok" >&2
       fi
     done
@@ -2196,15 +2452,18 @@ elif [ -e "$DENY_FILE" ]; then
 fi
 sort -u -o "$tmp/deny-rids" "$tmp/deny-rids"; sort -u -o "$tmp/deny-nids" "$tmp/deny-nids"
 # Said every run, so a cron log shows the list was read at all.
-[ ! -e "$DENY_FILE" ] \
-  || echo "# deny list: $(wc -l < "$tmp/deny-rids") repo(s), $(wc -l < "$tmp/deny-nids")" \
-          "identit(ies) in $DENY_FILE"
+deny_label=deny
+if [ -e "$DENY_FILE" ]; then
+  header_line deny "$(count "$(wc -l < "$tmp/deny-rids")" repo repos)," \
+                   "$(count "$(wc -l < "$tmp/deny-nids")" identity identities) in $DENY_FILE"
+  deny_label=""
+fi
 # The files denied repos carried, as "oid \t source" in $tmp/deny-oids and the ids alone in
 # $tmp/deny-oid-list. A row naming a repo that was restored is dropped here, while the file
 # keeps it as a record. A malformed row is named, as a bad deny.txt line is.
 : > "$tmp/deny-oids"; ndenyrestored=0; ndenybad=0
 if [ -e "$DENY_FILES" ] && { [ ! -f "$DENY_FILES" ] || [ ! -r "$DENY_FILES" ]; }; then
-  echo "# WARN: cannot read $DENY_FILES; no repo is pruned as a copy of what it lists." >&2
+  echo "# WARN cannot read $DENY_FILES; no repo is pruned as a copy of what it lists." >&2
 elif [ -e "$DENY_FILES" ]; then
   declare -A RESTORED=()
   while IFS= read -r r; do RESTORED[$r]=1; done < "$tmp/kept"
@@ -2219,7 +2478,7 @@ elif [ -e "$DENY_FILES" ]; then
        || [[ ! $src =~ ^[[:graph:]]+$ ]]; then
       ndenybad=$((ndenybad + 1))
       [ "$ndenybad" -gt "$top_evidence" ] \
-        || printf '# WARN: %s: %q is not "%s"; ignored.\n' "$DENY_FILES" "${line%%#*}" \
+        || printf '# WARN %s: %q is not "%s"; ignored.\n' "$DENY_FILES" "${line%%#*}" \
                   "<object id> <bytes or -> <source> [date]" >&2
     # An empty key is an error to an associative array, and "rad:" alone would be one.
     elif [ -n "$srcid" ] && [ -n "${RESTORED[$srcid]:-}" ]; then
@@ -2229,7 +2488,7 @@ elif [ -e "$DENY_FILES" ]; then
     fi
   done < "$DENY_FILES"
   [ "$ndenybad" -le "$top_evidence" ] \
-    || echo "# WARN: ...and $((ndenybad - top_evidence)) more malformed row(s)" \
+    || echo "# WARN ...and $((ndenybad - top_evidence)) more malformed row(s)" \
             "in $DENY_FILES" >&2
 fi
 sort -u -o "$tmp/deny-oids" "$tmp/deny-oids"
@@ -2240,17 +2499,14 @@ if [ -f "$DENY_FILES" ] && [ -r "$DENY_FILES" ]; then
     if (b >= 1048576) printf "%.1fMiB", b / 1048576; else printf "%.0fKiB", b / 1024 }')
   restored_note=""
   [ "$ndenyrestored" = 0 ] \
-    || restored_note=", $ndenyrestored row(s) ignored as their source is in $KEEP_FILE"
-  echo "# deny files: $(wc -l < "$tmp/deny-oid-list") file id(s) in" \
-       "$DENY_FILES$restored_note." \
-       "A repo whose delegates' branches and tags hold >=$copy_min_said of them," \
-       ">=${COPY_MIN_PCT}% of all their bytes, is pruned as denied-copy."
+    || restored_note=", $(count "$ndenyrestored" row rows) ignored as their source is kept"
+  header_line "$deny_label" "$(count "$(wc -l < "$tmp/deny-oid-list")" "file id" "file ids")" \
+                            "in $DENY_FILES$restored_note"
+  header_line "" "A repo whose delegates' branches and tags hold >=$copy_min_said of these files," \
+                 ">=${COPY_MIN_PCT}% of its bytes, is pruned as denied-copy."
 fi
 # The check below is one more walk over storage, and only runs when there is something to find.
 if [ -s "$tmp/deny-oid-list" ]; then progress_phases=$((progress_phases + 1)); fi
-echo "# excluded: $(wc -l < "$tmp/pinned") pinned," \
-     "$(wc -l < "$tmp/private") private, $(wc -l < "$tmp/own") own," \
-     "$(wc -l < "$tmp/kept") kept; $(wc -l < "$tmp/kept-nids") identity(s) cleared of the malware rule (H)"
 
 # fail-safe: with no reachable node the exclusion sets and seed counts all come back empty.
 # Under --apply that risks deleting our own/pinned repos; in dry-run it forces a plan of zero
@@ -2313,7 +2569,7 @@ open_audit() {
       "A repo in the quarantine can be put back: rad prune quarantine restore <rid>"
     printf '# %s  version=%s  pressure=%s%%  rules=%s\n' \
            "$run_ts" "$VERSION" "$press_pct" "$rules_live"; } > "$audit"
-  echo "# audit log: $audit"
+  header_line log "$audit"
 }
 
 # ------------------------------------------------------------- undo: this tool's own blocks
@@ -2375,7 +2631,7 @@ for f in "$AUDIT_DIR"/prune-*.log; do
   [ ! -e "$f" ] || [ -r "$f" ] || nlogunread=$((nlogunread + 1))
 done
 [ "$nlogunread" = 0 ] \
-  || echo "# WARN: cannot read $nlogunread audit log(s) in $AUDIT_DIR; the blocks they" \
+  || echo "# WARN cannot read $nlogunread audit log(s) in $AUDIT_DIR; the blocks they" \
           "record are lifted, or kept, as if those runs never happened." >&2
 # rid \t the verdict it was pruned for, for every repo an earlier run's undo let back, from its
 # "# unblocked:" lines.
@@ -2397,7 +2653,7 @@ for entry in $UNDO_PARDON; do
   if version_older "$VERSION" "$until"; then
     printf '%s\n' "$prid" >> "$tmp/undo-pardoned"
   else
-    echo "# WARN: the UNDO_PARDON entry for rad:$prid, a known mistake, ended at version $until;" \
+    echo "# WARN the UNDO_PARDON entry for rad:$prid, a known mistake, ended at version $until;" \
          "it keeps nothing now. Drop the entry, or fix the rule that still flags the repo." >&2
   fi
 done
@@ -2412,16 +2668,22 @@ for entry in $UNDO_LIFT; do
   fi
 done
 [ "$nlift_ended" = 0 ] \
-  || echo "# WARN: $nlift_ended UNDO_LIFT entries ended at their version and lift nothing now." \
+  || echo "# WARN $nlift_ended UNDO_LIFT entries ended at their version and lift nothing now." \
           "Drop them." >&2
 npardon_here=0
 while IFS= read -r prid; do
   [ -d "$STORAGE/$prid" ] && npardon_here=$((npardon_here + 1))
 done < "$tmp/undo-pardoned"
-# Said on a dry run only: once a pardoned repo is back, a cron run would repeat it weekly.
-[ "$npardon_here" = 0 ] || [ "$APPLY" = 1 ] \
-  || echo "# known mistakes: $npardon_here repo(s) in storage that rad-prune once pruned by" \
-          "mistake. The media rule (F) does not prune them."
+# The repos no rule touches. A known mistake is a repo an earlier release pruned by mistake and
+# the media rule (F) now leaves alone.
+spared="$(wc -l < "$tmp/pinned") pinned, $(wc -l < "$tmp/private") private,"
+spared="$spared $(wc -l < "$tmp/own") own, $(wc -l < "$tmp/kept") in ${KEEP_FILE##*/}"
+nkept_nids=$(wc -l < "$tmp/kept-nids")
+[ "$nkept_nids" = 0 ] \
+  || spared="$spared, $(count "$nkept_nids" identity identities) cleared of the malware rule (H)"
+[ "$npardon_here" = 0 ] \
+  || spared="$spared, $(count "$npardon_here" "known mistake" "known mistakes")"
+header_line spared "$spared"
 
 # Which repos this node blocks right now, from `rad seed`: a row whose policy is "block". rc.12
 # prints the scope after the policy, so the policy is the column before last; heartwood master
@@ -2444,10 +2706,10 @@ if [ "$UNDO" = 1 ] && [ "$deny_unreadable" = 0 ] && [ -s "$tmp/undo-fold" ]; the
     # Once every block the logs name is lifted or somebody else's, no listed block is expected.
     nliftable=$(awk -F'\t' '$7 == 0' "$tmp/undo-fold" | wc -l)
     [ -s "$tmp/undo-blocked" ] || [ "$nliftable" = 0 ] \
-      || echo "# WARN: '$RAD seed' listed no blocked repo, while the audit logs name" \
+      || echo "# WARN '$RAD seed' listed no blocked repo, while the audit logs name" \
               "$nliftable repo(s) rad-prune pruned and blocked. No block is lifted this run." >&2
   else
-    echo "# WARN: '$RAD seed' failed, so no block is lifted this run:" \
+    echo "# WARN '$RAD seed' failed, so no block is lifted this run:" \
          "$(head -c 200 "$tmp/seed-err" | LC_ALL=C tr -c '[:print:]' ' ')" >&2
   fi
 fi
@@ -2473,12 +2735,12 @@ undo_revival() {
   # repeat it forever.
   if ! command -v sqlite3 >/dev/null 2>&1; then
     [ "$APPLY" = 1 ] \
-      || echo "# undo: sqlite3 is not installed, so a repo pruned for inactivity stays blocked" \
+      || echo "# undo   sqlite3 is not installed, so a repo pruned for inactivity stays blocked" \
               "when someone pushes to it again." >&2
     return 0
   fi
   if [ ! -r "$nodedb" ]; then
-    echo "# WARN: cannot read $nodedb; a repo pruned for inactivity stays blocked when" \
+    echo "# WARN cannot read $nodedb; a repo pruned for inactivity stays blocked when" \
          "someone pushes to it again." >&2
     return 0
   fi
@@ -2488,14 +2750,14 @@ undo_revival() {
          "select count(*), coalesce(sum(repo like 'rad:z%' and node like 'z6Mk%'), 0)
           from announcements where type = 'refs';" \
          > "$tmp/undo-spelling" 2> "$tmp/undo-sql-err"; then
-    echo "# WARN: could not read $nodedb, so this run unblocks no repo for a push:" \
+    echo "# WARN could not read $nodedb, so this run unblocks no repo for a push:" \
          "$(head -c 200 "$tmp/undo-sql-err" | LC_ALL=C tr -c '[:print:]' ' ')" >&2
     return 0
   fi
   local nall nspelled
   IFS=$'\t' read -r nall nspelled < "$tmp/undo-spelling"
   if [ "${nall:-0}" -gt 0 ] && [ "${nspelled:-0}" = 0 ]; then
-    echo "# WARN: $nodedb spells repos and nodes in a way this version does not read, so" \
+    echo "# WARN $nodedb spells repos and nodes in a way this version does not read, so" \
          "this run unblocks no repo for a push." >&2
     return 0
   fi
@@ -2505,7 +2767,7 @@ undo_revival() {
     "select c.rid, a.node, strftime('%s', c.at), a.timestamp, hex(a.message)
      from cand c join announcements a on a.repo = 'rad:' || c.rid and a.type = 'refs';" \
     > "$tmp/undo-ann" 2> "$tmp/undo-sql-err" \
-    || { echo "# WARN: could not read $nodedb, so this run unblocks no repo for a push:" \
+    || { echo "# WARN could not read $nodedb, so this run unblocks no repo for a push:" \
               "$(head -c 200 "$tmp/undo-sql-err" | LC_ALL=C tr -c '[:print:]' ' ')" >&2
          return 0; }
   [ -s "$tmp/undo-ann" ] || return 0
@@ -2515,7 +2777,7 @@ undo_revival() {
                      for (i = 45; i < 49; i++) n = n * 16 + index(hexd, substr($5, i, 1)) - 1
                      if (length($5) >= 48 + n * 108) ok = 1 }
                    END { exit !ok }' "$tmp/undo-ann"; then
-    echo "# WARN: none of the refs announcements in $nodedb read as this version expects, so" \
+    echo "# WARN none of the refs announcements in $nodedb read as this version expects, so" \
          "this run unblocks no repo for a push." >&2
     return 0
   fi
@@ -2678,7 +2940,7 @@ if [ "$QUARANTINE" = 1 ]; then
 fi
 nstuck=$(wc -l < "$tmp/kept-stuck")
 if [ "$nstuck" -gt 0 ]; then
-  echo "# WARN: $nstuck repo(s) in $KEEP_FILE are still in the quarantine, and this run" \
+  echo "# WARN $nstuck repo(s) in $KEEP_FILE are still in the quarantine, and this run" \
        "cannot bring them back. Run rad prune quarantine restore with each:" >&2
   head -n "$top_evidence" "$tmp/kept-stuck" | sed 's/^/#   /' >&2
   [ "$nstuck" -le "$top_evidence" ] \
@@ -2763,35 +3025,53 @@ nstays=$(awk -F'\t' '$2 == "stays-blocked"' "$tmp/undo-states" | wc -l)
 if [ "$nunblock" -gt 0 ] || [ "$nlater" -gt 0 ]; then
   count_why() { awk -F'\t' -v w="$1" '$2 == "unblock" && $3 == w' "$tmp/undo-states" | wc -l; }
   if [ "$undo_crit" = 1 ]; then
-    later_why="free space is at or under the critical threshold."
+    later_when="once free space is over the critical threshold"
   else
-    later_why="over UNDO_MAX_COUNT ($UNDO_MAX_COUNT) or UNDO_MAX_GB ($UNDO_MAX_GB GiB)."
+    later_when="over the next runs (UNDO_MAX_COUNT $UNDO_MAX_COUNT, UNDO_MAX_GB $UNDO_MAX_GB GiB"
+    later_when="$later_when a run)"
   fi
+  undo_label=undo
   if [ "$nunblock" -gt 0 ]; then
-    echo "# undo: unblock $nunblock repo(s) pruned by an earlier run"
+    whys=""
     n=$(count_why verdict-withdrawn)
-    [ "$n" = 0 ] || echo "#   $n pruned under a verdict a later rad-prune release no longer trusts"
-    n=$(count_why active-since-prune)
-    [ "$n" = 0 ] || echo "#   $n pruned for inactivity, and announced by a node since"
+    [ "$n" = 0 ] || whys="$whys, $(count "$n" "withdrawn verdict" "withdrawn verdicts")"
     n=$(count_why known-mistake)
-    [ "$n" = 0 ] || echo "#   $n known mistake(s) this rad-prune release lists"
+    [ "$n" = 0 ] || whys="$whys, $(count "$n" "known mistake" "known mistakes")"
+    n=$(count_why active-since-prune)
+    [ "$n" = 0 ] || whys="$whys, $n active again"
     n=$(count_why kept)
-    [ "$n" = 0 ] || echo "#   $n in $KEEP_FILE, seeded again as quarantine restore would"
-    [ "$nlater" = "$bc_held" ] \
-      || echo "#   $(( nlater - bc_held )) more held for a later run: $later_why"
-  else
-    [ "$nlater" = "$bc_held" ] \
-      || echo "# undo: $(( nlater - bc_held )) block(s) held for a later run: $later_why"
+    [ "$n" = 0 ] || whys="$whys, $n kept"
+    header_line undo "lift $(count "$nunblock" block blocks): ${whys#, }"
+    undo_label=""
   fi
-  [ "$bc_held" = 0 ] \
-    || echo "#   $bc_held more held for a later run: bringing them back would put the disk under" \
-            "pressure, where the size (B) and stale (C) rules prune them again."
+  # Each line counts on from the one above it, and the first one says what it counts.
+  undo_seen=$nunblock
+  if [ "$nlater" != "$bc_held" ]; then
+    n=$(( nlater - bc_held ))
+    if [ "$undo_seen" = 0 ]; then n=$(count "$n" block blocks); else n="$n more"; fi
+    header_line "$undo_label" "$n to lift $later_when"
+    undo_label=""; undo_seen=1
+  fi
+  if [ "$bc_held" != 0 ]; then
+    n=$bc_held
+    if [ "$undo_seen" = 0 ]; then n=$(count "$n" block blocks); else n="$n more"; fi
+    verb="wait"; them="them"; [ "$bc_held" = 1 ] && { verb="waits"; them="it"; }
+    header_line "$undo_label" "$n $verb, as lifting $them now would put the disk under" \
+                              "pressure, where the size (B) and stale (C) rules prune $them again"
+    undo_label=""
+  fi
   if [ "$undo_crit" = 1 ]; then
     n=$(awk -F'\t' '$2 == "unblock-later" && $8 == "quarantined"' "$tmp/undo-states" | wc -l)
-    [ "$n" = 0 ] || echo "#   $n of those are in the quarantine, which --apply empties at this" \
-                         "free space."
+    are=are; [ "$n" = 1 ] && are=is
+    [ "$n" = 0 ] || header_line "" "$n of those $are in the quarantine, which --apply empties at" \
+                                   "this free space"
   fi
-  [ "$nstays" = 0 ] || echo "#   $nstays more stay blocked: too big to fetch again"
+  if [ "$nstays" = 1 ]; then
+    header_line "$undo_label" "1 block stays in place, as the repo is too big to fetch again"
+  elif [ "$nstays" -gt 1 ]; then
+    header_line "$undo_label" "$nstays blocks stay in place, as those repos are too big to fetch" \
+                              "again"
+  fi
 fi
 
 # Lifts the blocks planned above. Called only once the run goes ahead, past the prompt and the
@@ -2811,16 +3091,16 @@ undo_apply() {
     [ "$state" = unblock ] || continue
     if [ "$copy" = quarantined ] \
        && { [ -e "$STORAGE/$rid" ] || ! mv -- "$quar/$rid" "$STORAGE/$rid" 2>/dev/null; }; then
-      echo "# WARN: could not move rad:$rid back from the quarantine; it stays blocked." >&2
+      echo "# WARN could not move rad:$rid back from the quarantine; it stays blocked." >&2
       failed=$((failed + 1)); continue
     fi
     # `rad unseed` drops whatever policy the repo has, here the block just listed. `rad
     # unblock` would write the policy database behind the running node's back.
     if ! "$RAD" unseed "rad:$rid" >/dev/null 2>&1; then
-      echo "# WARN: could not lift the block on rad:$rid ('$RAD unseed' failed); it stays" \
+      echo "# WARN could not lift the block on rad:$rid ('$RAD unseed' failed); it stays" \
            "blocked." >&2
       if [ "$copy" = quarantined ] && ! mv -- "$STORAGE/$rid" "$quar/$rid" 2>/dev/null; then
-        echo "# WARN: could not move rad:$rid back into the quarantine; it stays blocked in" \
+        echo "# WARN could not move rad:$rid back into the quarantine; it stays blocked in" \
              "$STORAGE/$rid until $RAD unseed rad:$rid is run by hand." >&2
       fi
       failed=$((failed + 1)); continue
@@ -2828,22 +3108,22 @@ undo_apply() {
     [ "$ver" = "-" ] && ver=0.7.0-or-older
     printf '# unblocked: rad:%s why=%s reason=%s pruned_at=%s pruned_by_version=%s %s\n' \
            "$rid" "$why" "$reason" "$at" "$ver" "local_copy=$copy" 2>/dev/null >> "$audit" \
-      || echo "# WARN: lifted the block on rad:$rid but could not record it in $audit, so a" \
+      || echo "# WARN lifted the block on rad:$rid but could not record it in $audit, so a" \
               "block put back on it later could be lifted again." >&2
     lifted=$((lifted + 1))
     if [ "$why" = kept ]; then
       if "$RAD" seed "rad:$rid" >/dev/null 2>&1; then
         seeded=$((seeded + 1))
       else
-        echo "# WARN: lifted the block on rad:$rid, which $KEEP_FILE keeps, but" \
+        echo "# WARN lifted the block on rad:$rid, which $KEEP_FILE keeps, but" \
              "'$RAD seed rad:$rid' failed; run it yourself." >&2
       fi
     fi
   done < "$tmp/undo-states"
   if [ "$failed" = 0 ]; then
-    echo "# undo: unblocked $lifted repo(s)."
+    echo "# undo   unblocked $(count "$lifted" repo repos)."
   else
-    echo "# undo: unblocked $lifted repo(s); $failed failed, see the warnings above."
+    echo "# undo   unblocked $(count "$lifted" repo repos), $failed failed (see the warnings above)."
   fi
   undo_failed=$failed
   if [ "$undo_default" != allow ] && [ "$lifted" -gt "$seeded" ]; then
@@ -2928,14 +3208,14 @@ cut -f1 "$tmp/meta" | sort | uniq -d > "$tmp/meta-twice"
 awk -F'\t' 'FILENAME == ARGV[1] { twice[$1] = 1; next } !($1 in twice)' \
   "$tmp/meta-twice" "$tmp/meta" > "$tmp/meta-named"
 if [ -s "$tmp/meta-twice" ]; then
-  echo "# WARN: '$RAD ls --all' listed $(wc -l < "$tmp/meta-twice") repo(s) twice, such as" \
+  echo "# WARN '$RAD ls --all' listed $(wc -l < "$tmp/meta-twice") repo(s) twice, such as" \
        "$(head -3 "$tmp/meta-twice" | sed 's/^/rad:/' | xargs). A description with a line" \
        "break in it forges rows, and the repo that wrote them usually sits just above them in" \
        "'$RAD ls --all'. These repos go unnamed this run, so the junk-name (A)," \
        "spam-batch (D) and malware (H) rules pass over them." >&2
 fi
 if [ -s "$tmp/meta-foreign" ]; then
-  echo "# WARN: '$RAD ls --all' listed $(wc -l < "$tmp/meta-foreign") repo(s) that are not in" \
+  echo "# WARN '$RAD ls --all' listed $(wc -l < "$tmp/meta-foreign") repo(s) that are not in" \
        "storage, such as $(head -3 "$tmp/meta-foreign" | sed 's/^/rad:/' | xargs). These are" \
        "rows forged by a line break in a description, or repos removed while '$RAD ls' ran." \
        "They are ignored." >&2
@@ -2943,7 +3223,7 @@ fi
 # Losing this is not fatal, but the plan's NAME column goes blank and rule D has no corpus to
 # reason about, which would look like "no spam here". Say so.
 [ -s "$tmp/meta" ] \
-  || echo "# WARN: '$RAD ls --all' returned no repos; the spam-batch (D) and malware (H) rules cannot run." >&2
+  || echo "# WARN '$RAD ls --all' returned no repos; the spam-batch (D) and malware (H) rules cannot run." >&2
 
 # -------------------------------------------------------------- rule D: generated-bulk batches
 # Skeletonise every name and description in storage (digit runs become #, random-id tokens
@@ -3037,16 +3317,24 @@ fi
 nspam=$(wc -l < "$tmp/spam"); nspambatch=$(wc -l < "$tmp/spambatch")
 # Said, so a spammer who pushes one member early to keep it shows up in the output.
 if [ -s "$tmp/spamspared" ]; then
-  echo "# spam batches: spared $(wc -l < "$tmp/spamspared") repo(s) as the first of their" \
-       "batch, such as $(head -3 "$tmp/spamspared" | sed 's/^/rad:/' | xargs)."
+  nspamspared=$(wc -l < "$tmp/spamspared")
+  spamspared_ids=$(head -3 "$tmp/spamspared" | sed 's/^/rad:/' | xargs)
+  if [ "$nspamspared" = 1 ]; then
+    header_line spam "spared 1 repo as the first of its batch: $spamspared_ids"
+  elif [ "$nspamspared" -le 3 ]; then
+    header_line spam "spared $nspamspared repos as the first of their batch: $spamspared_ids"
+  else
+    header_line spam "spared $nspamspared repos as the first of their batch, such as" \
+                     "$spamspared_ids"
+  fi
 fi
 if [ "$nspam" -gt 0 ]; then
-  echo "# spam batches: $nspambatch template(s) matching $nspam repos," \
-       "before the age and seed checks:"
+  header_line spam "$(count "$nspambatch" template templates) matching $nspam repos," \
+                   "before the age and seed checks:"
   sort -k1,1nr "$tmp/spambatch" \
-    | awk -F'\t' -v n="$top_evidence" 'NR<=n {printf "#   %5d  %s\n", $1, $2}'
+    | awk -F'\t' -v n="$top_evidence" 'NR<=n {printf "#        %5d  %s\n", $1, $2}'
   [ "$nspambatch" -gt "$top_evidence" ] \
-    && echo "#   ...and $((nspambatch - top_evidence)) more (PLAN_FULL=1 lists them)"
+    && echo "#        ...and $((nspambatch - top_evidence)) more (PLAN_FULL=1 lists them)"
 fi
 
 # --------------------------------------------------------------------- rid -> other-seed count
@@ -3073,7 +3361,6 @@ fi
 # one abort the run. The counting walk below races the same way.
 scanerr="$tmp/scan-errors"; : > "$scanerr"
 nrepos=$(find "$STORAGE" -mindepth 1 -maxdepth 1 -type d 2>>"$scanerr" | wc -l) || true
-echo "# scanning $nrepos repos (size + activity), $JOBS parallel workers..." >&2
 
 progress_start "sizes" "$nrepos" "$tmp/du"
 find "$STORAGE" -mindepth 1 -maxdepth 1 -type d -print0 2>>"$scanerr" \
@@ -3105,7 +3392,7 @@ if [ "$DISK_AWARE" = 1 ] && [ -n "$prev_free" ] && [ -n "$prev_used" ] \
   elsewhere_gb=$(awk -v pf="$prev_free" -v f="$free_gb" -v pu="$prev_used" -v u="$used_gb" \
                    'BEGIN { printf "%.1f", (pf - f) - (u - pu) }')
   if awk -v e="$elsewhere_gb" -v w="$DISK_DROP_WARN_GB" 'BEGIN { exit !(e > w) }'; then
-    echo "# WARN: free space fell from ${prev_free} to ${free_gb} GB since ${prev_ts}," \
+    echo "# WARN free space fell from ${prev_free} to ${free_gb} GB since ${prev_ts}," \
          "${elsewhere_gb} GB more than storage and the quarantine grew by. Something else" \
          "on this disk took it, and pressure=${press_pct}% is read from that one sample of" \
          "free space." >&2
@@ -3260,9 +3547,9 @@ if [ "$CACHE" = 1 ]; then
   [ "$(cat "$CACHE_DIR/fingerprint" 2>/dev/null)" = "$fingerprint" ] && cache_ok=1
   # An unreadable script leaves the fingerprint resting on the knob values alone, which would
   # let an edited script reuse the verdicts it was edited to change.
-  [ -r "$SELF" ] || { cache_ok=0; echo "# cache: cannot read $SELF; not reusing" >&2; }
+  [ -r "$SELF" ] || { cache_ok=0; echo "# cache  cannot read $SELF, so nothing is reused" >&2; }
   [ "$cache_ok" = 1 ] \
-    || echo "# cache: cold (the script or its settings changed); reading every repo" >&2
+    || echo "# cache  cold, so every repo is read (the script or its settings changed)" >&2
 fi
 
 # The stamp goes down HERE, before any rule runs, and the stale key files go with it, so a rule
@@ -3281,7 +3568,7 @@ if [ "$CACHE" = 1 ] && [ "$cache_ok" = 0 ] && mkdir -p "$CACHE_DIR" 2>/dev/null;
           "$CACHE_DIR/hosts-unwalked" 2>/dev/null || true
   fi
   printf '%s\n' "$fingerprint" > "$CACHE_DIR/fingerprint" 2>/dev/null \
-    || echo "# WARN: could not write $CACHE_DIR/fingerprint; the cache stays cold" >&2
+    || echo "# WARN could not write $CACHE_DIR/fingerprint; the cache stays cold" >&2
 fi
 
 # Each rule keeps its own key file, listing the repos IT answered for. A worker that died
@@ -3299,7 +3586,7 @@ cache_hits() {                      # $1 = rule's cache name; writes the rids it
   awk -F'\t' -v old="$CACHE_DIR/keys-$1" \
       'FILENAME == old { k[$1] = $2; next } ($1 in k) && k[$1] == $2 { print $1 }' \
       "$CACHE_DIR/keys-$1" "$tmp/keys" > "$tmp/cached-$1" 2>/dev/null || : > "$tmp/cached-$1"
-  echo "# cache: $1 reuses $(wc -l < "$tmp/cached-$1") of $(wc -l < "$tmp/keys") repos" >&2
+  echo "# cache  $1 reuses $(wc -l < "$tmp/cached-$1") of $(wc -l < "$tmp/keys") repos" >&2
 }
 # What is left for the rule to read, which is what its progress line counts against.
 repos_left() {                      # $1 = rule's cache name, after cache_hits has run for it
@@ -3313,7 +3600,7 @@ phase_shortfall() {
   shift 2
   got=$(cut -f1 "$@" 2>/dev/null | sort -u | wc -l)
   [ "$got" -ge "$want" ] \
-    || echo "# WARN: the $what read $got of the $want repos it had to; it judged only those." >&2
+    || echo "# WARN the $what read $got of the $want repos it had to; it judged only those." >&2
 }
 # Repos per worker call for a phase that reads $1 repos. 32 per call keeps the cost of starting
 # bash and the worker's own setup small against a long phase, but 10 repos then make a single
@@ -3347,7 +3634,7 @@ cache_save() {                      # $1 = stream name, $2 = file holding this r
   cat "$2" > "$CACHE_DIR/$1.new.$$" 2>/dev/null && mv "$CACHE_DIR/$1.new.$$" "$CACHE_DIR/$1" \
     || { cache_failed="$cache_failed $1"
          rm -f "$CACHE_DIR/$1.new.$$" 2>/dev/null      # the trigger for this is a filling disk
-         echo "# WARN: could not write the run cache at $CACHE_DIR" >&2; }
+         echo "# WARN could not write the run cache at $CACHE_DIR" >&2; }
 }
 cache_save_keys() {                 # $1 = rule's cache name, $2 = rids it answered for
   [ "$CACHE" = 1 ] || return 0
@@ -3356,7 +3643,7 @@ cache_save_keys() {                 # $1 = rule's cache name, $2 = rids it answe
   # a repo on evidence two runs old.
   if [ -n "$cache_failed" ]; then
     rm -f "$CACHE_DIR/keys-$1" 2>/dev/null || true
-    echo "# WARN: cache write failed ($cache_failed); next run re-reads every repo" >&2
+    echo "# WARN cache write failed ($cache_failed); next run re-reads every repo" >&2
     return 0
   fi
   mkdir -p "$CACHE_DIR" 2>/dev/null || return 0
@@ -3365,7 +3652,7 @@ cache_save_keys() {                 # $1 = rule's cache name, $2 = rids it answe
     > "$CACHE_DIR/keys-$1.new.$$" 2>/dev/null \
     && mv "$CACHE_DIR/keys-$1.new.$$" "$CACHE_DIR/keys-$1" \
     || { rm -f "$CACHE_DIR/keys-$1.new.$$" 2>/dev/null
-         echo "# WARN: could not write the run cache at $CACHE_DIR" >&2; return 0; }
+         echo "# WARN could not write the run cache at $CACHE_DIR" >&2; return 0; }
 }
 
 # ----------------------------------------------------------------------- rule F: measure trees
@@ -3377,7 +3664,6 @@ cache_save_keys() {                 # $1 = rule's cache name, $2 = rids it answe
 : > "$tmp/media"; : > "$tmp/media-fail"
 mkdir -p "$tmp/blobs"
 if rule_on F; then
-  echo "# measuring repo trees for the media rule (F) ($JOBS workers)..." >&2
   cat > "$tmp/media.sh" <<MEDIA
 #!/usr/bin/env bash
 $(declare -f read_delegates is_media is_archive unhex did_key_hex delegate_ops)
@@ -3666,7 +3952,7 @@ MEDIA
   # Both files, because a repo the worker could not read writes only to the failure one, and a
   # phase full of unreadable repos would otherwise look stalled.
   to_read=$(repos_left media)
-  progress_start "media rule (F)" "$to_read" "$tmp/media" "$tmp/media-fail"
+  progress_start "media (F)" "$to_read" "$tmp/media" "$tmp/media-fail"
   repos_to_read "$tmp/cached-media" \
     | xargs -0r -P "$JOBS" -n "$(batch_size "$to_read")" "$BASH_BIN" "$tmp/media.sh" \
         > "$tmp/media" 4> "$tmp/media-fail" || true
@@ -3690,7 +3976,7 @@ MEDIA
     cache_save "blobs" "$tmp/blobs-all"
   else
     : > "$tmp/blobs-all"; cache_failed="$cache_failed blobs"
-    echo "# WARN: could not sort the media files repos share; no repo is pruned as" \
+    echo "# WARN could not sort the media files repos share; no repo is pruned as" \
          "media-batch this run." >&2
   fi
   # Every repo the worker reads yields either a measurement or a failure line, so these two
@@ -3712,16 +3998,28 @@ MEDIA
   # The file holding all of them is named where it is written, near the end of the run.
   # Naming it here would name a path that a run aborting in between never creates.
   if [ "$nmedianew" -gt 0 ]; then
-    echo "# WARN: the media rule (F) left $nmediafail repo(s) unjudged, $nmedianew of them" \
-         "new since the last run. It did not prune them. Each was unreadable or over one of" \
-         "the rule's limits, such as MEDIA_MAX_REFS ($MEDIA_MAX_REFS) refs or MEDIA_MAX_OPS" \
-         "($MEDIA_MAX_OPS) issue and patch ops. The new ones:" >&2
-    head -n "$top_evidence" "$tmp/media-fail-new" | sed 's/^/#   /' >&2
-    [ "$nmedianew" -le "$top_evidence" ] \
-      || echo "#   ...and $((nmedianew - top_evidence)) more (PLAN_FULL=1 lists them)" >&2
+    {
+      if [ "$nmediafail" = 1 ]; then
+        echo "# WARN the media rule (F) could not judge 1 repo, new since the last run, and" \
+             "did not prune it."
+      else
+        echo "# WARN the media rule (F) could not judge $nmediafail repos ($nmedianew new" \
+             "since the last run) and pruned none of them."
+      fi
+      which="Each was"; [ "$nmediafail" = 1 ] && which="It was"
+      echo "#      $which unreadable or over a limit such as MEDIA_MAX_REFS ($MEDIA_MAX_REFS)" \
+           "refs or MEDIA_MAX_OPS ($MEDIA_MAX_OPS) issue and patch ops. New:"
+      # Two ids to a line: they are there to be looked up, and a column of them buries the
+      # lines around it.
+      head -n "$top_evidence" "$tmp/media-fail-new" \
+        | awk 'NR % 2 { first = $1; next } { printf "#      %-32s %s\n", first, $1 }
+               END { if (NR % 2) print "#      " first }'
+      [ "$nmedianew" -le "$top_evidence" ] \
+        || echo "#      ...and $((nmedianew - top_evidence)) more (PLAN_FULL=1 lists them)"
+    } >&2
   elif [ "$nmediafail" -gt 0 ]; then
-    echo "# the media rule (F) left $nmediafail repo(s) unjudged, all of them listed by the" \
-         "last run too." >&2
+    echo "# the media rule (F) could not judge $(count "$nmediafail" repo repos)," \
+         "all listed by the last run too." >&2
   fi
 
 fi
@@ -3738,7 +4036,6 @@ fi
 : > "$tmp/copy"; : > "$tmp/copy-fail"; : > "$tmp/copy-done"; : > "$tmp/copies"
 : > "$tmp/copy-disowned"; : > "$tmp/deny-oids-owned"
 if [ -s "$tmp/deny-oid-list" ]; then
-  echo "# checking repos for copies of denied files ($JOBS workers)..." >&2
   cat > "$tmp/copy.sh" <<COPY
 #!/usr/bin/env bash
 set -o pipefail
@@ -3933,7 +4230,7 @@ COPY
   sort -u -o "$tmp/copy-fail" "$tmp/copy-fail"
   ncopyfail=$(wc -l < "$tmp/copy-fail")
   if [ "$ncopyfail" -gt 0 ]; then
-    echo "# WARN: could not check $ncopyfail repo(s) for copies of denied files: unreadable," \
+    echo "# WARN could not check $ncopyfail repo(s) for copies of denied files: unreadable," \
          "or over MEDIA_MAX_REFS ($MEDIA_MAX_REFS) refs. None of them is pruned as one:" >&2
     head -n "$top_evidence" "$tmp/copy-fail" | sed 's/^/#   /' >&2
     [ "$ncopyfail" -le "$top_evidence" ] \
@@ -3947,7 +4244,7 @@ COPY
       "$tmp/kept" "$tmp/copy" | sort -u > "$tmp/copy-planted"
   nplanted=$(wc -l < "$tmp/copy-planted")
   if [ "$nplanted" -gt 0 ]; then
-    echo "# WARN: $nplanted repo(s) hold $copy_min_said or more of listed files, but not on" \
+    echo "# WARN $nplanted repo(s) hold $copy_min_said or more of listed files, but not on" \
          "their own branches or tags, so they are not pruned as copies. Check them by hand:" >&2
     head -n "$top_evidence" "$tmp/copy-planted" \
       | awk -F'\t' '{ printf "#   %-34s %d file(s)\n", $1, $2 }' >&2
@@ -3960,7 +4257,7 @@ COPY
     | awk -F'\t' '!($1 in seen) { seen[$1] = 1; print }' > "$tmp/copy-notmedia"
   nnotmedia=$(wc -l < "$tmp/copy-notmedia")
   if [ "$nnotmedia" -gt 0 ]; then
-    echo "# WARN: $nnotmedia id(s) in $DENY_FILES count for nothing: they are not files, or" \
+    echo "# WARN $nnotmedia id(s) in $DENY_FILES count for nothing: they are not files, or" \
          "do not start like any image, video, audio or archive format this tool knows." \
          "Check those rows:" >&2
     head -n "$top_evidence" "$tmp/copy-notmedia" \
@@ -3976,7 +4273,7 @@ COPY
       $2 >= b && $4 < p && !($1 in k)' "$tmp/kept" "$tmp/copies" > "$tmp/copy-under"
   nunder=$(wc -l < "$tmp/copy-under")
   if [ "$nunder" -gt 0 ]; then
-    echo "# WARN: $nunder repo(s) hold enough listed files on their own branches to be" \
+    echo "# WARN $nunder repo(s) hold enough listed files on their own branches to be" \
          "copies, but too small a share of the repo. Check them by hand:" >&2
     head -n "$top_evidence" "$tmp/copy-under" \
       | awk -F'\t' 'BEGIN { fmt = "#   %-34s %.1f MiB in %d file(s), "
@@ -3987,7 +4284,7 @@ COPY
   fi
   ndisowned=$(wc -l < "$tmp/copy-disowned")
   if [ "$ndisowned" -gt 0 ]; then
-    echo "# WARN: $ndisowned listed file(s) were on this seed, in a repo it saw before every" \
+    echo "# WARN $ndisowned listed file(s) were on this seed, in a repo it saw before every" \
          "repo they are listed from, so they count against no repo. If that repo holds them as" \
          "a copy, add it or its delegate to $DENY_FILE. If they are its own, drop their rows" \
          "from $DENY_FILES. Check them:" >&2
@@ -4006,7 +4303,6 @@ fi
 # media; only where that finds some is the work repeated per peer to learn whose it is.
 : > "$tmp/peer"
 if rule_on G; then
-  echo "# looking for parasite peers for the parasite-peer rule (G) ($JOBS workers)..." >&2
   cat > "$tmp/peer.sh" <<PEER
 #!/usr/bin/env bash
 $(declare -f read_delegates)
@@ -4120,7 +4416,7 @@ done
 PEER
   cache_hits peer
   to_read=$(repos_left peer)
-  progress_start "parasite-peer rule (G)" "$to_read" "$tmp/peer-done"
+  progress_start "parasite (G)" "$to_read" "$tmp/peer-done"
   repos_to_read "$tmp/cached-peer" \
     | xargs -0r -P "$JOBS" -n "$(batch_size "$to_read")" "$BASH_BIN" "$tmp/peer.sh" \
         > "$tmp/peer" 3> "$tmp/peer-done" || true
@@ -4150,7 +4446,7 @@ while IFS= read -r line; do
 done < "$scanerr" | sort -u > "$tmp/scanfail"
 nscanerr=$(wc -l < "$scanerr"); nscanfail=$(wc -l < "$tmp/scanfail")
 if [ "$nscanerr" -gt 0 ]; then
-  echo "# WARN: $nscanerr scan error(s); $nscanfail repo(s) unreadable, excluded:" >&2
+  echo "# WARN $nscanerr scan error(s); $nscanfail repo(s) unreadable, excluded:" >&2
   head -n "$top_scanerr" "$scanerr" | sed 's/^/#   /' >&2
   [ "$nscanerr" -gt "$top_scanerr" ] \
     && echo "#   ...and $((nscanerr - top_scanerr)) more (PLAN_FULL=1 lists them)" >&2
@@ -4183,7 +4479,7 @@ awk -F'\t' 'FILENAME == ARGV[1] { gone[$1] = 1; next }
 # them.
 if [ "$CMD" != check-mine ] && [ -s "$tmp/unlisted" ]; then
   nunlisted=$(wc -l < "$tmp/unlisted")
-  echo "# WARN: $nunlisted repo(s) are ours or private on disk, but '$RAD ls' did not list" \
+  echo "# WARN $nunlisted repo(s) are ours or private on disk, but '$RAD ls' did not list" \
        "them; they are kept. 'rad seed' the ones marked ours that you want, 'rad rm' what you" \
        "do not, or add them to $KEEP_FILE:" >&2
   head -n "$top_evidence" "$tmp/unlisted" | sed 's/^/#   /; s/\t/  /' >&2
@@ -4197,7 +4493,7 @@ while read -r r; do DENY_NID[$r]=1; done < "$tmp/deny-nids"
 # A non-zero count means the worker's filter let something through, and those repos go
 # unjudged by every age rule. Without this warning that would read like a clean scan.
 [ "$ncoerced" = 0 ] \
-  || echo "# WARN: $ncoerced repo date(s) were not numbers and were read as unknown," \
+  || echo "# WARN $ncoerced repo date(s) were not numbers and were read as unknown," \
           "so those repos are outside the age rules; the ref scan may be broken" >&2
 while IFS=$'\t' read -r rid nm _; do NAME[$rid]=$nm; done < "$tmp/meta-named"
 while IFS=$'\t' read -r rid s;    do SEEDS[$rid]=$s; done < "$tmp/seeds"
@@ -4225,13 +4521,13 @@ if mkdir -p "$AUDIT_DIR" 2>/dev/null && { : >> "$FIRST_SEEN"; } 2>/dev/null; the
     "files which repo held a listed file first. Deleting it leaves the rules only the commit" \
     "dates, which whoever pushed the repo can set to anything, and makes the listed files" \
     "set aside count against their copies again." \
-    || echo "# WARN: could not add a header to $FIRST_SEEN; its rows are unaffected." >&2
+    || echo "# WARN could not add a header to $FIRST_SEEN; its rows are unaffected." >&2
   for rid in "${!SIZE[@]}"; do
     [ -n "${FIRSTSEEN[$rid]:-}" ] && continue
     FIRSTSEEN[$rid]=$now; printf '%s\t%s\n' "$rid" "$now" >> "$FIRST_SEEN"
   done
 else
-  echo "# WARN: cannot write $FIRST_SEEN; ages come from ref dates, which a pusher sets." >&2
+  echo "# WARN cannot write $FIRST_SEEN; ages come from ref dates, which a pusher sets." >&2
 fi
 # A repo whose refs list but carry no usable date is as old, and was last active, as the day
 # this seed first saw it. A repo first seen this run reads as new, which no rule prunes.
@@ -4257,7 +4553,7 @@ if [ -s "$tmp/blobs-all" ]; then
   cut -f2 "$tmp/blobs-all" | sort -u \
     | (cd "$STORAGE" && xargs -r stat -c '%n %W' --) > "$tmp/media-births" 2>/dev/null || true
   awk '$2 ~ /^[1-9][0-9]*$/ { found = 1; exit } END { exit !found }' "$tmp/media-births" \
-    || echo "# WARN: cannot read when the node stored each repo (stat %W), so repos first" \
+    || echo "# WARN cannot read when the node stored each repo (stat %W), so repos first" \
             "seen in the same run tie for a shared media file by repo id, which a pusher" \
             "can choose." >&2
 fi
@@ -4491,12 +4787,12 @@ if rule_on H; then
     printf '%s\t%s\n' "$rid" "$founder" >> "$tmp/malware-founders"
   done < "$tmp/malware-words"
   [ "$nforeign" = 0 ] \
-    || echo "# WARN: $nforeign repo(s) start from another repo's first identity revision," \
+    || echo "# WARN $nforeign repo(s) start from another repo's first identity revision," \
             "copied, such as rad:$foreign. That is how someone would try to get a stranger" \
             "named by the malware rule (H), so it counts them for nobody." >&2
   # Every first revision is signed the same way, so none checking out means the way changed.
   [ "$nchecked" = 0 ] || [ "$nfounded" -gt 0 ] \
-    || echo "# WARN: no signature on the first identity revision of $nchecked repo(s) the" \
+    || echo "# WARN no signature on the first identity revision of $nchecked repo(s) the" \
             "malware rule (H) matched checks out for a listed delegate. Radicle may sign" \
             "them differently now, so the rule names nobody this run." >&2
   # Each identity's repos, counted only where it is a delegate and signed refs of its own, so
@@ -4589,17 +4885,17 @@ if rule_on H && [ "$CMD" != check-mine ]; then
         || true
       mv "$tmp/malware-unblock-now" "$tmp/malware-unblock"
     else
-      echo "# WARN: '$RAD follow' failed, so the identities below may be unblocked already:" \
+      echo "# WARN '$RAD follow' failed, so the identities below may be unblocked already:" \
            "$(head -c 200 "$tmp/follow-err" | LC_ALL=C tr -c '[:print:]' ' ')" >&2
     fi
   fi
   while IFS= read -r nid; do
     if grep -qxF "$nid" "$tmp/malware-nids-kept"; then
-      echo "# WARN: an earlier run blocked $nid as malware, and it is a delegate of a repo" \
+      echo "# WARN an earlier run blocked $nid as malware, and it is a delegate of a repo" \
            "the malware rule (H) spares, whose updates the block stops. Lift it with:" \
            "rad unfollow $nid" >&2
     else
-      echo "# WARN: an earlier run blocked $nid as malware, and the malware rule (H)" \
+      echo "# WARN an earlier run blocked $nid as malware, and the malware rule (H)" \
            "clears it now. Lift that block with: rad unfollow $nid" >&2
     fi
   done < "$tmp/malware-unblock"
@@ -4621,9 +4917,12 @@ read -r p50 p90 p95 p99 < <(cut -f2 "$tmp/repos" | sort -n | awk '
 relcut=$(cut -f2 "$tmp/repos" | sort -n \
   | awk -v p="$eff_pctl" '{a[NR]=$1} END{ i=int(p/100*NR); if(i<1)i=1; print a[i] }')
 abscut=$(( eff_abs_mb * 1024 * 1024 ))
-echo "# repos=$total_repos  sizes P50=$((p50/1048576))M P90=$((p90/1048576))M" \
-     "P95=$((p95/1048576))M P99=$((p99/1048576))M" \
-     "rel-cut(P${eff_pctl})=$((relcut/1048576))M  abs-cut=${eff_abs_mb}M"
+# Said only when the size rule (B) acts this run: these are the numbers it cuts on.
+if rule_on B && [ "$space_rules" = 1 ]; then
+  header_line sizes "$total_repos repos  P50=$((p50/1048576))M P90=$((p90/1048576))M" \
+                    "P95=$((p95/1048576))M P99=$((p99/1048576))M" \
+                    "rel-cut(P${eff_pctl})=$((relcut/1048576))M  abs-cut=${eff_abs_mb}M"
+fi
 
 # ------------------------------------------------------------------ near-threshold markers
 # A verdict that cleared its thresholds by a hair is the one a reviewer should read first, and
@@ -4761,7 +5060,7 @@ fi
 nmalware_repos=$(wc -l < "$tmp/malware-repos")
 nmalware_undated=$(wc -l < "$tmp/malware-undated")
 if [ "$nmalware_undated" -gt 0 ]; then
-  echo "# WARN: $nmalware_undated repo(s) hold a strong malware word in the name or" \
+  echo "# WARN $nmalware_undated repo(s) hold a strong malware word in the name or" \
        "description and in a file path or commit subject, but the malware rule (H) could not" \
        "read their commit dates to tell an original from a mirror. Read them. Adding a line below to" \
        "$DENY_FILE prunes and blocks its repo. In $KEEP_FILE the line keeps the repo and" \
@@ -4962,13 +5261,17 @@ done < "$tmp/repos"
 # numbers are untrustworthy, or its refs would not list, which leaves it ageless and outside
 # every age rule. Ageless belongs in this sum at the same limit as the other two: it is not a
 # background rate, and four weekly runs over a 12.5k-repo seed each reported zero of it.
-echo "# skipped: $nblind unreadable, $nfresh written in the last ${FRESH_GUARD_DAYS}d," \
-     "$nnoage with no readable refs"
+skipped=""
+[ "$nblind" = 0 ] || skipped="$skipped, $nblind unreadable"
+[ "$nnoage" = 0 ] || skipped="$skipped, $nnoage with no readable refs"
+[ "$nfresh" = 0 ] \
+  || skipped="$skipped, $nfresh written in the last $(count "$FRESH_GUARD_DAYS" day days)"
+[ -z "$skipped" ] || echo "# skipped ${skipped#, }"
 # Rule A's import spare reads each candidate's history, and a repo where that read failed is
 # treated as though it had no history before its `rad init`. Named, so it can be checked by hand.
 nimportblind=$(wc -l < "$tmp/import-blind")
 if [ "$nimportblind" -gt 0 ]; then
-  echo "# WARN: could not read the commit dates of $nimportblind junk-named repo(s), so the" \
+  echo "# WARN could not read the commit dates of $nimportblind junk-named repo(s), so the" \
        "junk-name rule (A) treats them as not imported:" >&2
   head -n "$top_evidence" "$tmp/import-blind" | sed 's/^/#   /' >&2
   [ "$nimportblind" -gt "$top_evidence" ] \
@@ -4978,7 +5281,7 @@ fi
 # one of the two that cannot be taken back. Named, so the disagreement gets settled by hand.
 ndenykept=$(wc -l < "$tmp/deny-kept")
 if [ "$ndenykept" -gt 0 ]; then
-  echo "# WARN: $ndenykept repo(s) on the deny list or holding copies of" \
+  echo "# WARN $ndenykept repo(s) on the deny list or holding copies of" \
        "denied files are kept anyway, because they are pinned, private, our own or in" \
        "$KEEP_FILE:" >&2
   head -n "$top_evidence" "$tmp/deny-kept" | sed 's/^/#   /; s/\t/  /' >&2
@@ -5037,8 +5340,10 @@ check_biggest() {
 }
 check_pruned=0
 check_flagged=0
+check_unjudged=0
+check_ok=0
 check_report() {
-  local rid name reason nrepos
+  local rid name reason nrepos width=0 status what sev
   local -A VERDICT=() JUDGED=() UNREAD=() FLAGGED=()
   while IFS=$'\t' read -r rid _ _ _ reason _; do VERDICT[$rid]=$reason; done < "$tmp/plan.sorted"
   while IFS= read -r rid; do JUDGED[$rid]=1; done < "$tmp/check-judged"
@@ -5051,8 +5356,22 @@ check_report() {
          "($OUR_NID) as a delegate."
     return 0
   fi
-  echo "# $nrepos public repo(s) of yours, judged by the junk-name (A), spam-batch (D)," \
-       "media (F) and malware (H) rules as a seed would judge them once old enough"
+  echo "# check-mine  $(count "$nrepos" "public repo" "public repos") of yours, judged as a" \
+       "seed judges a repo once it is old enough"
+  echo "# rules  A junk-name, D spam-batch, F media, H malware   not checked: B size, C stale," \
+       "G parasite-peer, deny lists"
+  echo "#        A seed also looks for media batches across every repo it holds, so it can find" \
+       "one this check misses."
+  # The names share a column, so the ids line up under each other.
+  while IFS= read -r rid; do
+    name=${NAME[$rid]:-(?)}
+    [ "${#name}" -le "$width" ] || width=${#name}
+  done < "$tmp/check-repos"
+  [ "$width" -le 32 ] || width=32
+
+  # Each repo's block goes to the file of its severity, so the report opens with what needs
+  # fixing and ends with what is fine. Within a severity, repos are in name order.
+  : > "$tmp/check-1"; : > "$tmp/check-2"; : > "$tmp/check-3"; : > "$tmp/check-4"
   while IFS= read -r rid; do
     name=${NAME[$rid]:-(?)}
     reason=${VERDICT[$rid]:-}
@@ -5060,87 +5379,115 @@ check_report() {
     # add it to the deny list. This tells the publisher.
     if [ -z "$reason" ] && [ -n "${FLAGGED[$rid]:-}" ]; then
       check_flagged=$((check_flagged + 1))
-      printf 'flagged      %s  rad:%s  as possible malware\n' "$name" "$rid"
-      echo "  Its name or description, and a file path or commit subject, use a word such as" \
-           "stealer, keylogger or botnet. A seed lists it for its operator to read, and" \
-           "prunes it only if the operator adds it to the deny list."
-      echo "  Fix: if it is not malware, name and describe it without these words, or ask" \
-           "the seeds you rely on to keep it."
-      continue
+      sev=2; status=flagged; what="possible malware"
+    elif [ -z "$reason" ] && { [ -n "${UNREAD[$rid]:-}" ] || [ -z "${JUDGED[$rid]:-}" ]; }; then
+      check_unjudged=$((check_unjudged + 1))
+      sev=3; status=unjudged; what=""
+    elif [ -z "$reason" ]; then
+      check_ok=$((check_ok + 1))
+      sev=4; status=ok; what=""
+    else
+      check_pruned=$((check_pruned + 1))
+      sev=1; status=would-prune; what=$reason
     fi
-    if [ -z "$reason" ] && [ -n "${UNREAD[$rid]:-}" ]; then
-      printf 'unjudged     %s  rad:%s\n' "$name" "$rid"
-      echo "  The media rule (F) could not judge it: it has more refs, issue and patch ops or" \
-           "files of unknown type than the rule's limits allow, or git could not read part of it."
-      continue
-    fi
-    if [ -z "$reason" ] && [ -z "${JUDGED[$rid]:-}" ]; then
-      printf 'unjudged     %s  rad:%s\n' "$name" "$rid"
-      echo "  It could not be read, or it changed while the check ran. Run the check again."
-      continue
-    fi
-    if [ -z "$reason" ]; then
-      printf 'ok           %s  rad:%s\n' "$name" "$rid"
-      continue
-    fi
-    check_pruned=$((check_pruned + 1))
-    printf 'would-prune  %s  rad:%s  as %s\n' "$name" "$rid" "$reason"
-    [ -z "${FLAGGED[$rid]:-}" ] \
-      || echo "  Its name or description, and a file path or commit subject, also use a" \
-              "word such as stealer, keylogger or botnet, so seeds list it for review."
-    case $reason in
-      media-dump)
-        echo "  It holds images, video, audio or archives, no source or build file, and" \
-             "under $MEDIA_TEXT_MAX_BYTES bytes of anything else."
-        echo "  Fix: add what the media belongs to, such as its source, its build files or" \
-             "pages that use it, or host the media elsewhere and link to it." ;;
-      media-ratio)
-        echo "  Its branches and tags hold images, video or audio, and besides them nothing" \
-             "but a README."
-        echo "  Fix: add what the media belongs to, such as its source, its build files or" \
-             "pages that use it, or host the media elsewhere and link to it." ;;
-      media-batch)
-        echo "  It holds the same media files as $((MEDIA_MIN_BATCH - 1)) or more other" \
-             "repos of yours, and little else."
-        echo "  Fix: keep each media file in one repo, or host it elsewhere and link to it." ;;
-      spam-batch)
-        echo "  Its name and description follow one template that $SPAM_MIN_BATCH or more" \
-             "repos on this node share."
-        echo "  Fix: give it a name and a description of its own." ;;
-      malware-op)
-        echo "  An identity among its delegates founded repos named or described like a malware" \
-             "operation, with words such as stealer, botnet or panel. A seed that prunes" \
-             "malware (MALWARE_PRUNE=1) prunes every repo that identity is a delegate of."
-        echo "  Fix: if it is not malware, name and describe those repos without these words," \
-             "or ask the seeds you rely on to keep it." ;;
-      junk-name|junk-id)
-        if [ "$reason" = junk-id ]; then
-          echo "  Its name is nothing but a random id."
-        else
-          echo "  Its name reads like a throwaway, such as test, demo or tmp."
-        fi
-        echo "  A seed prunes it once nobody has pushed to it for $JUNK_STALE_DAYS days."
-        echo "  Fix: give it a name that says what it is." ;;
-    esac
-    case $reason in media-*)
-      echo "  Biggest files on its branches and tags. The media rule (F) also counts the" \
-           "delegates' issue and patch attachments and the other delegates' branches," \
-           "not listed here:"
-      check_biggest "$rid" > "$tmp/check-biggest"
-      [ -s "$tmp/check-biggest" ] || echo "    none"
-      # Names are read as input, never passed with -v, which would turn a quoted "\033" back
-      # into an escape.
-      awk -F'\t' '{
-        if      ($1 >= 1048576) printf "    %7.1f MiB  %s  %s\n", $1 / 1048576, $2, $3
-        else if ($1 >= 1024)    printf "    %7.0f KiB  %s  %s\n", $1 / 1024, $2, $3
-        else                    printf "    %7.0f B    %s  %s\n", $1, $2, $3 }' \
-        "$tmp/check-biggest" ;;
-    esac
+    {
+      printf '%-12s %-*s  rad:%s  %s\n' "$status" "$width" "$name" "$rid" "$what" \
+        | sed 's/ *$//'
+      check_why "$rid" "$reason" "$status" | fold -s -w 87 | sed 's/ *$//; s/^/             /'
+      case $reason in media-*)
+        check_biggest "$rid" > "$tmp/check-biggest"
+        [ -s "$tmp/check-biggest" ] || echo "                none"
+        # Names are read as input, never passed with -v, which would turn a quoted "\033" back
+        # into an escape.
+        awk -F'\t' '{
+          if      ($1 >= 1048576) printf "%20.1f MiB  %s  %s\n", $1 / 1048576, $2, $3
+          else if ($1 >= 1024)    printf "%20.0f KiB  %s  %s\n", $1 / 1024, $2, $3
+          else                    printf "%20.0f B    %s  %s\n", $1, $2, $3 }' \
+          "$tmp/check-biggest" ;;
+      esac
+    } >> "$tmp/check-$sev"
   done < <(while IFS= read -r rid; do printf '%s\t%s\n' "${NAME[$rid]:-}" "$rid"; done \
              < "$tmp/check-repos" | sort | cut -f2)
-  echo "# Not checked: the size (B), stale (C) and parasite-peer (G) rules," \
-       "and the deny lists seed operators keep. A seed also looks for media batches across" \
-       "every repo it holds, so it can find one this check misses."
+  echo
+  cat "$tmp/check-1" "$tmp/check-2" "$tmp/check-3" "$tmp/check-4"
+  echo
+  local tally=""
+  [ "$check_pruned" = 0 ]   || tally="$tally, $check_pruned would be pruned"
+  [ "$check_flagged" = 0 ]  || tally="$tally, $check_flagged flagged"
+  [ "$check_unjudged" = 0 ] || tally="$tally, $check_unjudged unjudged"
+  [ "$check_ok" = 0 ]       || tally="$tally, $check_ok ok"
+  if [ $((check_pruned + check_flagged)) = 0 ]; then
+    echo "# ${tally#, }"
+  else
+    echo "# ${tally#, } (exit 6)"
+  fi
+}
+# What a seed sees in the repo, and what the publisher can do about it, as plain lines that
+# check_report wraps and indents. $1 = repo id, $2 = its verdict, $3 = its status. Called from
+# check_report only, whose UNREAD and FLAGGED maps it reads.
+check_why() {
+  local rid=$1 reason=$2 status=$3
+  case $status in
+    flagged)
+      echo "Its name or description, and a file path or commit subject, use a word such as" \
+           "stealer, keylogger or botnet. A seed lists it for its operator to read, and" \
+           "prunes it only if the operator adds it to the deny list."
+      echo "Fix: if it is not malware, name and describe it without these words, or ask" \
+           "the seeds you rely on to keep it."
+      return 0 ;;
+    unjudged)
+      if [ -n "${UNREAD[$rid]:-}" ]; then
+        echo "The media rule (F) could not judge it: it has more refs, issue and patch ops or" \
+             "files of unknown type than the rule's limits allow, or git could not read part" \
+             "of it."
+      else
+        echo "It could not be read, or it changed while the check ran. Run the check again."
+      fi
+      return 0 ;;
+    ok) return 0 ;;
+  esac
+  [ -z "${FLAGGED[$rid]:-}" ] \
+    || echo "Its name or description, and a file path or commit subject, also use a" \
+            "word such as stealer, keylogger or botnet, so seeds list it for review."
+  case $reason in
+    media-dump)
+      echo "It holds images, video, audio or archives, no source or build file, and" \
+           "under $(header_bytes "$MEDIA_TEXT_MAX_BYTES") of anything else."
+      echo "Fix: add what the media belongs to, such as its source, its build files or" \
+           "pages that use it, or host the media elsewhere and link to it." ;;
+    media-ratio)
+      echo "Its branches and tags hold images, video or audio, and besides them nothing" \
+           "but a README."
+      echo "Fix: add what the media belongs to, such as its source, its build files or" \
+           "pages that use it, or host the media elsewhere and link to it." ;;
+    media-batch)
+      echo "It holds the same media files as $((MEDIA_MIN_BATCH - 1)) or more other" \
+           "repos of yours, and little else."
+      echo "Fix: keep each media file in one repo, or host it elsewhere and link to it." ;;
+    spam-batch)
+      echo "Its name and description follow one template that $SPAM_MIN_BATCH or more" \
+           "repos on this node share."
+      echo "Fix: give it a name and a description of its own." ;;
+    malware-op)
+      echo "An identity among its delegates founded repos named or described like a malware" \
+           "operation, with words such as stealer, botnet or panel. A seed that prunes" \
+           "malware (MALWARE_PRUNE=1) prunes every repo that identity is a delegate of."
+      echo "Fix: if it is not malware, name and describe those repos without these words," \
+           "or ask the seeds you rely on to keep it." ;;
+    junk-name|junk-id)
+      if [ "$reason" = junk-id ]; then
+        echo "Its name is nothing but a random id."
+      else
+        echo "Its name reads like a throwaway, such as test, demo or tmp."
+      fi
+      echo "A seed prunes it once nobody has pushed to it for $JUNK_STALE_DAYS days."
+      echo "Fix: give it a name that says what it is." ;;
+  esac
+  case $reason in media-*)
+    echo "Biggest files on its branches and tags. The media rule (F) also counts the" \
+         "delegates' issue and patch attachments and the other delegates' branches, not listed" \
+         "here:" ;;
+  esac
 }
 if [ "$CMD" = check-mine ]; then
   check_report >&3
@@ -5216,8 +5563,8 @@ nfailedlift=$(wc -l < "$tmp/undo-failed")
 if [ "$nfailedlift" -gt 0 ]; then
   cat "$tmp/undo-failed" >> "$tmp/undo-states"
   nunblock=$((nunblock + nfailedlift))
-  echo "# undo: unblock $nfailedlift repo(s) still in storage, blocked by a run that could" \
-       "not remove them, and now kept, pinned, private, your own, a known mistake or under a" \
+  echo "# undo   unblock $(count "$nfailedlift" repo repos) still in storage, blocked by a run" \
+       "that could not remove them, and now kept, pinned, private, your own, a known mistake or under a" \
        "verdict a later rad-prune release no longer trusts"
 fi
 
@@ -5267,7 +5614,7 @@ while IFS= read -r log; do
   [ -r "$AUDIT_DIR/$log" ] || ngone=$((ngone + 1))
 done < "$tmp/ratchet-recent"
 [ "$ngone" = 0 ] \
-  || echo "# WARN: cannot read $ngone of the $nrecent most recent audit logs history.log" \
+  || echo "# WARN cannot read $ngone of the $nrecent most recent audit logs history.log" \
           "names. They tell an unattended run what each rule usually prunes, so it now goes" \
           "by $nratchet, older ones filling in, and with fewer than 3 holds nothing back." >&2
 
@@ -5390,31 +5737,32 @@ awk -F'\t' -v now="$now" -v collapse="$PLAN_COLLAPSE_ROWS" -v full="$PLAN_FULL" 
 nreview=$(wc -l < "$tmp/media-review")
 if [ "$nreview" -gt 0 ]; then
   echo
-  echo "# review: $nreview media dump(s) no other node seeds, kept:"
+  echo "# REVIEW $(count "$nreview" "media dump" "media dumps") no other node seeds, not pruned"
   head -n "$top_evidence" "$tmp/media-review" \
-    | awk -F'\t' '{printf "#   %-34s %-12s %s\n", $1, $2, $3}'
+    | awk -F'\t' '{printf "#        %-34s %-12s %s\n", $1, $2, $3}'
   [ "$nreview" -gt "$top_evidence" ] \
-    && echo "#   ...and $((nreview - top_evidence)) more (PLAN_FULL=1 lists them)"
+    && echo "#        ...and $((nreview - top_evidence)) more (PLAN_FULL=1 lists them)"
 fi
 nimports=$(wc -l < "$tmp/imports")
 if [ "$nimports" -gt 0 ]; then
   echo
-  echo "# kept as imports: $nimports junk-named repo(s) with history from before their rad init:"
-  head -n "$top_evidence" "$tmp/imports" | awk -F'\t' '{printf "#   %-34s %s\n", $1, $2}'
+  header_line spared "$(count "$nimports" "junk-named repo" "junk-named repos") as imports," \
+                   "with history from before their rad init:"
+  head -n "$top_evidence" "$tmp/imports" | awk -F'\t' '{printf "#        %-34s %s\n", $1, $2}'
   [ "$nimports" -gt "$top_evidence" ] \
-    && echo "#   ...and $((nimports - top_evidence)) more (PLAN_FULL=1 lists them)"
+    && echo "#        ...and $((nimports - top_evidence)) more (PLAN_FULL=1 lists them)"
 fi
 # What each copy holds and where its files came from, which the plan row cannot say.
 ncopies=$(wc -l < "$tmp/copy-why")
 if [ "$ncopies" -gt 0 ]; then
   echo
-  echo "# copies of denied files: $ncopies repo(s) in the plan:"
+  header_line copies "$(count "$ncopies" repo repos) in the plan hold denied files:"
   head -n "$top_evidence" "$tmp/copy-why" \
     | awk -F'\t' '{ others = ($7 > 0) ? sprintf(" and %d other source(s)", $7) : ""
-                    printf "#   %-34s %.1f MiB in %d file(s), %d%% of the bytes on its" \
+                    printf "#        %-34s %.1f MiB in %d file(s), %d%% of the bytes on its" \
                            " branches, from %s%s\n", $1, $2 / 1048576, $5, $4, $6, others }'
   [ "$ncopies" -gt "$top_evidence" ] \
-    && echo "#   ...and $((ncopies - top_evidence)) more (PLAN_FULL=1 lists them)"
+    && echo "#        ...and $((ncopies - top_evidence)) more (PLAN_FULL=1 lists them)"
 fi
 
 echo
@@ -5423,25 +5771,29 @@ echo
 # would be an overclaim, and one saying "the disk comes back then" leaves a reader working out
 # both when and from where.
 if [ "$QUARANTINE" = 1 ]; then
-  echo "# PLAN: prune $nplan repos, ${gib} GiB out of storage but still on disk" \
-       "for ${QUARANTINE_DAYS}d, until a later --apply run deletes them"
+  header_line PLAN "prune $(count "$nplan" repo repos), ${gib} GiB"
 else
-  echo "# PLAN: prune $nplan repos, reclaim ${gib} GiB"
+  header_line PLAN "prune $(count "$nplan" repo repos), reclaim ${gib} GiB"
 fi
 awk -F'\t' '{ c[$5]++; b[$5]+=$2 }
-     END { for (r in c) printf "#   %-13s %5d repos  %8.2f GiB\n",
-                               r, c[r], b[r]/1073741824 }' "$tmp/plan.sorted" | sort
+     END { for (r in c) printf "#          %-13s %5d %-5s  %8.2f GiB\n",
+                               r, c[r], (c[r] == 1 ? "repo" : "repos"), b[r]/1073741824 }' "$tmp/plan.sorted" | sort
 # Says which rows to read first. Without it the NEAR column is only visible to somebody who
 # already scrolled the whole table, which on a plan of hundreds of rows is nobody.
 nnear=$(awk -F'\t' '$8 != ""' "$tmp/plan.sorted" | wc -l)
 [ "$nnear" = 0 ] \
-  || echo "#   $nnear of them cleared a threshold by under ${NEAR_PCT}%: see the NEAR column,"\
-          "which names the threshold that was close. Read those rows first."
+  || header_line "" "$nnear of them cleared a threshold by under ${NEAR_PCT}%, named in the" \
+                    "NEAR column."
+if [ "$QUARANTINE" = 1 ] && [ "$nplan" -gt 0 ]; then
+  header_line "" "Pruned repos wait in the quarantine for" \
+                 "$(count "$QUARANTINE_DAYS" day days), then a later --apply run deletes them."
+fi
 # Printed by a dry run too, which is when an operator decides whether to let a wave through.
 if [ -s "$tmp/held" ]; then
-  echo "#   HELD BACK unless --force or a yes at the prompt, as each rule is far over its usual:"
+  header_line "" "HELD BACK as these rules planned far more repos than usual. --force or a yes" \
+                 "at the prompt lets them through:"
   while IFS=$'\t' read -r letter planned usual limit; do
-    echo "#     $(rule_label "$letter"): $planned repos planned, usually $usual a run" \
+    echo "#          $(rule_label "$letter"): $planned repos planned, usually $usual a run" \
          "(limit $limit)"
   done < "$tmp/held"
 fi
@@ -5454,104 +5806,106 @@ while IFS= read -r id; do
 done < "$tmp/deny-rids" >> "$tmp/deny-ahead"
 grep -vxF -f "$tmp/deny-nids-kept" "$tmp/deny-nids" >> "$tmp/deny-ahead" || true
 if [ -s "$tmp/deny-ahead" ]; then
-  echo "#   deny list: block $(wc -l < "$tmp/deny-ahead") id(s), unless already blocked:"
-  head -n "$top_evidence" "$tmp/deny-ahead" | sed 's/^/#     /'
+  header_line "" "The deny list blocks $(count "$(wc -l < "$tmp/deny-ahead")" id ids)," \
+                 "unless already blocked:"
+  head -n "$top_evidence" "$tmp/deny-ahead" | sed 's/^/#          /'
   nmore=$(( $(wc -l < "$tmp/deny-ahead") - top_evidence ))
-  [ "$nmore" -le 0 ] || echo "#     ...and $nmore more (PLAN_FULL=1 lists them)"
+  [ "$nmore" -le 0 ] || echo "#          ...and $nmore more (PLAN_FULL=1 lists them)"
+fi
+
+# The identities of rule H, each with the repos that matched, as "#   <indent>" lines.
+malware_identities() {
+  local indent=$1 nid nhit nall
+  for nid in $(cut -f1 "$tmp/malware" | sort -u); do
+    grep "^$nid"$'\t' "$tmp/malware" > "$tmp/malware-one"
+    IFS=$'\t' read -r _ nhit nall _ < "$tmp/malware-one"
+    printf '#%s%s: %d of its %d repos match:\n' "$indent" "$nid" "$nhit" "$nall"
+    head -n "$top_evidence" "$tmp/malware-one" \
+      | while IFS=$'\t' read -r _ _ _ rid found rname; do
+          printf '#%s  rad:%s  # %s (%s)\n' "$indent" "$rid" "$rname" "$found"
+        done
+    if [ "$nhit" -gt "$top_evidence" ]; then
+      echo "#$indent  ...and $((nhit - top_evidence)) more (PLAN_FULL=1 lists them)"
+    fi
+  done
+}
+
+# Under MALWARE_PRUNE=1 the plan holds rule H's repos, so its identities are part of the plan,
+# and what is left to say is how to block them or clear them.
+if [ "$nmalware" -gt 0 ] && [ "$MALWARE_PRUNE" = 1 ]; then
+  header_line "" "The malware rule (H) named $(count "$nmalware" identity identities). The" \
+                 "repos they are a delegate of are in the plan as malware-op, unless pinned," \
+                 "private, our own, kept, signed by an identity this seed vouches for, still" \
+                 "arriving or undated:"
+  malware_identities "          "
+  header_line "" "last-run/H-malware-identities.tsv lists every matching repo. An identity's" \
+                 "did:key: line in $KEEP_FILE clears it of the malware rule (H)."
+  if [ "$nmalware_block" -gt 0 ]; then
+    header_line "" "--apply --block-peers blocks these once it prunes their repos, asking for" \
+                   "each. To block one yourself, run its line:"
+    sed 's/^/#          rad block /' "$tmp/malware-block"
+  fi
 fi
 
 # Rule G's verdicts are about peers, so they get their own section rather than a row in the
 # plan: nothing here deletes a repo, and blocking one peer touches every repo at once.
 if [ "$nparasite" -gt 0 ]; then
   echo
-  echo "# PARASITE PEERS: $nparasite, from the parasite-peer rule (G)"
-  echo "#   the count is repos reached by ONE file of theirs, not repos they touched"
+  echo "# REVIEW $(count "$nparasite" "parasite peer" "parasite peers") the parasite-peer rule" \
+       "(G) found"
+  header_line "" "The count is repos reached by ONE file of theirs, not repos they touched."
   while IFS=$'\t' read -r nid widest _npeerrepos mb ob oid; do
-    printf '#   %s  %3d repos  %6.1f MB media  %6d B text  blob %s\n' \
+    printf '#          %s  %3d repos  %6.1f MiB media  %6d B other  blob %s\n' \
            "$nid" "$widest" "$(awk -v b="$mb" 'BEGIN{printf "%.1f", b/1048576}')" \
            "$ob" "${oid:0:12}"
   done < "$tmp/parasites"
-  [ "$nunknown" = 0 ] \
-    || echo "#   NB: $nunknown repo(s) had an unreadable identity, so a peer who delegates" \
-            "one of those was not spared by the delegate check."
+  if [ "$nunknown" = 1 ]; then
+    header_line "" "1 repo had an unreadable identity, so a peer who is a delegate of it was" \
+                   "not spared by the delegate check."
+  elif [ "$nunknown" -gt 1 ]; then
+    header_line "" "$nunknown repos had an unreadable identity, so a peer who is a delegate of" \
+                   "one of them was not spared by the delegate check."
+  fi
   # Printed whether or not --block-peers was passed, so the operator can act on one peer
   # without handing the tool a standing licence over the whole list.
-  echo "#   Blocking is permanent, invisible to the peer, and applies to every repo at once."
-  echo "#   Check the evidence first, then run whichever of these you agree with:"
-  cut -f1 "$tmp/parasites" | sed 's/^/#     rad block /'
-  echo "#   Or --block-peers, which asks for each peer; add --yes to answer for them."
+  header_line "" "Blocking is permanent, invisible to the peer, and applies to every repo at" \
+                 "once."
+  header_line "" "To block a peer, run its line, or pass --block-peers to be asked for each one" \
+                 "(--yes answers for all):"
+  cut -f1 "$tmp/parasites" | sed 's/^/#          rad block /'
 fi
 
 # Rule H judges an identity. By default a person decides what happens to it: the deny list both
-# prunes its repos and blocks it, so the review points there. Under MALWARE_PRUNE=1 the plan
-# above holds its repos, and what is left to say is how to block it or clear it.
+# prunes its repos and blocks it, so the review points there.
 if [ "$nmalware" -gt 0 ] && [ "$MALWARE_PRUNE" = 0 ]; then
   echo
-  echo "# REVIEW, MALWARE OPERATIONS: $nmalware identity(s), from the malware rule (H)." \
-       "Nothing here is pruned or blocked."
-  echo "#   repos named or described like a malware operation; read them before acting"
-  for nid in $(cut -f1 "$tmp/malware" | sort -u); do
-    grep "^$nid"$'\t' "$tmp/malware" > "$tmp/malware-one"
-    IFS=$'\t' read -r _ nhit nall _ < "$tmp/malware-one"
-    printf '#   %s: %d of its %d repos match:\n' \
-           "$nid" "$nhit" "$nall"
-    head -n "$top_evidence" "$tmp/malware-one" \
-      | while IFS=$'\t' read -r _ _ _ rid found rname; do
-          printf '#       rad:%s  # %s (%s)\n' "$rid" "$rname" "$found"
-        done
-    if [ "$nhit" -gt "$top_evidence" ]; then
-      echo "#       ...and $((nhit - top_evidence)) more (PLAN_FULL=1 lists them)"
-    fi
-  done
-  echo "#   last-run/H-malware-identities.tsv lists every matching repo. Adding an identity's"
-  echo "#   line to $DENY_FILE prunes every repo the identity is a delegate of except private"
-  echo "#   ones, and blocks the identity unless it is a delegate of a private repo. The same"
-  echo "#   line in $KEEP_FILE stops the identity being named and keeps none of its repos:"
-  cut -f1 "$tmp/malware" | sort -u | sed 's/^/#     did:key:/'
-elif [ "$nmalware" -gt 0 ]; then
-  echo
-  echo "# MALWARE OPERATIONS: $nmalware identity(s), from the malware rule (H). The repos they" \
-       "are a delegate of are in the plan as malware-op, except one that is pinned, private," \
-       "our own, kept, signed by an identity this seed vouches for, still arriving, or undated."
-  for nid in $(cut -f1 "$tmp/malware" | sort -u); do
-    grep "^$nid"$'\t' "$tmp/malware" > "$tmp/malware-one"
-    IFS=$'\t' read -r _ nhit nall _ < "$tmp/malware-one"
-    printf '#   %s: %d of its %d repos match:\n' "$nid" "$nhit" "$nall"
-    head -n "$top_evidence" "$tmp/malware-one" \
-      | while IFS=$'\t' read -r _ _ _ rid found rname; do
-          printf '#       rad:%s  # %s (%s)\n' "$rid" "$rname" "$found"
-        done
-    if [ "$nhit" -gt "$top_evidence" ]; then
-      echo "#       ...and $((nhit - top_evidence)) more (PLAN_FULL=1 lists them)"
-    fi
-  done
-  echo "#   last-run/H-malware-identities.tsv lists every matching repo. An identity's"
-  echo "#   did:key: line in $KEEP_FILE clears it of the malware rule (H)."
-  if [ "$nmalware_block" -gt 0 ]; then
-    echo "#   --apply --block-peers blocks these once it prunes their repos, asking for each; or"
-    echo "#   run whichever you agree with:"
-    sed 's/^/#     rad block /' "$tmp/malware-block"
-  fi
+  echo "# REVIEW $(count "$nmalware" identity identities) the malware rule (H) named." \
+       "Nothing is pruned or blocked."
+  malware_identities "        "
+  header_line "" "last-run/H-malware-identities.tsv lists every matching repo."
+  header_line "" "A line below in $DENY_FILE prunes every repo the identity is a delegate of," \
+                 "except private ones, and blocks the identity unless it is a delegate of a private" \
+                 "repo."
+  header_line "" "The same line in $KEEP_FILE clears the identity and keeps none of its repos."
+  cut -f1 "$tmp/malware" | sort -u | sed 's/^/#          did:key:/'
 fi
 # Each line is the one to act on: the deny list and the keep list both read what follows a #
 # as a comment, so the evidence rides along when a line is copied.
 if [ "$nmalware_repos" -gt 0 ]; then
   echo
-  echo "# REVIEW, MALWARE REPOS: $nmalware_repos repo(s) the malware rule (H) named and left" \
-       "in place."
-  echo "#   a strong word in the name or description, one in a file path or commit subject,"
-  echo "#   and a history that starts with the repo; read them before acting. Adding a line"
-  echo "#   below to $DENY_FILE prunes and blocks its repo. In $KEEP_FILE the line stops the"
-  echo "#   repo being named, keeps it out of every rule, and clears all its delegates of"
-  echo "#   the malware rule (H), including any who never signed it:"
+  echo "# REVIEW $(count "$nmalware_repos" repo repos) the malware rule (H) flagged and left" \
+       "in place"
   head -n "$top_evidence" "$tmp/malware-repos" \
     | while IFS=$'\t' read -r rid found evidence rname; do
-        printf '#     rad:%s  # %s (%s; %s)\n' "$rid" "$rname" "$found" "$evidence"
+        printf '#        rad:%s  # %s (%s; %s)\n' "$rid" "$rname" "$found" "$evidence"
       done
   if [ "$nmalware_repos" -gt "$top_evidence" ]; then
-    echo "#     ...and $((nmalware_repos - top_evidence)) more in" \
+    echo "#        ...and $((nmalware_repos - top_evidence)) more in" \
          "last-run/H-malware-repos.tsv (PLAN_FULL=1 lists them)"
   fi
+  header_line "" "Copy a line into $KEEP_FILE to keep its repo, or into $DENY_FILE to prune" \
+                 "and block it. In $KEEP_FILE it also clears every delegate of the repo of the" \
+                 "malware rule (H), even one who never signed it."
 fi
 
 # What the report above printed is trimmed to what a terminal can hold: corpus verdicts folded
@@ -5643,7 +5997,7 @@ if [ "$lr_ok" = 1 ]; then
             "Their repos are in plan.tsv; only --force or a y at the prompt prunes them."
     printf '# rule\tplanned\tusual\tlimit\n'
     cat "$tmp/held"; } > "$staging/held.tsv" 2>/dev/null || lr_ok=0
-  # The repos the run output counts under "# undo:", one per row, for the operator who wants to
+  # The repos the run output counts under "# undo", one per row, for the operator who wants to
   # check why one is unblocked or stays blocked. Like plan.tsv it is the plan: what a lift did
   # is in the audit log's "# unblocked:" lines.
   { lr_head "Blocks rad-prune made that this run plans to lift, holds for a later run, or" \
@@ -5687,19 +6041,20 @@ if [ "$lr_ok" = 1 ]; then
   mv -T "$staging" "$lastrun" 2>/dev/null || lr_ok=0
 fi
 if [ "$lr_ok" = 1 ]; then
-  echo "# the untrimmed plan and the evidence behind it: $lastrun/"
-  # Printed here rather than beside rule F's count, because this is where the file holding
-  # them is known to have been written: a run aborting in between never creates it.
-  [ "${nmediafail:-0}" = 0 ] \
-    || echo "#   the $nmediafail repo(s) the media rule (F) left unjudged:" \
-            "$lastrun/F-media-unjudged.tsv"
-  [ "$nunblock" = 0 ] && [ "$nlater" = 0 ] \
-    || echo "#   the blocks to lift, and why: $lastrun/unprune-plan.tsv"
+  # The untrimmed plan, and the files behind what the report above names. Listed here rather
+  # than beside each count, because this is where they are known to have been written: a run
+  # aborting in between never creates them.
+  lastrun_files="plan.tsv"
+  [ "$nunblock" = 0 ] && [ "$nlater" = 0 ] || lastrun_files="$lastrun_files, unprune-plan.tsv"
+  [ "${nmediafail:-0}" = 0 ] || lastrun_files="$lastrun_files, F-media-unjudged.tsv"
+  [ "$nmalware" = 0 ] || lastrun_files="$lastrun_files, H-malware-identities.tsv"
+  [ "$nmalware_repos" = 0 ] || lastrun_files="$lastrun_files, H-malware-repos.tsv"
+  header_line files "$lastrun/   $lastrun_files"
 else
   rm -rf "$staging" 2>/dev/null
   # Losing this loses no verdict, but it does lose the only copy of the evidence for one, so it
   # is said out loud rather than left for somebody to find the directory missing or stale.
-  echo "# WARN: could not write $lastrun; this run's evidence is only what is above." >&2
+  echo "# WARN could not write $lastrun; this run's evidence is only what is above." >&2
 fi
 
 blocked=0
@@ -5740,7 +6095,7 @@ deny_block_ahead() {
     [ -d "$STORAGE/$id" ] && continue
     grep -qxF "$id" "$tmp/excluded" && continue
     said=$("$RAD" block "rad:$id" 2>"$tmp/block-err") \
-      || { echo "# WARN: could not block denied repo rad:$id: $(head -1 "$tmp/block-err")" >&2
+      || { echo "# WARN could not block denied repo rad:$id: $(head -1 "$tmp/block-err")" >&2
            block_failed=$((block_failed+1)); continue; }
     [ -n "$said" ] || continue
     open_audit; printf 'blocked-denied\trad:%s\n' "$id" >> "$audit"
@@ -5748,11 +6103,11 @@ deny_block_ahead() {
   done < "$tmp/deny-rids"
   while IFS= read -r id; do
     if grep -qxF "$id" "$tmp/deny-nids-kept"; then
-      echo "# WARN: not blocking $id, a delegate of a kept repo; rad unfollow it if blocked." >&2
+      echo "# WARN not blocking $id, a delegate of a kept repo; rad unfollow it if blocked." >&2
       continue
     fi
     said=$("$RAD" block "$id" 2>"$tmp/block-err") \
-      || { echo "# WARN: could not block denied identity $id: $(head -1 "$tmp/block-err")" >&2
+      || { echo "# WARN could not block denied identity $id: $(head -1 "$tmp/block-err")" >&2
            block_failed=$((block_failed+1)); continue; }
     [ -n "$said" ] || continue
     open_audit; printf 'blocked-denied\t%s\n' "$id" >> "$audit"
@@ -5865,7 +6220,7 @@ malware_block_named() {
          continue ;;
     esac
     said=$("$RAD" block "$nid" 2>/dev/null) \
-      || { echo "# WARN: could not block $nid, and no later run will try again." \
+      || { echo "# WARN could not block $nid, and no later run will try again." \
                 "Block it yourself: rad block $nid" >&2
            block_failed=$((block_failed+1)); continue; }
     # rad block prints a line only when it changes the policy. A node blocked already, by hand
@@ -5887,9 +6242,10 @@ malware_block_named() {
 
 if [ "$APPLY" = 0 ]; then
   if [ "$blocked" -gt 0 ]; then
-    echo "# DRY-RUN: no repos were pruned; $blocked peer(s) blocked, as answered above."
+    echo "# DRY RUN no repo was pruned. $(count "$blocked" peer peers) blocked, as answered" \
+         "above."
   else
-    echo "# DRY-RUN: nothing in storage changed. Re-run with --apply to execute."
+    echo "# DRY RUN nothing changed. Add --apply to carry out this plan."
   fi
   [ "$block_failed" = 0 ] || exit 1
   exit 0
@@ -6041,7 +6397,7 @@ blocked_now > "$tmp/blocked-before" || was_blocked_ok=0
 # prune_failed_before), which this run must not record as somebody else's. A person who lifted
 # that block and set their own since is not told apart.
 [ "$was_blocked_ok" = 1 ] \
-  || echo "# WARN: '$RAD seed' failed, so every repo this run prunes is recorded as blocked by" \
+  || echo "# WARN '$RAD seed' failed, so every repo this run prunes is recorded as blocked by" \
           "somebody else, which no later run lifts, unless an earlier failed prune left that" \
           "block:" \
           "$(head -c 200 "$tmp/seed-err" | LC_ALL=C tr -c '[:print:]' ' ')" >&2
@@ -6176,7 +6532,7 @@ progress_stop
 # $deleted below is counted in this shell and stands whatever happened here, so this costs the
 # progress line alone. Said out loud so the short count above is not read as failed prunes.
 [ "$ticks_ok" = 1 ] \
-  || echo "# WARN: could not write $tmp/pruned; the pruning line above undercounts." >&2
+  || echo "# WARN could not write $tmp/pruned; the pruning line above undercounts." >&2
 
 # The GiB that really left storage, for the totals below and history.log: the plan's figure
 # counts repos whose removal failed. With no list of removed repos the plan's figure stands,
@@ -6193,10 +6549,10 @@ fi
 # leave a record claiming disk was reclaimed that never was.
 [ "$deleted" = "$nplan" ] || {
   if [ "$ticks_ok" = 1 ]; then
-    echo "# WARN: $((nplan - deleted)) of $nplan deletions failed;" \
+    echo "# WARN $((nplan - deleted)) of $nplan deletions failed;" \
          "${gone_gib} of the planned ${gib} GiB left storage." >&2
   else
-    echo "# WARN: $((nplan - deleted)) of $nplan deletions failed;" \
+    echo "# WARN $((nplan - deleted)) of $nplan deletions failed;" \
          "less than the planned ${gib} GiB left storage." >&2
   fi
   echo "# The audit log lists the plan, not what got deleted." >&2
@@ -6217,7 +6573,7 @@ add_header "$AUDIT_DIR/history.log" \
   "out of storage, quarantine on or off, disk pressure, the name of that run's own log, and free" \
   "space and what storage and the quarantine held on that disk when it started. Unattended" \
   "runs read it to learn what each rule usually prunes." \
-  || echo "# WARN: could not add a header to $AUDIT_DIR/history.log." >&2
+  || echo "# WARN could not add a header to $AUDIT_DIR/history.log." >&2
 hist_fmt='%s\tdeleted=%s\treclaimed_gib=%s\tquarantine=%s\tpressure=%s%%\taudit=%s'
 hist_fmt+='\tfree_gb=%s\tused_gb=%s\n'
 printf "$hist_fmt" \
@@ -6228,31 +6584,38 @@ printf "$hist_fmt" \
 # The GiB figure is what LEAVES storage. With quarantine on it is not free space yet, and
 # saying "reclaimed" of disk still occupied is the kind of report that gets believed.
 if [ "$QUARANTINE" = 1 ]; then
-  echo "# DONE: quarantined $deleted repos, ~${gone_gib} GiB out of storage but still on" \
-       "disk for ${QUARANTINE_DAYS}d."
+  header_line DONE "quarantined $(count "$deleted" repo repos), ~${gone_gib} GiB out of storage" \
+                   "but still on disk for $(count "$QUARANTINE_DAYS" day days)."
   # The line above is what an operator reads before deciding whether they still have an undo,
   # so the repos it is not true of are named right under it rather than 20 warnings back.
-  [ "$undated" = 0 ] \
-    || echo "# $undated of them kept their own date, so their window runs from it and may" \
-            "already have passed."
+  if [ "$undated" = 1 ] && [ "$deleted" = 1 ]; then
+    header_line "" "It kept its own date, so its window runs from it and may already have" \
+                   "passed."
+  elif [ "$undated" = 1 ]; then
+    header_line "" "1 of them kept its own date, so its window runs from it and may already" \
+                   "have passed."
+  elif [ "$undated" -gt 1 ]; then
+    header_line "" "$undated of them kept their own date, so their window runs from it and" \
+                   "may already have passed."
+  fi
   # Both lines are about what this run just put there, so neither is printed when it put
   # nothing there and the quarantine holds only what earlier runs left.
   if [ "$deleted" -gt 0 ]; then
-    echo "# See them with: $(basename "$0") quarantine list" \
-         "   put one back with: $(basename "$0") quarantine restore <rid>"
+    header_line "" "See them with: $(basename "$0") quarantine list"
+    header_line "" "Put one back with: $(basename "$0") quarantine restore <rid>"
     # The GiB above are still occupied until the window passes, and where the disk went is the
     # next question a big prune is asked. --all empties the whole quarantine, which is more
     # than this run put in it, so the line says so rather than reading as "finish up here".
-    echo "# To free the disk now, giving up the undo for this run and every earlier one:" \
-         "$(basename "$0") quarantine delete --all"
+    header_line "" "To free the disk now, giving up the undo for this run and every earlier" \
+                   "one: $(basename "$0") quarantine delete --all"
   fi
-  echo "# Audit: $audit"
 else
-  echo "# DONE: deleted $deleted repos, reclaimed ~${gone_gib} GiB. Audit: $audit"
+  header_line DONE "deleted $(count "$deleted" repo repos), reclaimed ~${gone_gib} GiB."
 fi
+header_line "" "audit $audit"
 [ "$RESTART" = 1 ] \
-  || echo "# tip: run 'sudo systemctl restart $SERVICE' once to clear the stale" \
-          "inventory-announce log warning."
+  || header_line tip "run 'sudo systemctl restart $SERVICE' once to clear the stale" \
+                     "inventory-announce log warning."
 [ "$nheld" = 0 ] \
   || echo "# $nheld repo(s) held back are still in storage; see HELD BACK above." >&2
 # A repo whose removal failed is blocked and still in storage, one whose lift failed is

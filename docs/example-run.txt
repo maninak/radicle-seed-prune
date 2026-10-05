@@ -1,0 +1,47 @@
+$ rad prune
+# rad-prune 0.8.0  DRY RUN  2026-10-04 04:16:49 UTC
+# home   /var/lib/radicle   audit /var/lib/radicle/prune-audit
+# disk   125.5 GB free (46.5%)   pressure 0% (rises under 54 GB free, full at 2 GB)
+# rules  A junk-name     >30d  seeds>=1  spares imports: history starts >14d before rad init  random-id names: seeds>=0
+#        B size          >500MiB & >=P95  >90d  seeds>=3                 waiting: no disk pressure
+#        C stale         >730d  seeds>=3                                 waiting: no disk pressure
+#        D spam-batch    batch>=5  same desc>=80%  >7d  seeds>=0
+#        F media         >7d  seeds>=0  dump: >=64KiB, other<2KiB  ratio: >=6MiB, other<1/1000 of media  batch: >=5 repos, other<64KiB
+#        G parasite-peer >=10 repos  >=1MiB media  other<16KiB           reports only; --block-peers asks per peer
+#        H malware       identity: words>=3 in >=2 & >=50% of its repos  reports only; MALWARE_PRUNE=1 prunes an identity's repos
+# spared 9 pinned, 6 private, 0 own, 0 in keep.txt
+# spam   10 templates matching 999 repos, before the age and seed checks:
+#          111  template-a-*-*
+#          105  template-b-*-*
+#          104  template-c-*-*
+#          103  template-d-*-*
+#          102  template-e-*-*
+#        ...and 5 more (PLAN_FULL=1 lists them)
+# skipped 1218 written in the last 2 days
+
+RID                                     SIZE  SEEDS   AGE(d) REASON        NEAR            NAME
+zEXAMPLEREPOaaaaaaaaaaaaaaa          330.8MB     13      191 media-dump    -               example-media-repo-1
+zEXAMPLEREPObbbbbbbbbbbbbbb          192.7MB     12      191 media-dump    -               example-media-repo-2
+zEXAMPLEREPOccccccccccccccc           50.5MB      7      187 media-dump    -               example-media-repo-3
+zEXAMPLEREPOddddddddddddddd           44.5MB     10      191 media-dump    -               example-media-repo-4
+zEXAMPLEREPOeeeeeeeeeeeeeee           42.1MB     14      243 media-dump    -               example-media-repo-5
+zEXAMPLEREPOfffffffffffffff           30.8MB      7      191 media-dump    -               example-media-repo-6
+zEXAMPLEREPOggggggggggggggg           21.8MB     12      540 media-dump    -               example-media-repo-7
+zEXAMPLEREPOhhhhhhhhhhhhhhh           12.3MB      9      184 media-dump    -               example-media-repo-8
+zEXAMPLEREPOjjjjjjjjjjjjjjj            8.9MB     22      191 media-dump    -               example-media-repo-9
+[... 17 more single-repo rows ...]
+zEXAMPLEREPOxxxxxxxxxxxxxxx          128.9KB      9       30 junk-name     age             example-demo-repo
+zEXAMPLEREPOyyyyyyyyyyyyyyy           75.0KB     10       30 junk-name     age             example-hello-world
+zEXAMPLEREPOwwwwwwwwwwwwwww           73.9KB     13       31 junk-name     age             example-test-2
+(440 repos)                           50.8MB                 spam-batch    0 near          same pattern across many repos; PLAN_FULL=1 lists them
+(23 repos)                             1.3GB                 media-batch   0 near          same pattern across many repos; PLAN_FULL=1 lists them
+
+# PLAN   prune 492 repos, 2.08 GiB
+#          junk-name         6 repos      0.00 GiB
+#          media-batch      23 repos      1.29 GiB
+#          media-dump       23 repos      0.75 GiB
+#          spam-batch      440 repos      0.05 GiB
+#        8 of them cleared a threshold by under 20%, named in the NEAR column.
+#        Pruned repos wait in the quarantine for 7 days, then a later --apply run deletes them.
+# files  /var/lib/radicle/prune-audit/last-run/   plan.tsv
+# DRY RUN nothing changed. Add --apply to carry out this plan.

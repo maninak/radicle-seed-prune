@@ -31,9 +31,10 @@ A script that reads the files in the audit directory must now skip lines startin
 
 ### Changed
 
-- **The size (B) and stale (C) rules prune only under disk pressure.** While free space is at or above the relaxed free-space threshold (`PRESSURE_RELAX_*`), the run's header marks them `WAITING` ([details](./README.md#disk-pressure)). While they wait, `--apply` lifts the block on some repos they pruned before this release. Repos pile up during the wait, so the first unattended run under pressure may hold these rules back and exit `4`.
+- **The size (B) and stale (C) rules prune only under disk pressure.** While free space is at or above the relaxed free-space threshold (`PRESSURE_RELAX_*`), the run's header marks them `waiting` ([details](./README.md#disk-pressure)). While they wait, `--apply` lifts the block on some repos they pruned before this release. Repos pile up during the wait, so the first unattended run under pressure may hold these rules back and exit `4`.
 - **When one rule plans far more repos than usual, an unattended run holds back only that rule.** The other repos in the plan are pruned, and the run exits `4` ([details](./README.md#safety-and-recovery)). It used to prune nothing and exit `3`.
 - **The media rule (F) catches more media dumps and spares more real projects.** It now prunes a repo with 6 MiB or more of images, video and audio, at most one README and almost nothing else, as `media-ratio`. A build file (such as a `Makefile` or `package.json`) now spares a repo, and a source file spares it from `media-dump` and `media-ratio` ([details](./README.md#rule-f-media-dumps)).
+- **The output is redesigned, and in colour on a terminal.** `NO_COLOR=1` turns colour off.
 
 ### Removed
 

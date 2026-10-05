@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="998" height="362" viewBox="0 0 998 362">
+<style>
+  svg { --bg: #151a17; --fg: #d6ddd8; --d: #78847d; --w: #ffffff; --r: #ef7b74;
+        --g: #8fcf8a; --y: #e2c06a; --c: #6cc6c9; --bar: #2a312d }
+  @media (prefers-color-scheme: light) {
+    svg { --bg: #fbfbf8; --fg: #2a2f2c; --d: #8a928d; --w: #000000; --r: #b3261e;
+          --g: #2c7a2c; --y: #9a6a00; --c: #00707a; --bar: #e6e8e3 } }
+  text { font: 14px ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace;
+         fill: var(--fg); white-space: pre }
+  .d { fill: var(--d) } .w { fill: var(--w) } .b { font-weight: 700 } .r { fill: var(--r) }
+  .g { fill: var(--g) } .y { fill: var(--y) } .c { fill: var(--c) }
+  .bg { fill: var(--bg) } .bar { fill: var(--bar) }
+</style>
+<rect class="bg" width="998" height="362" rx="8"/>
+<rect class="bar" width="998" height="28" rx="8"/>
+<rect class="bar" y="20" width="998" height="8"/>
+<circle cx="18" cy="14" r="5" fill="#ef6b5f"/><circle cx="36" cy="14" r="5" fill="#f5bd4f"/><circle cx="54" cy="14" r="5" fill="#61c454"/>
+<text x="18" y="54" xml:space="preserve">$ rad prune check-mine</text>
+<text x="18" y="73" xml:space="preserve"><tspan class="d">#</tspan> <tspan class="w b">check-mine</tspan>  <tspan class="d">2 public repos of yours, judged as a seed judges them once they are old enough</tspan></text>
+<text x="18" y="92" xml:space="preserve"><tspan class="d"># rules  </tspan>A junk-name, D spam-batch, F media, H malware   not checked: B size, C stale, G parasite-peer, deny lists</text>
+<text x="18" y="111" xml:space="preserve"><tspan class="d">#        </tspan>A seed also looks for media batches across every repo it holds, so it can find one this check misses.</text>
+<text x="18" y="130" xml:space="preserve"></text>
+<text x="18" y="149" xml:space="preserve"><tspan class="r b">would-prune</tspan>  example-clips    <tspan class="d">rad:z&lt;rid&gt;</tspan>  <tspan class="r">media-dump</tspan></text>
+<text x="18" y="168" xml:space="preserve">             It holds images, video, audio or archives, no source or build file, and under 2KiB of</text>
+<text x="18" y="187" xml:space="preserve">             anything else.</text>
+<text x="18" y="206" xml:space="preserve">             <tspan class="w b">Fix:</tspan> add what the media belongs to, such as its source, its build files or pages that</text>
+<text x="18" y="225" xml:space="preserve">             use it, or host the media elsewhere and link to it.</text>
+<text x="18" y="244" xml:space="preserve">             Biggest files on its branches and tags. The media rule (F) also counts the delegates'</text>
+<text x="18" y="263" xml:space="preserve">             issue and patch attachments and the other delegates' branches, not listed here:</text>
+<text x="18" y="282" xml:space="preserve">                48.0 MiB  main  assets/intro.mp4</text>
+<text x="18" y="301" xml:space="preserve"><tspan class="g b">ok</tspan>           example-project  <tspan class="d">rad:z&lt;rid&gt;</tspan></text>
+<text x="18" y="320" xml:space="preserve"></text>
+<text x="18" y="339" xml:space="preserve"># 1 would be pruned, 1 ok<tspan class="d"> (exit 6)</tspan></text>
+</svg>

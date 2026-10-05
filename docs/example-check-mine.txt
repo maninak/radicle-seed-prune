@@ -1,0 +1,16 @@
+$ rad prune check-mine
+# check-mine  2 public repos of yours, judged as a seed judges them once they are old enough
+# rules  A junk-name, D spam-batch, F media, H malware   not checked: B size, C stale, G parasite-peer, deny lists
+#        A seed also looks for media batches across every repo it holds, so it can find one this check misses.
+
+would-prune  example-clips    rad:z<rid>  media-dump
+             It holds images, video, audio or archives, no source or build file, and under 2KiB of
+             anything else.
+             Fix: add what the media belongs to, such as its source, its build files or pages that
+             use it, or host the media elsewhere and link to it.
+             Biggest files on its branches and tags. The media rule (F) also counts the delegates'
+             issue and patch attachments and the other delegates' branches, not listed here:
+                48.0 MiB  main  assets/intro.mp4
+ok           example-project  rad:z<rid>
+
+# 1 would be pruned, 1 ok (exit 6)
