@@ -87,7 +87,7 @@ A dry run against a seed of 12,292 repos:
 
 `AGE(d)` is the age the matching rule measured: days since last activity for the junk-name (A), size (B) and stale (C) rules, days since creation for the spam-batch (D) and media (F) rules.
 
-`NEAR` names each threshold the row cleared by less than `NEAR_PCT` (20%) of that threshold, and is `-` when the row cleared them all by more. Read the rows it marks first.
+`NEAR` marks the close calls, the rows that met a rule's threshold by less than `NEAR_PCT` (20%) of it, and names that threshold, such as `age`. Review them before `--apply`, and add any you want to keep to `keep.txt`. `-` means the row was not close.
 
 The plan goes to stdout and everything else, progress included, to stderr, so `> plan.txt` keeps them apart. On a terminal the output is in colour. `NO_COLOR=1` turns colour off, and `FORCE_COLOR=1` turns colour on in a pipe or a file too.
 
@@ -138,25 +138,23 @@ rad:z<rid>          # a repo: pruned and blocked, even before it arrives
 did:key:z6Mk<nid>   # an identity: blocked, and every repo it is a delegate of is pruned
 ```
 
-`--apply` prunes and blocks as the lines above say, regardless of age, size, seed count or an unfinished fetch. An identity's patches or comments in a repo it is not a delegate of do not count. An identity that is a delegate of a pinned, private, kept or your own repo is not blocked. Denied repos skip the runaway caps and the hold-back, but a run the caps stop acts on none of them.
+`--apply` prunes and blocks every repo and identity listed, regardless of age, size, seed count or an unfinished fetch. An identity's patches and comments in repos it is not a delegate of get none of those repos pruned. An identity that is a delegate of a pinned, private, kept or your own repo is not blocked. Denied repos do not count toward the runaway caps or the hold-back, but a run the caps stop neither prunes nor blocks any of them.
 
 Removing a line does not undo its blocks. Run `rad unseed <rid>` or `rad unfollow <nid>`.
 
 #### Copies of denied files
 
-Files from a leak or a media dump can turn up again in other repos. List a pruned repo's files in `$AUDIT_DIR/deny-files.tsv`, and every run plans the repos that hold copies of them for pruning, as `denied-copy`. While a pruned repo is still in the quarantine, this appends its media files to that list:
+Files from a leak or media dump you pruned can turn up again in other repos. List them in `$AUDIT_DIR/deny-files.tsv`, and every run plans the repos holding copies for pruning, as `denied-copy`. While the pruned repo is in the quarantine, this command lists its media files:
 
 ```sh
 rad prune quarantine files <rid> >> ~/.radicle/prune-audit/deny-files.tsv
 ```
 
-Each row is `<object id> <bytes or -> <source> [date]`, fields separated by spaces or tabs, and `#` starts a comment. A list another operator shared with you works as is, but its ids cannot be checked by reading them, so use one only from someone you trust.
+Each row is `<object id> <bytes or -> <source> [date]`, fields separated by spaces or tabs, and `#` starts a comment.
 
-A repo is a copy when its delegates' branches and tags, history included, hold at least 5 MiB of listed images, video, audio or archives, and those make up at least half of the bytes there. A row counts against every repo whose delegates committed that file, so list only files that are the denied repo's own.
+A repo counts as a copy when listed images, video, audio or archives make up at least 5 MiB, and at least half the bytes, of its delegates' branches and tags, history included. Copies are pruned at any age or seed count, and no identity is blocked for one. Unlike repos the deny list names, copies count toward the runaway caps and the hold-back.
 
-A listed file that a repo here held before every repo it is listed from counts against no repo. The run names the file and that repo for you to check. If that repo is a copy after all, add it to `deny.txt`.
-
-Copies are pruned like repos the deny list names by id, and no identity is blocked for one. Unlike those repos, copies count against the runaway caps and the hold-back. Rows whose source is in `keep.txt` are ignored.
+List only the pruned repo's own files, since a row counts against every repo whose delegates' branches or tags hold that file. A file that a repo here held before the repos it is listed from counts against no repo. The run names the file and that repo. If that repo is a copy after all, add it to `deny.txt`. If the files are its own, drop their rows. Rows whose source is in `keep.txt` are ignored. A shared list's ids cannot be checked by reading them, so use one only from someone you trust.
 
 ### Rules
 
@@ -194,7 +192,7 @@ The spam-batch (D) and media (F) rules measure **creation** instead, because spa
 
 #### Verdicts that may delete the last copy we know of
 
-`junk-id`, `spam-batch`, `media-dump`, `media-ratio` and `media-batch`, which default to a seed floor of `0`. "Other seeds" counts the nodes our routing table says announce a repo, not proof a copy exists elsewhere; these verdicts are why pruning [quarantines instead of deleting](#quarantine). `JUNK_ID_MIN_SEEDS=1 SPAM_MIN_SEEDS=1 MEDIA_MIN_SEEDS=1` restores a floor of 1 for these. `denied`, `denied-copy` and `malware-op` have no seed floor.
+By default, `junk-id`, `spam-batch`, `media-dump`, `media-ratio` and `media-batch` prune a repo even when no other node seeds it. The seed count is only how many nodes this node has heard announce the repo, which is no proof a copy exists. These verdicts are why pruning [quarantines instead of deleting](#quarantine). To keep the last copy, set `JUNK_ID_MIN_SEEDS=1 SPAM_MIN_SEEDS=1 MEDIA_MIN_SEEDS=1`. `denied`, `denied-copy` and `malware-op` ignore seed counts.
 
 #### Names that count as disposable
 
@@ -202,9 +200,9 @@ The spam-batch (D) and media (F) rules measure **creation** instead, because spa
 
 ### Disk pressure
 
-The thresholds above are the **relaxed** values. As free disk falls, pressure `p` rises from `0` to `1` linearly between two free-space thresholds: a relaxed one (`max(PRESSURE_RELAX_PCT%, PRESSURE_RELAX_GB)` free) and a critical one (`min(PRESSURE_CRIT_PCT%, PRESSURE_CRIT_GB)` free), and every knob is interpolated from its relaxed value toward an aggressive one:
+The thresholds above are the **relaxed** values. As the disk fills, they tighten and the tool prunes more. They are at their loosest with 20% or 20 GB free, whichever is more (`PRESSURE_RELAX_PCT`, `PRESSURE_RELAX_GB`), and at their tightest with 10% or 2 GB free, whichever is less (`PRESSURE_CRIT_PCT`, `PRESSURE_CRIT_GB`). In between, the pressure the output header prints rises from 0% to 100%, and each threshold moves in a straight line toward its aggressive value:
 
-| knob                 | relaxed (`p=0`) | aggressive (`p=1`) |
+| knob                 | relaxed (0%)    | aggressive (100%)  |
 | -------------------- | --------------- | ------------------ |
 | `STALE_YEARS_DAYS`   | 730             | 60                 |
 | `OUTLIER_STALE_DAYS` | 90              | 14                 |
@@ -214,7 +212,7 @@ The thresholds above are the **relaxed** values. As free disk falls, pressure `p
 | `REL_PCTL`           | 95              | 50                 |
 | `MIN_OTHER_SEEDS`    | 3               | 1                  |
 
-The run's output header prints the live pressure and the effective thresholds. Pressure is read once, at the start of a run, and counts the quarantine copies that run will purge as free. Anything else that fills the disk for a while (a cache, a log) makes that run prune as if storage had.
+The run's output header prints the live pressure and the effective thresholds. Pressure is read once, at the start of a run, and counts the quarantine copies that run will purge as free. Pressure reads free space on the whole disk, so a large log or cache also makes a run prune harder.
 
 ## Safety and recovery
 
@@ -222,7 +220,7 @@ The run's output header prints the live pressure and the effective thresholds. P
 - **Quarantine instead of deletion.** A pruned repo stays on disk for `QUARANTINE_DAYS` (7) and is restorable with one command ([details](#quarantine)).
 - **Minimum seed counts** keep the last copy we know of, [except where a verdict's floor is 0](#verdicts-that-may-delete-the-last-copy-we-know-of).
 - **Runaway caps** (`MAX_PRUNE_COUNT`, `MAX_PRUNE_GB`) abort a plan whose rules picked more than either cap. Only `--force` or a `y` at the prompt gets past them, so an unattended run stops even with `--yes`.
-- **A rule that suddenly plans far more repos than usual is held back.** An unattended run holds back a rule that plans more than `RATCHET_FACTOR` (3) times the median it pruned over its last `RATCHET_RUNS` (8) applied runs, and more than `RATCHET_FLOOR` (20) repos. Its repos stay in storage, the other rules go ahead, and the run exits 4. A dry run shows what would be held, and `--force` or a `y` at the prompt gets past it. The spam-batch (D) and media (F) rules usually prune nothing, so a sudden batch of more than 20 repos from one of them waits for `--force` or a `y`.
+- **A rule that suddenly plans far more repos than usual is held back.** An unattended run holds back a rule that plans more than `RATCHET_FLOOR` (20) repos and more than `RATCHET_FACTOR` (3) times the median it pruned over its last `RATCHET_RUNS` (8) applied runs. Its repos stay in storage, the other rules go ahead, and the run exits 4. A dry run shows what would be held, and `--force` or a `y` at the prompt gets past it. The spam-batch (D) and media (F) rules usually prune nothing, so a sudden batch of more than 20 repos from one of them waits for `--force` or a `y`.
 - **Freshness guard** skips any repo whose storage directory was written within `FRESH_GUARD_DAYS` (2), which is what a fetch still arriving looks like.
 - **Blind scans abort.** When more than `MAX_SCAN_FAIL_PCT` (10%) of the repos in storage cannot be read, the run stops with exit 5 instead of printing a small plan.
 - **The tool lifts only blocks it made**, at most once per repo ([more](#blocks-the-tool-lifts-on-its-own)).
@@ -240,7 +238,7 @@ The node keeps running during a prune. After a large first run, `sudo systemctl 
 
 ### Quarantine
 
-A pruned repo moves to `$AUDIT_DIR/quarantine/<rid>` instead of being deleted. Once `QUARANTINE_DAYS` (7) days have passed since the prune, the next `--apply` run that goes ahead (past the runaway caps and the prompt) deletes it for good, even if that run prunes nothing itself, so a weekly cron deletes it on its next run. At or under the critical free-space threshold, an `--apply` run that goes ahead empties the whole quarantine. No `--apply` run, `quarantine purge` or `quarantine delete --all` deletes a repo listed in `keep.txt` from the quarantine, even at the critical threshold ([more](#blocks-the-tool-lifts-on-its-own)). `QUARANTINE=0` deletes outright and keeps nothing.
+A pruned repo moves to `$AUDIT_DIR/quarantine/<rid>` instead of being deleted, and can be restored for `QUARANTINE_DAYS` (7) days. After that, the next `--apply` run that goes ahead (past the runaway caps and the prompt) deletes it for good, even if that run prunes nothing itself. At or under the critical free-space threshold, such a run empties the whole quarantine. No `--apply` run, `quarantine purge` or `quarantine delete --all` deletes a repo listed in `keep.txt` from the quarantine, even at the critical threshold ([more](#blocks-the-tool-lifts-on-its-own)). `QUARANTINE=0` deletes outright and keeps nothing.
 
 Deleting a quarantined repo by hand (`rm -rf`) is safe at any time and only costs the ability to restore it.
 
@@ -280,7 +278,7 @@ awk -F'\t' '!/^#/ && $1 !~ /^blocked-/ {print "rad:"$1}' \
 
 ### Blocks the tool lifts on its own
 
-An `--apply` run lifts a block rad-prune made when:
+Pruning blocks a repo so the node does not fetch it back. An `--apply` run lifts a block rad-prune made when any of these holds:
 
 - A later rad-prune release withdrew the verdict that pruned the repo (`UNDO_CHANGED` in the script). For the size (B) and stale (C) rules, that holds only while they wait for disk pressure. A deleted repo bigger than the size limit that release set for the verdict stays blocked.
 - One of the repo's delegates announced new refs for it after it was pruned for inactivity (`junk-name`, `junk-id`, `size-outlier`, `stale`). If the audit log of the run that last pruned the repo recorded no delegates for it, any node announcing refs of its own counts. A node `deny.txt` names never counts. Needs `sqlite3`. This node forgets announcements after two weeks by default, so a run more than two weeks after the one before can miss some.
@@ -364,7 +362,7 @@ Every setting is an environment variable. Defaults shown.
 | `MAX_PRUNE_COUNT`   | `1000`  | Runaway guard: abort over this many repos                                                                                                                   |
 | `MAX_PRUNE_GB`      | `80`    | Runaway guard: abort over this many whole GiB                                                                                                               |
 | `RATCHET_FACTOR`    | `3`     | Hold back a rule that plans over this multiple of its recent median                                                                                         |
-| `RATCHET_RUNS`      | `8`     | A rule's median is taken over its last this many applied runs in which it could prune. With fewer than 3 readable logs, or a value under 3, nothing is held |
+| `RATCHET_RUNS`      | `8`     | How many of a rule's recent applied runs its median is taken from, counting only runs in which it could prune. With fewer than 3 readable logs, or a value under 3, nothing is held |
 | `RATCHET_FLOOR`     | `20`    | A rule planning this many repos or fewer is never held back                                                                                                 |
 | `MAX_SCAN_FAIL_PCT` | `10`    | Abort if more than this share of the repos in storage vanished, could not be read or had no readable refs                                                                                |
 
@@ -385,7 +383,7 @@ Every setting is an environment variable. Defaults shown.
 | `KEEP_FILE`          | `$AUDIT_DIR/keep.txt` | Repos never pruned ([more](#quarantine))                   |
 | `CACHE`              | `1`     | Reuse what the media (F) and parasite-peer (G) rules, and the search for copies of denied files, read out of repos that have not changed (`0` reads everything, every run) |
 | `CACHE_DIR`          | `$AUDIT_DIR/cache` | Where that reading is kept                                      |
-| `PLAN_COLLAPSE_ROWS` | `20`    | Group size at which a corpus verdict folds to one summary line             |
+| `PLAN_COLLAPSE_ROWS` | `20`    | When the plan holds at least this many `spam-batch` (or `media-batch`) repos, it shows them as one line |
 | `PLAN_FULL`          | `0`     | `1` lists every plan row and every evidence table entry, untruncated       |
 | `NEAR_PCT`           | `20`    | A row's `NEAR` column names any threshold it cleared by less than this share of the threshold; `0` marks nothing |
 | `PROGRESS_SECS`      | `60`    | Seconds between progress lines when the output is not a terminal (cron, a log file); `0` turns off all progress reporting |
@@ -470,9 +468,9 @@ A **media dump** is a repo of video, images or audio with no project around it. 
 
 - `media-dump`: at least `MEDIA_MIN_BYTES` (64 KiB) of media, under `MEDIA_TEXT_MAX_BYTES` (2048 bytes) of anything else, and no source or build file (a `Makefile`, `Cargo.toml`, `package.json` and the like);
 - `media-ratio`: at least `MEDIA_RATIO_MIN_BYTES` (6 MiB) of images, video and audio at the tips of its branches and tags, with no other file there but at most one README, under 0.1% of that size in anything else, no archive, and no source or build file;
-- `media-batch`: under `MEDIA_TEXT_CEIL_BYTES` (64 KiB) of anything but media, no build file, and at least `MEDIA_MIN_BYTES` of media in files that `MEDIA_MIN_BATCH` (5) or more repos here hold, byte for byte, each under that same budget, and that this repo was not the first to hold.
+- `media-batch`: at least `MEDIA_MIN_BYTES` of media in files that `MEDIA_MIN_BATCH` (5) or more repos here hold byte for byte, and that this repo was not the first to hold. This repo and each repo counted toward those 5 must hold under `MEDIA_TEXT_CEIL_BYTES` (64 KiB) of anything but media, and this repo must have no build file.
 
-The first holder is the repo this seed saw first. If copies reached this seed before the repo they copy, the first copy counts as the first holder, and the repo they copy counts as one more copy. Repos first seen in the same run are ordered by when the node stored them. After storage is moved with `cp` or `rsync`, that order is the order the move wrote them in. Where the filesystem keeps no such time, the repo whose id sorts first counts as first.
+The first to hold a file is the repo this seed saw first. If copies arrived before the original, the earliest copy is spared and the original is pruned as one more copy. Add the original to `keep.txt` to spare it. Moving storage with `cp` or `rsync` can change which repo counts as first.
 
 Archives count as media. A file with an extension the rule does not know is judged by its first bytes, so renaming a video to `.dat` does not hide it. Only the repo's own content counts: its canonical branches and tags, and what its delegates pushed or signed, issue and patch attachments included. A repo the rule cannot read in full is left unjudged and listed in `last-run/F-media-unjudged.tsv`.
 
@@ -486,7 +484,7 @@ A peer is named when all of:
 
 1. a single file of the peer's own, matched byte for byte, sits in at least `PARASITE_MIN_REPOS` (10) repos that the peer is not a delegate of and whose own refs do not hold that file;
 2. the peer's media in the repos it is not a delegate of adds up to at least `PARASITE_MIN_BYTES` (1 MiB);
-3. and everything else it pushed into the repos where non-delegates pushed media adds up to less than `PARASITE_TEXT_MAX_BYTES` (16 KiB).
+3. and it pushed less than `PARASITE_TEXT_MAX_BYTES` (16 KiB) of anything else into the repos where non-delegates pushed media.
 
 A delegate of any repo in storage is never accused, and neither is this node itself.
 
@@ -503,7 +501,9 @@ It looks for strong words (`MALWARE_STRONG_WORDS`: `hvnc`, `stealer`, `crypter`,
 
 Each finding comes with the `did:key:` or `rad:` line to add to the [deny list](#deny-list) or to `keep.txt`. In `keep.txt`, either line stops the finding being named again, and a `rad:` line also keeps that repo out of every rule and clears every delegate of that repo of the malware rule (H).
 
-`MALWARE_PRUNE=1` acts on the identities the rule names instead. It prunes every repo a named identity is a delegate of as `malware-op`, whatever its seed count and however recent, once its age is known and no fetch is in flight. An `--apply` run with `--block-peers` also blocks each named identity, in the run that prunes its repos. If you decline the block or it fails, run the `rad block` line the run printed. A run that holds the rule back blocks nobody. The rule spares a repo with signed refs from an identity in `keep.txt` or from a delegate of a pinned, kept or your own repo, and does not block a named identity that is a delegate of a spared repo. To undo a verdict, run `rad prune quarantine restore` on the repo. That clears its delegates of the rule, and prints the `rad unfollow <nid>` that lifts a block an earlier run put on one of them.
+`MALWARE_PRUNE=1` acts on the identities the rule names instead. It prunes every repo a named identity is a delegate of as `malware-op`, whatever its seed count and however recent, once its age is known and no fetch is in flight. An `--apply` run with `--block-peers` also blocks each named identity, in the run that prunes its repos. If you decline the block or it fails, run the `rad block` line the run printed. A run that holds the rule back blocks nobody.
+
+The rule spares a repo with signed refs from an identity in `keep.txt` or from a delegate of a pinned, kept or your own repo, and does not block a named identity that is a delegate of a spared repo. To undo a verdict, run `rad prune quarantine restore` on the repo. That clears its delegates of the rule, and prints the `rad unfollow <nid>` that lifts a block an earlier run put on one of them.
 
 ## Development
 
