@@ -822,6 +822,16 @@ quar=$(_abs "$quar");             KEEP_FILE=$(_abs "$KEEP_FILE")
 DENY_FILE=$(_abs "$DENY_FILE");   DENY_FILES=$(_abs "$DENY_FILES")
 CACHE_DIR=$(_abs "$CACHE_DIR")
 SELF=$(_abs "$0")   # the run cache hashes this file, and cd would break a relative $0
+# The command the output tells the operator to run next. `rad prune` and a bare name only when
+# they would run this very file, since another copy on PATH may be a different version. The
+# full path otherwise, quoted so a line copied from the output still runs.
+if command -v rad >/dev/null 2>&1 && [ "$(command -v rad-prune 2>/dev/null)" -ef "$SELF" ]; then
+  SELF_CMD="rad prune"
+elif [ "$(command -v "${SELF##*/}" 2>/dev/null)" -ef "$SELF" ]; then
+  SELF_CMD=${SELF##*/}
+else
+  SELF_CMD=$(printf '%q' "$SELF")
+fi
 
 cd /
 
@@ -1175,9 +1185,9 @@ re_fold='^(\([0-9]+ repos\))( +[^ ]+ +)([a-z-]+)( +)([0-9]+ near)(.*)$'
 re_near='^(#  +)([0-9]+ of them cleared a threshold by under [0-9]+%)(.*)$'
 re_mine='^# (check-mine)  (.*)$'
 re_exit='^(# .*)( \(exit [0-9]+\))$'
-re_quar='^(z[0-9A-Za-z]+)( .* )(due|kept|unknown|[0-9]+d)$'
+re_quar='^(z[0-9A-Za-z]+)( +[^ ]+ +[0-9]+ +)(due|kept|unknown|[0-9]+d)( .*)?$'
 re_check='^(would-prune|flagged|unjudged|ok)( +.* )(rad:[^ ]+)(  (.*))?$'
-re_cmd='^(.*: )([^ ]+ quarantine [a-z]+.*)$'
+re_cmd='^(.*: )((rad prune|[^ ]+) quarantine [a-z]+.*)$'
 
 # Prints one line of output in colour. Anything it does not recognise goes out as it came. The
 # first character picks the patterns to try, so a plan row, which a large plan has thousands
@@ -1193,16 +1203,17 @@ colour_line() {
   case $line in
     "#"*) colour_comment "$line" ;;
     z*)
-      if [[ $line =~ $re_row ]]; then
+      # A quarantine row's fourth column is a window like 3d, where a plan row has a number.
+      if [[ $line =~ $re_quar ]]; then
+        m=$c_yellow; [ "${BASH_REMATCH[3]}" = kept ] && m=$c_green
+        [[ ${BASH_REMATCH[3]} == *d ]] && m=""
+        printf '%s%s%s%s%s%s%s%s\n' "$d" "${BASH_REMATCH[1]}" "$o" "${BASH_REMATCH[2]}" \
+               "$m" "${BASH_REMATCH[3]}" "$o" "${BASH_REMATCH[4]}"
+      elif [[ $line =~ $re_row ]]; then
         m=${BASH_REMATCH[5]}
         [ "$m" = - ] || m=$c_yellow$b$m$o
         printf '%s%s%s%s%s%s%s%s%s%s\n' "$d" "${BASH_REMATCH[1]}" "$o" "${BASH_REMATCH[2]}" \
                "$c_red" "${BASH_REMATCH[3]}" "$o" "${BASH_REMATCH[4]}" "$m" "${BASH_REMATCH[6]}"
-      elif [[ $line =~ $re_quar ]]; then
-        m=$c_yellow; [ "${BASH_REMATCH[3]}" = kept ] && m=$c_green
-        [[ ${BASH_REMATCH[3]} == *d ]] && m=""
-        printf '%s%s%s%s%s%s%s\n' "$d" "${BASH_REMATCH[1]}" "$o" "${BASH_REMATCH[2]}" \
-               "$m" "${BASH_REMATCH[3]}" "$o"
       else
         printf '%s\n' "$line"
       fi ;;
@@ -1758,11 +1769,25 @@ if [ "$CMD" = quarantine ]; then
         kept=unreadable
         echo "# WARN cannot read $KEEP_FILE, so nothing is deleted from the quarantine." >&2
       fi
+      # Why each repo was pruned and its name, from the audit logs, so a wrong verdict can be
+      # spotted without looking each id up. A repo no log names, or whose log is gone, shows -.
+      declare -A pruned_why=()
+      logs=()
+      for f in "$AUDIT_DIR"/prune-*.log; do [ -r "$f" ] && logs+=("$f"); done
+      if [ ${#logs[@]} -gt 0 ]; then
+        while IFS=$'\t' read -r rid why; do
+          pruned_why[$rid]=$why
+        done < <(awk -F'\t' '$1 ~ /^z[1-9A-HJ-NP-Za-km-z]+$/ && $5 != "" {
+                                last[$1] = sprintf("%-13s %s", $5, $6) }
+                              END { for (r in last) print r "\t" last[r] }' "${logs[@]}" \
+                   | LC_ALL=C tr '\001-\010\013-\037\177' ' ')  # no control byte reaches a terminal
+      fi
       for d in "$quar"/z*; do
         [ -d "$d" ] || continue
         born=$(stat -c %Y "$d" 2>/dev/null) || continue
         [ -n "$born" ] || continue
-        [ "$found" = 0 ] && printf '%-34s %8s %8s %10s\n' RID SIZE 'HELD(d)' 'DELETED IN'
+        [ "$found" = 0 ] && printf '%-34s %8s %8s %10s  %-13s %s\n' RID SIZE 'HELD(d)' \
+                                   'DELETED IN' REASON NAME
         held=$(( (now - born) / 86400 ))
         if [ "$kept" = unreadable ]; then
           left=unknown
@@ -1776,22 +1801,24 @@ if [ "$CMD" = quarantine ]; then
         fi
         # Disk use, not file bytes: what deleting it gives back.
         bytes=$(du -sB1 "$d" 2>/dev/null | cut -f1)
-        printf '%-34s %8s %8s %10s\n' "$(basename "$d")" \
-               "$(numfmt --to=iec --suffix=B "${bytes:-0}")" "$held" "$left"
+        rid=$(basename "$d")
+        printf '%-34s %8s %8s %10s  %s\n' "$rid" \
+               "$(numfmt --to=iec --suffix=B "${bytes:-0}")" "$held" "$left" \
+               "${pruned_why[$rid]:--}"
         found=$((found+1))
         total_bytes=$((total_bytes + ${bytes:-0}))
       done
       if [ "$found" -gt 0 ]; then
         echo
         echo "# $(count "$found" repo repos), $(numfmt --to=iec --suffix=B "$total_bytes")." \
-             "To put one back: $(basename "$0") quarantine restore <rid>"
+             "To put one back: $SELF_CMD quarantine restore <rid>"
       else
         echo "# nothing in quarantine ($quar)"
       fi
       ;;
     restore)
       [ "${#QARGS[@]}" -gt 0 ] \
-        || { echo "usage: $(basename "$0") quarantine restore <rid>..." >&2; exit 2; }
+        || { echo "usage: $SELF_CMD quarantine restore <rid>..." >&2; exit 2; }
       # The identities an earlier run blocked as malware (rule H), and of those the ones the
       # node still blocks. When the blocks cannot be listed, every one of them counts as
       # still blocked, and rad's own error stays on the terminal to say why.
@@ -1846,7 +1873,13 @@ if [ "$CMD" = quarantine ]; then
           fi
         done
       done
-      echo "# restart the node to announce them again: sudo systemctl restart $SERVICE"
+      # The systemctl line only where that unit exists, since a node run by hand or by another
+      # service manager would get a command that fails.
+      if systemctl cat "$SERVICE" >/dev/null 2>&1; then
+        echo "# restart the node to announce them again: sudo systemctl restart $SERVICE"
+      else
+        echo "# restart the node to announce them again"
+      fi
       ;;
     delete)
       ndel=0
@@ -1866,10 +1899,10 @@ if [ "$CMD" = quarantine ]; then
         [ "$nkept" = 0 ] \
           || echo "# left $nkept repo(s) that $KEEP_FILE lists; the next --apply run puts" \
                   "them back, or names any it cannot. To delete one anyway:" \
-                  "$(basename "$0") quarantine delete <rid>"
+                  "$SELF_CMD quarantine delete <rid>"
       else
         [ "${#QARGS[@]}" -gt 0 ] \
-          || { echo "usage: $(basename "$0") quarantine delete <rid>... | --all" >&2; exit 2; }
+          || { echo "usage: $SELF_CMD quarantine delete <rid>... | --all" >&2; exit 2; }
         for rid in "${QARGS[@]}"; do
           rid=${rid#rad:}
           is_rid "$rid" || { echo "# not a repo id: $rid" >&2; continue; }
@@ -1892,7 +1925,7 @@ if [ "$CMD" = quarantine ]; then
       # branches and tags, history included. These are the files the copy check counts, so a
       # row from here never names a file a stranger pushed. Printed for a person to append.
       [ "${#QARGS[@]}" = 1 ] \
-        || { echo "usage: $(basename "$0") quarantine files <rid>" >&2; exit 2; }
+        || { echo "usage: $SELF_CMD quarantine files <rid>" >&2; exit 2; }
       rid=${QARGS[0]#rad:}
       is_rid "$rid" || { echo "# not a repo id: $rid" >&2; exit 2; }
       d="$quar/$rid"
@@ -5897,8 +5930,8 @@ fi
 # as a comment, so the evidence rides along when a line is copied.
 if [ "$nmalware_repos" -gt 0 ]; then
   echo
-  echo "# REVIEW $(count "$nmalware_repos" repo repos) the malware rule (H) flagged and left" \
-       "in place"
+  echo "# REVIEW $(count "$nmalware_repos" repo repos) the malware rule (H) flagged for you to" \
+       "check, not pruned"
   head -n "$top_evidence" "$tmp/malware-repos" \
     | while IFS=$'\t' read -r rid found evidence rname; do
         printf '#        rad:%s  # %s (%s; %s)\n' "$rid" "$rname" "$found" "$evidence"
@@ -5908,8 +5941,8 @@ if [ "$nmalware_repos" -gt 0 ]; then
          "last-run/H-malware-repos.tsv (PLAN_FULL=1 lists them)"
   fi
   header_line "" "Copy a line into $KEEP_FILE to keep its repo, or into $DENY_FILE to prune" \
-                 "and block it. In $KEEP_FILE it also clears every delegate of the repo of the" \
-                 "malware rule (H), even one who never signed it."
+                 "and block it. A line in ${KEEP_FILE##*/} also stops the malware rule (H)" \
+                 "naming any delegate of that repo, even one who never signed it."
 fi
 
 # What the report above printed is trimmed to what a terminal can hold: corpus verdicts folded
@@ -6605,21 +6638,26 @@ if [ "$QUARANTINE" = 1 ]; then
   # Both lines are about what this run just put there, so neither is printed when it put
   # nothing there and the quarantine holds only what earlier runs left.
   if [ "$deleted" -gt 0 ]; then
-    header_line "" "See them with: $(basename "$0") quarantine list"
-    header_line "" "Put one back with: $(basename "$0") quarantine restore <rid>"
+    header_line "" "See them with: $SELF_CMD quarantine list"
+    header_line "" "Put one back with: $SELF_CMD quarantine restore <rid>"
     # The GiB above are still occupied until the window passes, and where the disk went is the
     # next question a big prune is asked. --all empties the whole quarantine, which is more
     # than this run put in it, so the line says so rather than reading as "finish up here".
     header_line "" "To free the disk now, giving up the undo for this run and every earlier" \
-                   "one: $(basename "$0") quarantine delete --all"
+                   "one: $SELF_CMD quarantine delete --all"
   fi
 else
   header_line DONE "deleted $(count "$deleted" repo repos), reclaimed ~${gone_gib} GiB."
 fi
 header_line "" "audit $audit"
-[ "$RESTART" = 1 ] \
-  || header_line tip "run 'sudo systemctl restart $SERVICE' once to clear the stale" \
-                     "inventory-announce log warning."
+# Only after a run that removed something, which is what leaves the warning behind, and only
+# where that unit exists, since a node run by hand or by another service manager would get a
+# command that fails.
+if [ "$RESTART" = 0 ] && [ "$deleted" -gt 0 ] \
+   && systemctl cat "$SERVICE" >/dev/null 2>&1; then
+  header_line tip "run 'sudo systemctl restart $SERVICE' once to clear the stale" \
+                  "inventory-announce log warning."
+fi
 [ "$nheld" = 0 ] \
   || echo "# $nheld repo(s) held back are still in storage; see HELD BACK above." >&2
 # A repo whose removal failed is blocked and still in storage, one whose lift failed is

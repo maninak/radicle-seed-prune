@@ -35,6 +35,7 @@ A script that reads the files in the audit directory must now skip lines startin
 - **When one rule plans far more repos than usual, an unattended run holds back only that rule.** The other repos in the plan are pruned, and the run exits `4` ([details](./README.md#safety-and-recovery)). It used to prune nothing and exit `3`.
 - **The media rule (F) catches more media dumps and spares more real projects.** It now prunes a repo with 6 MiB or more of images, video and audio, at most one README and almost nothing else, as `media-ratio`. A build file (such as a `Makefile` or `package.json`) now spares a repo, and a source file spares it from `media-dump` and `media-ratio` ([details](./README.md#rule-f-media-dumps)).
 - **The output is redesigned, and in colour on a terminal.** `NO_COLOR=1` turns colour off.
+- **`rad prune quarantine list` shows why each repo was pruned, and its name.**
 
 ### Removed
 

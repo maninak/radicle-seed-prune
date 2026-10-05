@@ -2363,9 +2363,9 @@ DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 "${NOTTY[@]}" "$SCRIPT" --apply </dev/null >/de
   && ok "a pruned repo is moved to quarantine intact, not destroyed" \
   || no "a pruned repo was not recoverable from quarantine"
 out=$("$SCRIPT" quarantine list 2>&1)
-{ grep -q 'zjunk1' <<<"$out" && grep -q 'HELD' <<<"$out"; } \
-  && ok "quarantine list names what a past run pruned" \
-  || no "quarantine list did not show the repo the run had just quarantined"
+{ grep -qE '^zjunk1 .* junk-name +test-old$' <<<"$out" && grep -q 'HELD' <<<"$out"; } \
+  && ok "quarantine list names what a past run pruned, why, and the repo's name" \
+  || no "quarantine list did not show the quarantined repo, why it went, or its name"
 
 # Restoring has to do three things: the directory, the node's block policy, and the verdict
 # itself, or the very next run plans the same repo again. rad seed alone only ever rewrites an
@@ -2436,7 +2436,7 @@ out=$("$SCRIPT" quarantine purge 2>&1)
   && grep -q 'purged 2 repo' <<<"$out"; } \
   && ok "quarantine purge deletes what is past its window, less 3 hours, and nothing else" \
   || no "quarantine purge deleted the wrong repos"
-{ [ -d "$Q/zkeptq1" ] && grep -qE '^zkeptq1 .* kept$' <<<"$listed"; } \
+{ [ -d "$Q/zkeptq1" ] && grep -qE '^zkeptq1 .* kept +-$' <<<"$listed"; } \
   && ok "quarantine purge keeps a repo in keep.txt past its window, and list says so" \
   || no "quarantine purge deleted a repo in keep.txt, or list called it due"
 
