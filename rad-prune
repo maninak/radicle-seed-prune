@@ -1108,6 +1108,10 @@ CONFIGURATION
   RAD_HOME=$RAD_HOME
   STORAGE=$STORAGE
   AUDIT_DIR=$AUDIT_DIR
+
+A project by Konstantinos Maninakis (maninak) for https://radicle.tools
+Source and issues: rad:zxvTkxzouwrYFwycnsctrMT3iM2E
+Donate: https://liberapay.com/maninak/donate
 HELPTEXT
 }
 
