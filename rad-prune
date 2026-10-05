@@ -343,11 +343,12 @@ SERVICE="${SERVICE:-radicle-node}"          # systemd unit for --restart-node
 
 # `check` shows a publisher which of their own public repos a seed running this tool would
 # prune. It writes into a directory of its own, so the operator's audit trail, keep list,
-# deny list, ledger and cache are neither read nor changed. It runs the media (F) and
-# spam-batch (D) rules, which judge what a repo holds and how it is named, with their age
-# windows at 0, so a repo published today shows the verdict it gets once it is old enough.
-# Their seed floors are 0, as by default, since this node's routing table is not a seed's, and
-# there is no disk pressure, so this machine's free space plays no part. Set before the
+# deny list, ledger and cache are neither read nor changed. It runs the junk-name (A),
+# spam-batch (D) and media (F) rules, which judge how a repo is named and what it holds, with
+# their windows at 0, so a repo published today shows the verdict it gets once it is old
+# enough, or for the junk-name rule, once nobody has pushed to it for long enough. Their seed
+# floors are 0, since this node's routing table is not a seed's, and there is no disk
+# pressure, so this machine's free space plays no part. Set before the
 # settings below, which keep a value already set.
 CHECK_DIR=""
 if [ "${1:-}" = check ]; then
@@ -355,9 +356,9 @@ if [ "${1:-}" = check ]; then
   trap 'rm -rf "$CHECK_DIR"' EXIT
   AUDIT_DIR=$CHECK_DIR
   unset KEEP_FILE FIRST_SEEN CACHE_DIR
-  CACHE=0; UNDO=0; DISK_AWARE=0; RULES=DF
+  CACHE=0; UNDO=0; DISK_AWARE=0; RULES=ADF
   SPAM_STALE_DAYS=0; MEDIA_STALE_DAYS=0; FRESH_GUARD_DAYS=0
-  SPAM_MIN_SEEDS=0; MEDIA_MIN_SEEDS=0
+  SPAM_MIN_SEEDS=0; MEDIA_MIN_SEEDS=0; JUNK_MIN_SEEDS=0; JUNK_ID_MIN_SEEDS=0
 fi
 
 ABS_SIZE_FLOOR_MB="${ABS_SIZE_FLOOR_MB:-500}"   # rule B absolute floor
@@ -1032,14 +1033,15 @@ USAGE
   $me [options]                    plan a prune, and with --apply carry it out
   $me quarantine <verb> [rid...]   deal with what a past run already pruned
   $me check                        say which of your own public repos a seed running
-                                   $me would prune, and why; changes nothing
+                                         $me would prune, and why; changes nothing
 
   Dry run by default: with no options it prints the plan and changes nothing.
 
 OPTIONS
   --apply          carry out the plan: unseed, block and quarantine every repo in it, and
                    lift the blocks on repos earlier runs may have pruned by mistake
-  --block-peers    act on the parasite-peer rule (G) as well, asking before each peer is blocked
+  --block-peers    block the peers the parasite-peer rule (G) found, asking per peer;
+                   on its own, prunes nothing
   --yes, -y        answer y to every prompt this run asks, so it needs nobody present
   --force          carry on past the runaway caps, and past the hold on a rule that plans far
                    more repos than usual
@@ -1049,16 +1051,15 @@ OPTIONS
 
 QUARANTINE VERBS
   list             what is held, how long it has been held, and when each entry goes
-  restore <rid>... put it back in storage, clear the block, re-seed it, and keep it after
+  restore <rid>... put it back in storage, clear the block, re-seed it, and add it to keep.txt
   delete <rid>...  delete it now instead of waiting; --all deletes everything held
   purge            delete everything already past its window
   files <rid>      print its images, video, audio and archives as rows to append to
                    deny-files.tsv
 
 CONFIGURATION
-  The thresholds an operator may want to move are environment variables, and there are no
-  tuning flags. The README lists them; the comment block at the top of this script says why
-  each has the value it has.
+  Every setting is an environment variable, listed in the README. The comment block at the
+  top of this script says why each default has its value.
 
   RULES=$RULES
   RAD_HOME=$RAD_HOME
@@ -1503,10 +1504,22 @@ if [ "$CMD" = quarantine ]; then
     delete)
       ndel=0
       if [ "${QARGS[0]:-}" = --all ]; then
+        # A repo in the keep file waits here for the next run to put it back, so --all leaves
+        # it: a person deletes a kept repo by naming it. With a keep file that cannot be read,
+        # any repo could be one of those, so nothing is deleted.
+        kept=$(keep_ids) \
+          || { echo "# cannot read $KEEP_FILE, so nothing is deleted from the quarantine." >&2
+               exit 5; }
+        nkept=0
         for d in "$quar"/z*; do
           [ -e "$d" ] || continue
+          if quar_kept "$d" "$kept"; then nkept=$((nkept+1)); continue; fi
           rm -rf -- "$d" && ndel=$((ndel+1))
         done
+        [ "$nkept" = 0 ] \
+          || echo "# left $nkept repo(s) that $KEEP_FILE lists; the next --apply run puts" \
+                  "them back, or names any it cannot. To delete one anyway:" \
+                  "$(basename "$0") quarantine delete <rid>"
       else
         [ "${#QARGS[@]}" -gt 0 ] \
           || { echo "usage: $(basename "$0") quarantine delete <rid>... | --all" >&2; exit 2; }
@@ -1672,7 +1685,9 @@ media_cut=$(( now - MEDIA_STALE_DAYS*86400 ))
 # A check first sees every repo now, so a repo whose commits all carry a date ahead of this
 # clock is created now by its reckoning, and a window of 0 would never pass it. A seed that
 # first saw it earlier would.
-[ "$CMD" != check ] || { spam_cut=$((now + 1)); media_cut=$((now + 1)); }
+if [ "$CMD" = check ]; then
+  spam_cut=$((now + 1)); media_cut=$((now + 1)); junk_cut=$((now + 1))
+fi
 
 run_mode=$([ "$APPLY" = 1 ] && echo APPLY || echo DRY-RUN)
 [ "$CMD" != check ] || run_mode=CHECK
@@ -1964,9 +1979,9 @@ on_exit() {
   progress_kill
   rm -rf "$tmp"
   [ -z "$CHECK_DIR" ] || rm -rf "$CHECK_DIR"
-  # The exit code says whether a run held a rule back, failed a removal or refused to guess,
-  # and a cron job keeps only what the run printed. The audit log keeps it beside what the run
-  # did.
+  # The exit code says whether a run held a rule back, failed a removal or a lift, or refused
+  # to guess, and a cron job keeps only what the run printed. The audit log keeps it beside
+  # what the run did.
   if [ "$APPLY" = 1 ] || [ "$BLOCK_PEERS" = 1 ]; then
     echo "# exit $rc" >&2
     [ -z "${audit:-}" ] || { printf '# exit %s\n' "$rc" >> "$audit"; } 2>/dev/null || true
@@ -2678,6 +2693,7 @@ fi
 # of the same repo on a later run.
 undo_apply() {
   local rid state why reason size at ver copy lifted=0 failed=0 seeded=0
+  undo_failed=0
   [ "$nunblock" -gt 0 ] || return 0
   open_audit
   while IFS=$'\t' read -r rid state why reason size at ver copy; do
@@ -2718,6 +2734,7 @@ undo_apply() {
   else
     echo "# undo: unblocked $lifted repo(s); $failed failed, see the warnings above."
   fi
+  undo_failed=$failed
   if [ "$undo_default" != allow ] && [ "$lifted" -gt "$seeded" ]; then
     echo "#   This node's default seeding policy is '$undo_default', so it seeds none of them" \
          "by itself. To seed one, run rad seed with an id from the '# unblocked:' lines of" \
@@ -2806,7 +2823,12 @@ fi
 : > "$tmp/spam"; : > "$tmp/spambatch"
 if rule_on D; then
   awk -F'\t' -v K="$SPAM_MIN_BATCH" -v D="$SPAM_DESC_AGREE_PCT" -v REQID="$SPAM_REQUIRE_ID" \
-             -v BATCHES="$tmp/spambatch" '
+             -v BATCHES="$tmp/spambatch" -v SPARED="$tmp/spamspared" \
+             -v seenfile="$FIRST_SEEN" -v now="$now" '
+    BEGIN { while ((getline line < seenfile) > 0) {
+              split(line, f, "\t")
+              if (f[2] ~ /^[0-9]+$/) seen[f[1]] = f[2]
+            } }
     FILENAME == ARGV[1] { twice[$1] = 1; next }
     # A token is a random id if it is 6+ hex characters with both a letter and a digit.
     # Demanding a letter is what keeps a date or sequence suffix (release-202401) an
@@ -2863,12 +2885,31 @@ if rule_on D; then
       # Only the members carrying the description the batch agreed on, so a genuine outlier
       # that happens to share the name shape is left alone.
       for (i=1;i<=N;i++)
-        if (!(i in forged) && nl[i] in good && dl[i]==bestd[nl[i]])
-          { print rid[i]; batchsize[nl[i]]++ }
+        if (!(i in forged) && nl[i] in good && dl[i]==bestd[nl[i]]) member[i]=1
+      # A member this seed saw before every other member is the one the rest copy: four repos
+      # pushed in the shape of an honest project would otherwise put that project in the plan.
+      # First-seen is the one date a pusher cannot backdate. A batch that arrived in one run
+      # shares the time of that run, so then no member is spared.
+      for (i in member) {
+        seenat = (rid[i] in seen) ? seen[rid[i]] : now; batch = nl[i]
+        if (!(batch in early) || seenat < early[batch]) {
+          early[batch] = seenat; firstof[batch] = i; tied[batch] = 0
+        } else if (seenat == early[batch]) tied[batch] = 1
+      }
+      for (i=1;i<=N;i++) {
+        if (!(i in member)) continue
+        if (firstof[nl[i]] == i && !tied[nl[i]]) { print rid[i] > SPARED; continue }
+        print rid[i]; batchsize[nl[i]]++
+      }
       for (n in batchsize) printf "%d\t%s\n", batchsize[n], n > BATCHES
     }' "$tmp/meta-twice" "$tmp/meta" > "$tmp/spam" || true
 fi
 nspam=$(wc -l < "$tmp/spam"); nspambatch=$(wc -l < "$tmp/spambatch")
+# Said, so a spammer who pushes one member early to keep it shows up in the output.
+if [ -s "$tmp/spamspared" ]; then
+  echo "# spam batches: spared $(wc -l < "$tmp/spamspared") repo(s) as the first of their" \
+       "batch, such as $(head -3 "$tmp/spamspared" | sed 's/^/rad:/' | xargs)."
+fi
 if [ "$nspam" -gt 0 ]; then
   echo "# spam batches: $nspambatch template(s) matching $nspam repos," \
        "before the age and seed checks:"
@@ -4070,18 +4111,38 @@ done
 # writes no others), so a stock icon that every real project ships does not make a campaign.
 # The EARLIEST holder is left out of its own batch: without that, reposting somebody's photos
 # into five repos of your own would put THEIR repo in the plan. Earliest is by first-seen, the
-# one date a pusher cannot backdate, so on a seed whose ledger starts today the exemption falls
-# to whichever repo sorts first until the ledger has some history.
+# one date a pusher cannot backdate. The ledger dates a repo by the run that first saw it, so
+# repos that arrived in the same run tie, and then the one whose storage directory the node
+# made first (to the second) is earliest: a repo id sorts wherever its pusher grinds it to.
+# Where the filesystem keeps no creation time, a tie falls to whichever repo sorts first.
 # The list was sorted once, after the media rule (F) ran; with rule F off it does not exist.
+: > "$tmp/media-births"
+if [ -s "$tmp/blobs-all" ]; then
+  cut -f2 "$tmp/blobs-all" | sort -u \
+    | (cd "$STORAGE" && xargs -r stat -c '%n %W' --) > "$tmp/media-births" 2>/dev/null || true
+  awk '$2 ~ /^[1-9][0-9]*$/ { found = 1; exit } END { exit !found }' "$tmp/media-births" \
+    || echo "# WARN: cannot read when the node stored each repo (stat %W), so repos first" \
+            "seen in the same run tie for a shared media file by repo id, which a pusher" \
+            "can choose." >&2
+fi
 { [ ! -e "$tmp/blobs-all" ] || cat "$tmp/blobs-all"; } \
-  | awk -F'\t' -v k="$MEDIA_MIN_BATCH" -v now="$now" -v seenfile="$FIRST_SEEN" '
+  | awk -F'\t' -v k="$MEDIA_MIN_BATCH" -v now="$now" -v seenfile="$FIRST_SEEN" \
+        -v birthfile="$tmp/media-births" '
       BEGIN { while ((getline line < seenfile) > 0) {
                 split(line, f, "\t")
                 if (f[2] ~ /^[0-9]+$/) seen[f[1]] = f[2]
+              }
+              while ((getline line < birthfile) > 0) {
+                split(line, f, " ")
+                if (f[2] ~ /^[1-9][0-9]*$/) born[f[1]] = f[2]
               } }
+      function earlier(o, r, age) {
+        if (age != firstage[o]) return age < firstage[o]
+        return (r in born) && (first[o] in born) && born[r] < born[first[o]]
+      }
       { n++; oid[n]=$1; rid[n]=$2; size[n]=$3; holders[$1]++
         age = ($2 in seen) ? seen[$2] : now
-        if (!($1 in first) || age < firstage[$1]) { first[$1]=$2; firstage[$1]=age } }
+        if (!($1 in first) || earlier($1, $2, age)) { first[$1]=$2; firstage[$1]=age } }
       END { for (i=1;i<=n;i++)
               if (holders[oid[i]] >= k && rid[i] != first[oid[i]]) shared[rid[i]] += size[i]
             for (r in shared) printf "%s\t%.0f\n", r, shared[r] }' > "$tmp/media-shared"
@@ -4699,8 +4760,8 @@ check_report() {
          "($OUR_NID) as a delegate."
     return 0
   fi
-  echo "# $nrepos public repo(s) of yours, judged by the media (F) and spam-batch (D) rules" \
-       "as a seed would judge them once old enough"
+  echo "# $nrepos public repo(s) of yours, judged by the junk-name (A), spam-batch (D) and" \
+       "media (F) rules as a seed would judge them once old enough"
   while IFS= read -r rid; do
     name=${NAME[$rid]:-(?)}
     reason=${VERDICT[$rid]:-}
@@ -4740,6 +4801,14 @@ check_report() {
         echo "  Its name and description follow one template that $SPAM_MIN_BATCH or more" \
              "repos on this node share."
         echo "  Fix: give it a name and a description of its own." ;;
+      junk-name|junk-id)
+        if [ "$reason" = junk-id ]; then
+          echo "  Its name is nothing but a random id."
+        else
+          echo "  Its name reads like a throwaway, such as test, demo or tmp."
+        fi
+        echo "  A seed prunes it once nobody has pushed to it for $JUNK_STALE_DAYS days."
+        echo "  Fix: give it a name that says what it is." ;;
     esac
     case $reason in media-*)
       echo "  Biggest files on its branches and tags. The media rule (F) also counts the" \
@@ -4757,9 +4826,9 @@ check_report() {
     esac
   done < <(while IFS= read -r rid; do printf '%s\t%s\n' "${NAME[$rid]:-}" "$rid"; done \
              < "$tmp/check-repos" | sort | cut -f2)
-  echo "# Not checked: the junk-name (A), size (B), stale (C), parasite-peer (G) and" \
-       "malware (H) rules, and the deny lists seed operators keep. A seed also looks for" \
-       "media batches across every repo it holds, so it can find one this check misses."
+  echo "# Not checked: the size (B), stale (C), parasite-peer (G) and malware (H) rules," \
+       "and the deny lists seed operators keep. A seed also looks for media batches across" \
+       "every repo it holds, so it can find one this check misses."
 }
 if [ "$CMD" = check ]; then
   check_report >&3
@@ -4897,16 +4966,19 @@ done < "$tmp/ratchet-recent"
 # not say which rules were on, and are read as all of them.
 # A repo the rule that pruned it prunes again after this tool's undo let it back, or any repo
 # pruned again after a removal that failed, is no sign that a rule went wrong, so it does not
-# count towards a hold. The runaway caps still count it. Any other repo an audit log names
-# counts: one a person brought back by hand, or a lifted one another rule now prunes, is a
-# verdict like any other, since a rule going wrong would first show on repos like these.
+# count towards a hold. The runaway caps still count it. The size (B) and stale (C) rules count
+# as one rule here: under pressure the size rule loosens, and checked first, it can claim a
+# lifted stale repo. Any other repo an audit log names counts: one a person brought back by
+# hand, or a lifted one another rule now prunes, is a verdict like any other, since a rule
+# going wrong would first show on repos like these.
 awk -F'\t' -v map="$RULE_OF_REASON" '
   BEGIN { n = split(map, pairs, " ")
           for (i = 1; i <= n; i++) { split(pairs[i], kv, ":"); rule[kv[1]] = kv[2] } }
   function rule_of(reason) { return (reason in rule) ? rule[reason] : reason }
-  FILENAME == ARGV[1] { lifted[$1, rule_of($2)] = 1; next }
+  function family(r) { return (r == "B" || r == "C") ? "BC" : r }
+  FILENAME == ARGV[1] { lifted[$1, family(rule_of($2))] = 1; next }
   FILENAME == ARGV[2] { failed[$1] = 1; next }
-  !($1 in failed) && !(($1, rule_of($5)) in lifted)' \
+  !($1 in failed) && !(($1, family(rule_of($5))) in lifted)' \
   "$tmp/undo-lifted-before" "$tmp/prune-failed-before" "$tmp/plan.sorted" \
   > "$tmp/plan.new-verdicts"
 count_by_rule "$tmp/plan.new-verdicts" > "$tmp/ratchet-planned"
@@ -5441,6 +5513,8 @@ if [ "$nplan" = 0 ]; then
   quar_purge_all_if_critical
   deny_block_ahead
   echo "# nothing to prune"
+  # A lift that failed leaves a repo blocked that should not be, which wants a person.
+  [ "$undo_failed" = 0 ] || exit 1
   exit 0
 fi
 # A yes to this prompt is the human sign-off that lets a run bypass the ratchet and the runaway
@@ -5478,7 +5552,7 @@ if [ "$CONFIRMED" = 0 ] && [ -s "$tmp/held" ]; then
          "(limit $limit). None of them is pruned this run." >&2
   done < "$tmp/held"
   echo "# Review them in the plan above, then re-run with --force (unattended), or confirm" \
-       "interactively. The rest of the plan goes ahead." >&2
+       "interactively. The rest of the plan goes ahead, unless the runaway caps stop it." >&2
   awk -F'\t' -v map="$RULE_OF_REASON" -v heldfile="$tmp/held" '
       BEGIN { n = split(map, pairs, " ")
               for (i = 1; i <= n; i++) { split(pairs[i], kv, ":"); rule[kv[1]] = kv[2] }
@@ -5527,6 +5601,7 @@ quar_purge_all_if_critical
 if [ "$nplan" = 0 ]; then
   deny_block_ahead
   echo "# nothing pruned: every verdict in the plan was held back (see HELD BACK above)." >&2
+  [ "$undo_failed" = 0 ] || exit 1
   exit 4
 fi
 
@@ -5748,9 +5823,11 @@ fi
           "inventory-announce log warning."
 [ "$nheld" = 0 ] \
   || echo "# $nheld repo(s) held back are still in storage; see HELD BACK above." >&2
-# A repo whose removal failed is blocked and still in storage, which wants a person sooner than
-# a held-back rule does, so it wins over exit 4.
+# A repo whose removal failed is blocked and still in storage, and one whose lift failed is
+# blocked when it should not be. Either wants a person sooner than a held-back rule does, so
+# it wins over exit 4.
 [ "$deleted" = "$nplan" ] || exit 1
+[ "$undo_failed" = 0 ] || exit 1
 # Non-zero so whatever runs this unattended sees that verdicts are waiting on a human. Not 3,
 # which says the caps stopped the whole run and nothing was pruned.
 [ "$nheld" = 0 ] || exit 4

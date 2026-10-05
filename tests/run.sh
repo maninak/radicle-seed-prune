@@ -446,6 +446,9 @@ _build_fixture(){
   # says it has been here for over a year, which is the date that rule is supposed to use.
   mkdir -p "$AUDIT_DIR"
   printf 'zspamaged\t%s\n' "$(date -u -d "400 days ago" +%s)" > "$AUDIT_DIR/first-seen.tsv"
+  # A batch member seen before every other one is spared as the original, so a second member
+  # seen the same day keeps zspamaged one of the batch.
+  printf 'zspam9\t%s\n' "$(date -u -d "400 days ago" +%s)" >> "$AUDIT_DIR/first-seen.tsv"
   # A ledger appended to for years will eventually carry a line torn by a crash mid-write.
   printf 'zfresh4\tnot-a-date\n' >> "$AUDIT_DIR/first-seen.tsv"
   # zbatch3 published the shared clip first, so the batch path has to leave it alone.
@@ -917,6 +920,13 @@ spamhits=$(grep -cE "^zspam[1-9] .*spam-batch" <<<"$plan" || true)
 [ "$spamhits" = 9 ] \
   && ok "templated batch (id slot + one description) pruned (spam-batch)" \
   || no "spam batch pruned (got $spamhits/9)"
+# Repos pushed in the shape of an older one must not take the older one with them.
+printf 'zspam3\t%s\n' "$(date -u -d "800 days ago" +%s)" >> "$AUDIT_DIR/first-seen.tsv"
+plan_orig=$(run)
+{ ! has "$plan_orig" "zspam3" && grep -qE "^zspam4 .*spam-batch" <<<"$plan_orig" \
+  && grep -q 'spared 1 repo(s) .*rad:zspam3' <<<"$plan_orig"; } \
+  && ok "the batch member this seed saw before every other one is spared" \
+  || no "a spam batch took along the repo it was shaped after"
 decoyhits=$(grep -cE "^zdecoy[1-9] " <<<"$plan" || true)
 [ "$decoyhits" = 0 ] \
   && ok "same name shape but real per-repo descriptions kept (mirror farm)" \
@@ -1238,6 +1248,20 @@ plan_fz=$(MEDIA_MIN_SEEDS=1 run)
   || no "the review list names what it kept"
 
 
+# Repos first seen in the same run tie in the ledger. The original is then the repo whose
+# storage directory the node made first, never the one whose id sorts first, since a pusher
+# grinds an id to sort wherever they like. Every other holder is made again here, after it.
+build_fixture; assert_isolated
+sed -i '/^zbatch3\t/d' "$AUDIT_DIR/first-seen.tsv"
+sleep 1
+for r in zbatch1 zbatch2 zbatch4; do
+  cp -a "$STORAGE/$r" "$STORAGE/$r.new"; rm -rf "${STORAGE:?}/$r"
+  mv "$STORAGE/$r.new" "$STORAGE/$r"
+done
+plan_tie=$(run)
+{ ! has "$plan_tie" "zbatch3" && grep -qE "^zbatch1 .*media-batch" <<<"$plan_tie"; } \
+  && ok "in a first-seen tie the repo stored first keeps the clip, whatever its id" \
+  || no "a first-seen tie went to the repo whose id sorts first"
 build_fixture; assert_isolated
 
 # --- a plan nobody reads is not a review --- A verdict decided by a pattern across many repos
@@ -1318,17 +1342,21 @@ build_fixture; assert_isolated
 # Ours: the repos `rad ls` lists whose identity document names this node. zcode4 is listed but
 # names somebody else, as a fork does. zpin6 is pinned here, which spares nothing on a seed.
 # zpriv7 is private, and its description quotes zmediaone, which is public all the same.
-awk -F'\t' -v OFS='\t' '$1 ~ /^(zmediaone|zmediafresh|zpin6|zcode4|zpriv7|zspam1)$/ { $5 = 1 }
+# zjunk1 was pushed to recently, and a seed prunes it for its name once it goes quiet.
+awk -F'\t' -v OFS='\t' '$1 ~ /^(zmediaone|zmediafresh|zpin6|zcode4|zpriv7|zspam1|zjunk1)$/ { $5 = 1 }
                          $1 == "zpriv7" { $8 = "notes on rad:zmediaone" } 1' \
   "$RSP_MANIFEST" > "$ROOT/manifest.new" && mv "$ROOT/manifest.new" "$RSP_MANIFEST"
-for r in zmediaone zmediafresh zpin6 zown22 zpriv7 zspam1; do
+for r in zmediaone zmediafresh zpin6 zown22 zpriv7 zspam1 zjunk1; do
   w=$(mktemp -d -p "$ROOT"); mkdir -p "$w/embeds"
   git -C "$w" -c init.defaultBranch=master init -q
   git -C "$w" config user.email a@b; git -C "$w" config user.name a
   vis=""; [ "$r" != zpriv7 ] || vis=',"visibility":{"type":"private"}'
   printf '{"delegates":["did:key:%s"],"payload":{},"threshold":1%s}\n' "$RSP_NID" "$vis" \
     > "$w/embeds/radicle.json"
-  git -C "$w" add -A; git -C "$w" commit -q -m id
+  # zjunk1 is not an import: its identity is as old as its history.
+  when=""; [ "$r" != zjunk1 ] || when="@$(date -u -d '400 days ago' +%s) +0000"
+  git -C "$w" add -A
+  GIT_AUTHOR_DATE="$when" GIT_COMMITTER_DATE="$when" git -C "$w" commit -q -m id
   git -C "$w" push -q --force "$STORAGE/$r" master:refs/rad/id; rm -rf "$w"
   touch -d "10 days ago" "$STORAGE/$r"
 done
@@ -1363,7 +1391,8 @@ out=$("$SCRIPT" check 2>"$ROOT/check.err"); rc=$?
   && grep -qxE 'would-prune +flatten-1-[0-9a-f]+ +rad:zspam1 +as spam-batch' <<<"$out" \
   && grep -qxE 'ok +pinnedproj +rad:zpin6' <<<"$out" \
   && grep -qxE 'unjudged +myproj +rad:zown22' <<<"$out" \
-  && [ "$(grep -cE '^(ok|would-prune|unjudged) ' <<<"$out")" = 5 ]; } \
+  && grep -qxE 'would-prune +test-old +rad:zjunk1 +as junk-name' <<<"$out" \
+  && [ "$(grep -cE '^(ok|would-prune|unjudged) ' <<<"$out")" = 6 ]; } \
   && ok "check judges the public repos you are a delegate of, pinned and young ones too" \
   || no "check misjudged your repos, judged a fork or somebody else's, warned, or exited $rc"
 { [ "$(find "$AUDIT_DIR" -type f -exec sha1sum {} + | sort)" = "$audit_before" ] \
@@ -1383,7 +1412,7 @@ out=$("$SCRIPT" check --apply 2>&1); rc=$?
 # pruned, though zpriv7 quotes zmediaone, whose identity document still names this node. An
 # unjudged repo is no reason to fail, nor is an empty routing table, since a seed's count is
 # not this node's, nor a stopped node, since rad reads all a check needs from disk.
-awk -F'\t' -v OFS='\t' '$1 ~ /^(zmediaone|zmediafresh|zspam1)$/ { $5 = 0 } 1' \
+awk -F'\t' -v OFS='\t' '$1 ~ /^(zmediaone|zmediafresh|zspam1|zjunk1)$/ { $5 = 0 } 1' \
   "$RSP_MANIFEST" > "$ROOT/manifest.new" && mv "$ROOT/manifest.new" "$RSP_MANIFEST"
 out=$(RSP_NO_ROUTING=1 RSP_NODE_DOWN=1 "$SCRIPT" check 2>/dev/null); rc=$?
 { [ "$rc" = 0 ] && grep -qxE 'ok +pinnedproj +rad:zpin6' <<<"$out"; } \
@@ -2319,10 +2348,13 @@ mkdir -p "$Q/zdead1" "$Q/zdead2"
   && ok "quarantine delete removes exactly the repo it was given" \
   || no "quarantine delete deleted the wrong repo, or none"
 
+# A kept repo waits in the quarantine for the next run to put it back, so --all leaves it.
+mkdir -p "$Q/zkeptd3"
+echo zkeptd3 >> "$RSP_HOME/prune-audit/keep.txt"
 "$SCRIPT" quarantine delete --all >/dev/null 2>&1
-[ ! -e "$Q/zdead2" ] \
-  && ok "quarantine delete --all empties it" \
-  || no "quarantine delete --all left repos behind"
+{ [ ! -e "$Q/zdead2" ] && [ -d "$Q/zkeptd3" ]; } \
+  && ok "quarantine delete --all empties it, except a repo keep.txt lists" \
+  || no "quarantine delete --all left a repo behind, or deleted a kept one"
 
 # Every verb builds a path from its argument, so an argument that is not a repo id must never
 # reach rm or mv.
@@ -3474,6 +3506,12 @@ out=$(DISK_AWARE=0 ABS_SIZE_FLOOR_MB=1 RSP_UNSEED_FAIL=1 RSP_SEED_SCOPED=1 "${NO
   && ! grep -q '^# unblocked: rad:zundotiny' "$AUDIT_DIR"/prune-20[1-9]*.log; } \
   && ok "a lift that fails is reported and not logged as a lift" \
   || no "a failed lift was logged as done, or not reported"
+# A repo left blocked by mistake wants a person, so the run exits 1 though it pruned nothing.
+out1=$(RULES=H RSP_UNSEED_FAIL=1 RSP_SEED_SCOPED=1 "${NOTTY[@]}" "$SCRIPT" --apply \
+         </dev/null 2>&1); rc=$?
+{ [ "$rc" = 1 ] && grep -q 'unblocked 0 repo(s); 1 failed' <<<"$out1"; } \
+  && ok "a run whose only lift fails exits 1" \
+  || no "a run whose only lift fails exited $rc"
 
 # Undo from the quarantine: the repo goes back into storage, and the next run judges it.
 # zjunk1 is still junk-named; zbwid9 is spared by the current rules. A run stopped by a runaway
@@ -3606,8 +3644,9 @@ RSP_BLOCK_VANISH=1 RULES=A DISK_AWARE=0 "${NOTTY[@]}" "$SCRIPT" --apply --yes </
   && ok "the older quarantined copy of a repo gone from storage before its move stays" \
   || no "the only copy left of a repo was removed from the quarantine"
 
-# The ratchet sets aside a repo its rule prunes again after the undo let it back. A repo a
-# person brought back by hand, or one lifted from another rule's verdict, is a new verdict.
+# The ratchet sets aside a repo its rule prunes again after the undo let it back, the size (B)
+# and stale (C) rules counting as one. A repo a person brought back by hand, or one lifted
+# from another rule's verdict, is a new verdict.
 build_fixture; assert_isolated
 for i in 1 2 3; do past_run "$i" $REST; done
 run >/dev/null
@@ -3616,12 +3655,13 @@ for r in $stale; do undo_row "$r" 2000 stale; done \
   | undo_log 20260104T000000Z '2026-01-04T00:00:00Z  pressure=0%'
 RATCHET_FLOOR=1 run >/dev/null
 byhand=$(grep -c $'^C\t' "$AUDIT_DIR/last-run/held.tsv")
-for r in $stale; do printf '# unblocked: rad:%s why=verdict-withdrawn reason=size-outlier\n' "$r"
+for r in $stale; do printf '# unblocked: rad:%s why=verdict-withdrawn reason=junk-name\n' "$r"
 done | undo_log 20260105T000000Z '2026-01-05T00:00:00Z  pressure=0%'
 RATCHET_FLOOR=1 run >/dev/null
 otherrule=$(grep -c $'^C\t' "$AUDIT_DIR/last-run/held.tsv")
-for r in $stale; do printf '# unblocked: rad:%s why=verdict-withdrawn reason=stale\n' "$r"; done \
-  | undo_log 20260106T000000Z '2026-01-06T00:00:00Z  pressure=0%'
+for r in $stale; do
+  printf '# unblocked: rad:%s why=verdict-withdrawn reason=size-outlier\n' "$r"
+done | undo_log 20260106T000000Z '2026-01-06T00:00:00Z  pressure=0%'
 RATCHET_FLOOR=1 run >/dev/null
 lifted=$(grep -c $'^C\t' "$AUDIT_DIR/last-run/held.tsv")
 { [ -n "$stale" ] && [ "$byhand" = 1 ] && [ "$otherrule" = 1 ] && [ "$lifted" = 0 ]; } \
