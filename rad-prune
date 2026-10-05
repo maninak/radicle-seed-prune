@@ -1065,10 +1065,12 @@ if [ -n "${NO_COLOR:-}" ]; then colour=0
 elif [ "${FORCE_COLOR:-0}" != 0 ]; then colour=1
 elif [ -t 1 ] && [ "${TERM:-dumb}" != dumb ]; then colour=1
 fi
-# Read before the colour filter turns stderr into a pipe. The progress ticker redraws in
-# place only on a terminal.
+# Read before the colour filter turns stdout and stderr into pipes. The progress ticker
+# redraws in place only on a terminal, and ask() prompts through stdout when it is one.
 stderr_tty=0
 if [ -t 2 ]; then stderr_tty=1; fi
+stdout_tty=0
+if [ -t 1 ]; then stdout_tty=1; fi
 
 c_dim=$'\033[2m'; c_bold=$'\033[1m'; c_off=$'\033[0m'
 c_red=$'\033[31m'; c_yellow=$'\033[33m'; c_green=$'\033[32m'; c_cyan=$'\033[36m'
@@ -1086,7 +1088,10 @@ re_mine='^# (check-mine)  (.*)$'
 re_exit='^(# .*)( \(exit [0-9]+\))$'
 re_quar='^(z[0-9A-Za-z]+)( +[^ ]+ +[0-9]+ +)(due|kept|unknown|[0-9]+d)( .*)?$'
 re_check='^(would-prune|flagged|unjudged|ok)( +.* )(rad:[^ ]+)(  (.*))?$'
-re_cmd='^(.*: )((rad prune|[^ ]+) quarantine [a-z]+.*)$'
+# Only after the labels rad-prune prints, so a description that reads like a command is not
+# shown as one to copy.
+cmd_labels='To put one back|See them with|Put one back with|earlier one|To delete one anyway'
+re_cmd="^(# [^:]*($cmd_labels): )((rad prune|[^ ]+) quarantine [a-z]+.*)\$"
 
 # Prints one line in colour, or as it came when unrecognised. The first character picks the
 # patterns to try, so a plan row (thousands in a large plan) meets only the row patterns.
@@ -1189,7 +1194,7 @@ colour_comment() {
   elif [[ $line =~ $re_copy ]]; then
     printf '%s%s%s%s%s%s\n' "$d" "${BASH_REMATCH[1]}" "$o" "$c_cyan" "${BASH_REMATCH[2]}" "$o"
   elif [[ $line =~ $re_cmd ]]; then
-    printf '%s%s%s%s\n' "${BASH_REMATCH[1]}" "$c_cyan" "${BASH_REMATCH[2]}" "$o"
+    printf '%s%s%s%s\n' "${BASH_REMATCH[1]}" "$c_cyan" "${BASH_REMATCH[3]}" "$o"
   elif [[ $line == "# undo   lift "* ]]; then
     printf '%s# undo   %s%s%s%s\n' "$d" "$o" "$c_green" "${line#"# undo   "}" "$o"
   elif [[ $line =~ $re_label ]]; then
@@ -5958,7 +5963,10 @@ ask() {
   if [ -t 0 ]; then                                   # stdin is a terminal
     printf '%s' "$1"; IFS= read -r reply || reply=""
   elif { : >/dev/tty; } 2>/dev/null; then             # piped input but a terminal exists
-    printf '%s' "$1" >/dev/tty; IFS= read -r reply </dev/tty || reply=""
+    # Through stdout when it is the terminal, so the prompt comes after the plan the colour
+    # filter is still drawing, not in the middle of it.
+    if [ "$stdout_tty" = 1 ]; then printf '%s' "$1"; else printf '%s' "$1" >/dev/tty; fi
+    IFS= read -r reply </dev/tty || reply=""
   else
     return 1
   fi
