@@ -291,7 +291,7 @@ set -euo pipefail
 # zero. C also fixes sort to byte order, so a plan does not reorder between machines.
 export LC_ALL=C
 
-VERSION="0.8.0-dev"
+VERSION="0.8.0"
 
 # `set -e` alone exits with no message, so name the line, command and status. Always exit 1:
 # the failed command's own status could be 3, 4 or 5, which a caller reads as the caps, the
