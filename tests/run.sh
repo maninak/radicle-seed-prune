@@ -2260,6 +2260,15 @@ out=$("$SCRIPT" quarantine list 2>&1)
 { grep -qE '^zjunk1 .* junk-name +test-old$' <<<"$out" && grep -q 'HELD' <<<"$out"; } \
   && ok "quarantine list names what a past run pruned, why, and the repo's name" \
   || no "quarantine list did not show the quarantined repo, why it went, or its name"
+# A log written before 0.8.0 can hold a name as its delegate wrote it: here a C1 escape, raw
+# and as UTF-8, and a right-to-left override. The log sorts last, so its row is the one shown.
+printf 'zjunk1\t-\t-\t-\tjunk-name\told\233[2J\302\233[2J\342\200\256name\n' \
+  > "$RSP_HOME/prune-audit/prune-zz.log"
+out=$("$SCRIPT" quarantine list 2>&1)
+rm -f "$RSP_HOME/prune-audit/prune-zz.log"
+grep -qE '^zjunk1 .* junk-name +old\[2J\[2Jname$' <<<"$out" \
+  && ok "quarantine list drops escapes and hidden characters from a name in an old log" \
+  || no "quarantine list printed an old log's name with its escapes or hidden characters"
 
 # Restoring puts back the directory, the block policy and the verdict, or the next run plans
 # the repo again. rad seed only rewrites an existing policy row's scope, so on a blocked repo

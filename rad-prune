@@ -1276,7 +1276,7 @@ if [ "$CMD" != quarantine ]; then
   need="$need iconv uniq wc xargs"
 fi
 if [ "$QVERB" = files ]; then need="$need awk git jq od"; fi
-if [ "$QVERB" = list ]; then need="$need numfmt"; fi
+if [ "$QVERB" = list ]; then need="$need awk iconv numfmt sed tr"; fi
 if [ "$CMD" != quarantine ] && rule_on F; then need="$need base64 gzip openssl"; fi
 if [ "$CMD" != quarantine ] && rule_on H; then need="$need base64 openssl"; fi
 missing=
@@ -1299,9 +1299,26 @@ done
   esac
   exit 1
 }
+# Characters in stranger text that the terminal acts on or hides, as UTF-8 bytes, so the
+# operator sees what the text holds: C1 controls (an escape sequence could rewrite the
+# screen), soft hyphen, combining grapheme joiner, Arabic letter mark, Mongolian vowel
+# separator, zero-width and bidi characters U+200B-200F, U+202A-202E, U+2060-206F, and the
+# BOM. Run it after `iconv -c` (its nonzero status on dropped bytes is ignored). Then every
+# byte belongs to a whole UTF-8 sequence, and since each pattern starts with a lead byte,
+# which never occurs as a continuation byte, a match covers whole characters, removing one
+# cannot join its neighbours into another, and one pass is enough. Look-alike letters still get
+# through; a hidden word only lets a repo go unflagged.
+HIDDEN_CHARS_SED=$'s/\xc2[\x80-\x9f]//g
+s/\xc2\xad//g
+s/\xcd\x8f//g
+s/\xd8\x9c//g
+s/\xe1\xa0\x8e//g
+s/\xe2\x80[\x8b-\x8f\xaa-\xae]//g
+s/\xe2\x81[\xa0-\xa4\xa6-\xaf]//g
+s/\xef\xbb\xbf//g'
 # Stranger text goes through `iconv -c` (see HIDDEN_CHARS_SED). An iconv that stops at the
 # first non-UTF-8 byte would silently cut every name, description and subject there.
-if [ "$CMD" != quarantine ] \
+if { [ "$CMD" != quarantine ] || [ "$QVERB" = list ]; } \
    && [ "$(printf 'a\377b\n' | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null)" != ab ]; then
   echo "iconv here stops at text that is not UTF-8 instead of dropping it. glibc's iconv" \
        "drops it." >&2
@@ -1631,7 +1648,8 @@ if [ "$CMD" = quarantine ]; then
         echo "# WARN cannot read $KEEP_FILE, so nothing is deleted from the quarantine." >&2
       fi
       # Each repo's verdict and name from the audit logs, so a wrong verdict shows without
-      # looking ids up. A repo no log names shows -.
+      # looking ids up. A repo no log names shows -. Logs before 0.8.0 hold names as their
+      # delegates wrote them, so the names are cleaned here as a scan cleans them.
       declare -A pruned_why=()
       logs=()
       for f in "$AUDIT_DIR"/prune-*.log; do [ -r "$f" ] && logs+=("$f"); done
@@ -1641,7 +1659,9 @@ if [ "$CMD" = quarantine ]; then
         done < <(awk -F'\t' '$1 ~ /^z[1-9A-HJ-NP-Za-km-z]+$/ && $5 != "" {
                                 last[$1] = sprintf("%-13s %s", $5, $6) }
                               END { for (r in last) print r "\t" last[r] }' "${logs[@]}" \
-                   | LC_ALL=C tr '\001-\010\013-\037\177' ' ')  # no control byte reaches a terminal
+                   | LC_ALL=C tr '\001-\010\013-\037\177' ' ' \
+                   | { iconv -f UTF-8 -t UTF-8 -c 2>/dev/null || true; } \
+                   | LC_ALL=C sed "$HIDDEN_CHARS_SED")
       fi
       for d in "$quar"/z*; do
         [ -d "$d" ] || continue
@@ -2965,23 +2985,6 @@ undo_apply() {
   fi
 }
 
-# Characters in stranger text that the terminal acts on or hides, as UTF-8 bytes, so the
-# operator sees what the text holds: C1 controls (an escape sequence could rewrite the
-# screen), soft hyphen, combining grapheme joiner, Arabic letter mark, Mongolian vowel
-# separator, zero-width and bidi characters U+200B-200F, U+202A-202E, U+2060-206F, and the
-# BOM. Run it after `iconv -c` (its nonzero status on dropped bytes is ignored). Then every
-# byte belongs to a whole UTF-8 sequence, and since each pattern starts with a lead byte,
-# which never occurs as a continuation byte, a match covers whole characters, removing one
-# cannot join its neighbours into another, and one pass is enough. Look-alike letters still get
-# through; a hidden word only lets a repo go unflagged.
-HIDDEN_CHARS_SED=$'s/\xc2[\x80-\x9f]//g
-s/\xc2\xad//g
-s/\xcd\x8f//g
-s/\xd8\x9c//g
-s/\xe1\xa0\x8e//g
-s/\xe2\x80[\x8b-\x8f\xaa-\xae]//g
-s/\xe2\x81[\xa0-\xa4\xa6-\xaf]//g
-s/\xef\xbb\xbf//g'
 # ------------------------------------------------------------------- rid -> name + description
 # One `rad ls --all` feeds the plan's NAME column and rule D, so parse the whole row:
 # "| <name> rad:<rid> <visibility> <head> <description...> |". Take the FIRST rad: token,
